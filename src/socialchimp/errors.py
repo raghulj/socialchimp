@@ -15,18 +15,48 @@ __all__ = [
     "AuthError",
     "ConfigError",
     "InvalidPostError",
+    "NetworkError",
     "NotAllowedError",
     "NotFoundError",
     "NotSupportedError",
     "PlatformError",
     "RateLimitError",
+    "SignatureError",
     "SocialChimpError",
     "TokenExpiredError",
 ]
 
 
 class SocialChimpError(Exception):
-    """Base for everything socialchimp raises."""
+    """Base for everything socialchimp raises.
+
+    Catch this to catch every problem socialchimp reports, whichever network
+    caused it.
+
+    Attributes:
+        platform: Which network this came from, when it came from one.
+            `None` for problems on your own side, such as `ConfigError`.
+        raw: The network's untouched reply, when there was one. Empty
+            otherwise. Look here for anything socialchimp did not model.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        platform: str | None = None,
+        raw: dict[str, Any] | None = None,
+    ) -> None:
+        """Record the message, and where it came from.
+
+        Args:
+            message: What happened, in plain words.
+            platform: Which network complained, if any.
+            raw: The network's untouched reply, if there was one.
+        """
+        super().__init__(message)
+        self.platform = platform
+        self.raw: dict[str, Any] = raw if raw is not None else {}
 
 
 class ConfigError(SocialChimpError):
@@ -73,14 +103,23 @@ class RateLimitError(SocialChimpError):
             tells us. `None` when it does not.
     """
 
-    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after: float | None = None,
+        platform: str | None = None,
+        raw: dict[str, Any] | None = None,
+    ) -> None:
         """Store the wait time alongside the message.
 
         Args:
             message: What happened.
             retry_after: Seconds to wait, if the network said.
+            platform: Which network is asking us to slow down.
+            raw: The network's untouched reply.
         """
-        super().__init__(message)
+        super().__init__(message, platform=platform, raw=raw)
         self.retry_after = retry_after
 
 
@@ -112,9 +151,30 @@ class NotSupportedError(SocialChimpError):
             platform: The network that cannot do it.
             what: The thing it cannot do.
         """
-        super().__init__(f"{platform} does not support {what}.")
-        self.platform = platform
+        super().__init__(f"{platform} does not support {what}.", platform=platform)
         self.what = what
+
+
+class NetworkError(SocialChimpError):
+    """We could not reach the network at all.
+
+    A connection that dropped, a name that would not resolve, a request that
+    ran out of time. socialchimp already tried again several times before
+    raising this.
+
+    This is not the network saying no - it never answered. Unlike most
+    errors here, trying again later is a reasonable thing to do.
+    """
+
+
+class SignatureError(SocialChimpError):
+    """This request did not come from the network it claims to come from.
+
+    Raised when a signature does not match, a shared secret is wrong, a
+    required header is missing, or the request is too old to trust. Treat
+    every one of these the same way: answer 401 and do nothing else. Do not
+    tell the caller which check failed - that only helps whoever is guessing.
+    """
 
 
 class PlatformError(SocialChimpError):
@@ -146,7 +206,5 @@ class PlatformError(SocialChimpError):
             status_code: HTTP status, when there was one.
             raw: The network's untouched reply.
         """
-        super().__init__(message)
-        self.platform = platform
+        super().__init__(message, platform=platform, raw=raw)
         self.status_code = status_code
-        self.raw: dict[str, Any] = raw if raw is not None else {}

@@ -19,8 +19,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
+    from datetime import datetime
 
+    from socialchimp.events import Update
     from socialchimp.features import Feature, Limits
     from socialchimp.models import (
         AppCredentials,
@@ -32,8 +34,10 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AccountChoice",
+    "CanCheckSignature",
     "CanCreateApp",
     "CanDeletePosts",
+    "CanReadUpdates",
     "ChooseAccount",
     "Finished",
     "LoginRequest",
@@ -259,5 +263,93 @@ class CanDeletePosts(Protocol):
         Args:
             connection: The account that published it.
             post_id: The network's identifier for the post.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadUpdates(Protocol):
+    """Extra for networks we can ask "what has happened since?".
+
+    Used for networks that cannot tell us themselves. LinkedIn, Pinterest,
+    Reddit and Tumblr all work this way: socialchimp calls this on a timer,
+    works out what is new, and hands your app the same `Update` objects a
+    pushing network would have produced. Your handlers never learn which
+    kind of network they are dealing with.
+
+    A network that pushes updates should say so with `Feature.PUSH_UPDATES`
+    and provide `CanCheckSignature` instead. Providing both is fine, and
+    lets an app fall back to checking on a timer if it cannot receive
+    incoming requests.
+    """
+
+    async def fetch_updates(
+        self,
+        connection: Connection,
+        since: datetime | None,
+    ) -> Sequence[Update]:
+        """Return what has happened on this account since a moment in time.
+
+        Args:
+            connection: The account to ask about.
+            since: Only return things newer than this. `None` on the first
+                call, when there is no marker saved yet - return a recent
+                page rather than the whole history.
+
+        Returns:
+            The updates, oldest first.
+        """
+        ...
+
+
+@runtime_checkable
+class CanCheckSignature(Protocol):
+    """Extra for networks that send us requests when something happens.
+
+    Every network signs these differently: Meta uses HMAC-SHA256 in a header,
+    Telegram echoes a shared secret, Discord signs with Ed25519. A platform
+    file knows which, and this is where it says so.
+
+    The check must work on the **raw bytes** of the request, exactly as they
+    arrived. Any framework that parses the JSON and builds it again first
+    will change the bytes and break the signature, so never accept a parsed
+    body here.
+    """
+
+    def check_signature(
+        self,
+        body: bytes,
+        headers: Mapping[str, str],
+        *,
+        secret: str,
+    ) -> None:
+        """Check an incoming request really came from the network.
+
+        Args:
+            body: The request body, untouched.
+            headers: The request headers.
+            secret: The shared secret for this network, from your settings.
+
+        Raises:
+            SignatureError: If the request cannot be trusted. Answer 401 and
+                do nothing else with it.
+        """
+        ...
+
+    def read_update(
+        self,
+        body: bytes,
+        headers: Mapping[str, str],
+    ) -> Update:
+        """Turn a checked request into an update your app understands.
+
+        Only call this after `check_signature` has passed.
+
+        Args:
+            body: The request body, untouched.
+            headers: The request headers.
+
+        Returns:
+            What happened, in socialchimp's own words.
         """
         ...

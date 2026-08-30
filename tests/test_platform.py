@@ -1,6 +1,7 @@
 """Tests for the contract every platform file implements."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 
 from socialchimp import (
     Connection,
@@ -10,9 +11,12 @@ from socialchimp import (
     PostResult,
     Token,
 )
+from socialchimp.events import Update, UpdateKind
 from socialchimp.platform import (
     AccountChoice,
+    CanCheckSignature,
     CanCreateApp,
+    CanReadUpdates,
     ChooseAccount,
     Finished,
     LoginRequest,
@@ -123,3 +127,44 @@ class TestLoginRequest:
         )
 
         assert request.host == "mastodon.social"
+
+
+class TestUpdateExtras:
+    def test_a_platform_that_cannot_be_asked_for_updates_says_so(self) -> None:
+        # Nothing is stubbed out. A network we cannot poll simply has no
+        # fetch_updates method, and asking is how the wiring finds out.
+        assert not isinstance(FakePlatform(), CanReadUpdates)
+
+    def test_a_platform_that_cannot_check_signatures_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanCheckSignature)
+
+    def test_a_platform_can_offer_both_ways_of_getting_updates(self) -> None:
+        # Meta pushes updates, but an app behind a firewall may not be able
+        # to receive them, so offering both is allowed on purpose.
+        class PushesAndPolls(FakePlatform):
+            features = Feature.POST_TEXT | Feature.PUSH_UPDATES
+
+            async def fetch_updates(
+                self, connection: Connection, since: datetime | None
+            ) -> Sequence[Update]:
+                return ()
+
+            def check_signature(
+                self, body: bytes, headers: Mapping[str, str], *, secret: str
+            ) -> None:
+                return None
+
+            def read_update(self, body: bytes, headers: Mapping[str, str]) -> Update:
+                return Update(
+                    id="1",
+                    kind=UpdateKind.MENTION,
+                    platform="fake",
+                    connection_id="conn-1",
+                    created_at=datetime.now(UTC),
+                )
+
+        platform = PushesAndPolls()
+
+        assert isinstance(platform, CanReadUpdates)
+        assert isinstance(platform, CanCheckSignature)
+        assert Feature.PUSH_UPDATES in platform.features

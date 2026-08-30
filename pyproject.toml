@@ -52,8 +52,10 @@ Issues = "https://github.com/raghulj/socialchimp/issues"
 # Platforms that ship with socialchimp register themselves here.
 # Anyone can publish their own package that adds to this same list.
 # See docs/adding-a-platform.md
+# Platforms register themselves here as they land. Each line is added in
+# the same commit as the platform it names, so this never promises something
+# that is not installed yet.
 [project.entry-points."socialchimp.platforms"]
-mastodon = "socialchimp.platforms.mastodon:MastodonPlatform"
 
 [dependency-groups]
 dev = [

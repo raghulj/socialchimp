@@ -27,6 +27,7 @@ __all__ = [
     "PostState",
     "RawData",
     "Token",
+    "require_timezone",
 ]
 
 # The untouched reply from a social network, exactly as it arrived.
@@ -39,7 +40,7 @@ _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"})
 _VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"})
 
 
-def _require_timezone(value: datetime | None, name: str) -> None:
+def require_timezone(value: datetime | None, name: str) -> None:
     """Refuse a datetime with no timezone.
 
     A datetime without a timezone compares wrongly against one that has a
@@ -99,7 +100,7 @@ class Token:
 
     def __post_init__(self) -> None:
         """Check the expiry has a timezone."""
-        _require_timezone(self.expires_at, "expires_at")
+        require_timezone(self.expires_at, "expires_at")
 
     def expires_within(self, seconds: float) -> bool:
         """Say whether this token runs out inside the next `seconds`.
@@ -400,7 +401,7 @@ class Post:
         if not self.text and not self.media:
             message = "A post needs text or media. This one has neither."
             raise ValueError(message)
-        _require_timezone(self.publish_at, "publish_at")
+        require_timezone(self.publish_at, "publish_at")
 
 
 @dataclass(frozen=True, slots=True)
