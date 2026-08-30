@@ -101,7 +101,7 @@ show_missing = true
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
-files = ["src", "tests", "examples"]
+files = ["src", "tests"]  # examples are added here once they exist
 strict = true
 warn_unreachable = true
 warn_no_return = true
@@ -153,8 +153,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = [
-    "S101",    # assert is the point of a test
-    "D103",    # test functions explain themselves by name
+    "S101",         # assert is the point of a test
+    "S105", "S106", # fake secrets in fixtures are not real secrets
+    "D",            # test names are the documentation
 ]
 "examples/*" = [
     "T201",    # examples print things on purpose
