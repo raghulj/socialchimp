@@ -70,7 +70,7 @@ We are building these in the order below. The first four are the priority.
 
 | # | Platform | Why it is here | Status |
 |---|----------|----------------|--------|
-| 1 | Mastodon | Only network where we can create the app automatically. No approval needed, so anyone can try the library in five minutes. | Not started |
+| 1 | Mastodon | Only network where we can create the app automatically. No approval needed, so anyone can try the library in five minutes. | In progress |
 | 2 | Bluesky | No signup portal. Short-lived tokens, so it proves our token refresh works. | Not started |
 | 3 | Facebook Pages | Highest demand. Doing the Meta login work here makes Instagram and Threads much cheaper. | Not started |
 | 4 | Instagram | Posting is two steps: build the post, wait, then publish it. First network that needs the job model. | Not started |
@@ -90,21 +90,23 @@ We are building these in the order below. The first four are the priority.
 - [x] Testing, type checking, linting, coverage gate
 - [x] Git hooks that check code before commit and push
 - [x] CI on every push and pull request
-- [ ] This plan, kept up to date
+- [x] This plan, kept up to date
 
 ### Step 2 - The shared pieces
 Everything a platform needs, before any platform exists.
-- [ ] `Connection`, `Post`, `PostResult`, `Media` - the data we pass around
-- [ ] `Storage` - the small class your app fills in
-- [ ] Errors, one set for all networks
-- [ ] `Feature` - what each network can and cannot do
-- [ ] `Platform` - what a platform file must provide
-- [ ] Finding installed platforms
-- [ ] HTTP calls: retries, rate limits, paging
-- [ ] Keeping tokens fresh, safely, when several workers run at once
+- [x] `Connection`, `Post`, `PostResult`, `Media` - the data we pass around
+- [x] `Storage` - the small class your app fills in
+- [x] Errors, one set for all networks
+- [x] `Feature` and `Limits` - what each network can and cannot do
+- [x] `Platform` - what a platform file must provide
+- [x] Finding installed platforms
+- [x] HTTP calls: retries, rate limits, paging
+- [x] Keeping tokens fresh, safely, when several workers run at once
+- [x] Updates, whether pushed to us or found by checking on a timer
 
 ### Step 3 - First platform, end to end
-- [ ] Mastodon: create app, sign in, post, read, live updates
+- [ ] `SocialChimp` - the one object your app uses
+- [ ] Mastodon: create app, sign in, post, read, updates
 - [ ] A test kit other platforms can reuse to check they behave the same
 
 ### Step 4 - The rest of the platforms
@@ -115,6 +117,25 @@ In the order in the table above.
 
 ### Step 6 - Docs and examples
 - [ ] Getting started, one page per platform, a runnable example app
+
+---
+
+## Notes for people working on this
+
+**Running one file's tests.** `pyproject.toml` puts `--cov=socialchimp
+--cov-fail-under=100` in `addopts`, so the whole package is measured on every
+run. That is what we want in CI and before a push, but it means running one
+test file on its own reports the whole package and fails. To measure one
+module while you work on it:
+
+    uv run pytest tests/test_http.py -o addopts="" --cov=socialchimp.http \
+        --cov-report=term-missing --cov-fail-under=100
+
+The full `uv run pytest` is the one that has to pass before pushing.
+
+**Never push red.** Run the whole gate first:
+
+    uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest
 
 ---
 
