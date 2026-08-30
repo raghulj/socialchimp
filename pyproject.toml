@@ -1,0 +1,165 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "socialchimp"
+version = "0.0.1"
+description = "One simple way to connect your app to social networks."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Raghul Jagannathan", email = "raghulj@gmail.com" }]
+keywords = [
+    "social",
+    "mastodon",
+    "bluesky",
+    "instagram",
+    "youtube",
+    "tiktok",
+    "twitter",
+    "pinterest",
+    "threads",
+    "oauth",
+    "django",
+    "fastapi",
+    "flask",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+    "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+django = ["django>=4.2"]
+fastapi = ["fastapi>=0.110"]
+flask = ["flask>=3.0"]
+
+[project.urls]
+Homepage = "https://github.com/raghulj/socialchimp"
+Documentation = "https://github.com/raghulj/socialchimp/tree/main/docs"
+Issues = "https://github.com/raghulj/socialchimp/issues"
+
+# Platforms that ship with socialchimp register themselves here.
+# Anyone can publish their own package that adds to this same list.
+# See docs/adding-a-platform.md
+[project.entry-points."socialchimp.platforms"]
+mastodon = "socialchimp.platforms.mastodon:MastodonPlatform"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "respx>=0.21",
+    "mypy>=1.13",
+    "ruff>=0.8",
+    "pre-commit>=4.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/socialchimp"]
+
+# ---------------------------------------------------------------------------
+# Tests. Coverage must be 100% - see docs/PLAN.md for why we hold this line.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--cov=socialchimp",
+    "--cov-report=term-missing",
+    "--cov-fail-under=100",
+]
+
+[tool.coverage.run]
+source = ["src/socialchimp"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",  # Protocol method bodies
+]
+show_missing = true
+
+# ---------------------------------------------------------------------------
+# Types. Everything is typed. No exceptions, no untyped escape hatches.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests", "examples"]
+strict = true
+warn_unreachable = true
+warn_no_return = true
+disallow_any_unimported = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+no_implicit_reexport = true
+extra_checks = true
+enable_error_code = [
+    "redundant-expr",
+    "possibly-undefined",
+    "truthy-bool",
+    "ignore-without-code",
+    "unused-awaitable",
+]
+
+# ---------------------------------------------------------------------------
+# Style and lint.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # import sorting
+    "N",         # naming
+    "UP",        # modern python syntax
+    "B",         # likely bugs
+    "A",         # shadowing builtins
+    "C4",        # comprehensions
+    "DTZ",       # timezone-aware datetimes only
+    "T20",       # no stray print()
+    "SIM",       # simplifications
+    "PTH",       # pathlib over os.path
+    "RUF",       # ruff's own rules
+    "ASYNC",     # async mistakes
+    "S",         # security
+    "D",         # docstrings
+    "ANN",       # type annotations
+]
+ignore = [
+    "D203",   # conflicts with D211
+    "D213",   # conflicts with D212
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",    # assert is the point of a test
+    "D103",    # test functions explain themselves by name
+]
+"examples/*" = [
+    "T201",    # examples print things on purpose
+    "D",       # examples are documentation already
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
