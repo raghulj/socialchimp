@@ -38,7 +38,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install ${{ matrix.python-version }}
-      - run: uv sync --all-extras --dev
+      - run: uv sync --all-extras --dev --group docs
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
