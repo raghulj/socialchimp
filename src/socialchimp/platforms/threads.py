@@ -98,11 +98,13 @@ and `check_post` refuses when there are none. `allowance` gives you both.
 
 ## Its webhooks are narrower than the rest of Meta's
 
-Four topics and no more: `replies`, `mentions`, `publish` and `delete`. And
-**nothing at all where a private account is involved** - a reply or a mention
-on media owned by a private account is never sent, and only `publish` and
-`delete` arrive for a private account that has authorised your app itself.
-So a Threads integration cannot assume it hears about everything.
+Four topics and no more: `replies`, `mentions`, `publish` and `delete`, which
+reach your handlers as `COMMENT_CREATED`, `MENTION`, `POST_PUBLISHED` and
+`POST_DELETED`. And **nothing at all where a private account is involved** -
+a reply or a mention on media owned by a private account is never sent, and
+only `publish` and `delete` arrive for a private account that has authorised
+your app itself. So a Threads integration cannot assume it hears about
+everything.
 
 The signature is Meta's, so `_meta.check_meta_signature` does the job. The
 **message inside is not**: where Facebook and Instagram send a list of

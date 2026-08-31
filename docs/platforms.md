@@ -11,7 +11,8 @@ things about it that surprise people.
 | YouTube | yes | by hand, reviewed | **no** | no | yes | yes | on a timer |
 | Instagram | yes | by hand, reviewed | **no** | yes | yes | no | yes |
 | TikTok | yes | by hand, audited | **no** | no | yes | no | yes |
-| X, Pinterest, Threads | not yet | | | | | | |
+| Threads | yes | by hand, **its own app id** | yes | yes | yes | no | yes |
+| X, Pinterest | not yet | | | | | | |
 
 "On a timer" means the network has no way to tell us when something happens,
 so socialchimp checks instead. Your code gets the same updates either way.
@@ -202,6 +203,62 @@ values the client key and the client secret; the client key goes in
   different call that fetches each one from a public web address on a domain
   you have proved is yours. A post with pictures on it is refused with a
   message saying so.
+
+## Threads
+
+**You create the app by hand** at
+[developers.facebook.com](https://developers.facebook.com/apps), the same as
+Facebook Pages — and then the thing that catches everybody:
+
+- **Adding the Threads use case makes a second app id and app secret.** They
+  sit next to the pair the same app already uses for Facebook and Instagram,
+  and they are not interchangeable. Reusing the Facebook pair fails in the
+  worst way: the sign-in page accepts it, the person approves, and the token
+  swap at the end refuses under whatever code Meta feels like, with a message
+  that mentions none of this. Save the Threads pair with `Storage.save_app`
+  under the platform name `threads`, and socialchimp keeps the two apart for
+  you.
+
+Almost nothing else about it lives where the rest of Meta lives:
+
+- **Signing in is not Facebook Login.** People approve at `threads.net`, and
+  the code is swapped at `graph.threads.net`. The API is there too, not on
+  `graph.facebook.com`.
+- **It never asks which account.** Facebook asks which page and Instagram
+  which business account; a Threads sign-in is one profile, so `finish_login`
+  finishes rather than handing you a `ChooseAccount`.
+- **Renewal actually works here, unlike the rest of Meta.** Facebook and
+  Instagram hand out no refresh token at all — a token is extended by trading
+  it in while it still works, or the person signs in again. Threads has a real
+  refresh endpoint: one request, no app secret, and the sixty-day clock starts
+  again. A job that runs once a month keeps a connection alive indefinitely.
+  The one rule is that a **token has to be 24 hours old** before it will renew
+  one; asking sooner raises `RateLimitError` with the wait on `retry_after`,
+  and nothing is wrong with the token.
+- **Threads fetches the picture itself, from a web address**, exactly as
+  Instagram does. `Media.from_url(...)` works and a local file is refused with
+  an explanation.
+- **It does take a post of words alone**, which Instagram does not.
+- **Publishing is two calls with a wait in between**: build the post, wait for
+  Threads to finish with it, then publish. socialchimp does the waiting, and
+  only where there is video — words and pictures are ready straight away. If
+  it runs out of patience you get a message saying the post *may still appear*.
+- **The length limit is 500 bytes, not 500 characters.** Threads' own
+  documentation says characters and means bytes, so an emoji costs four and
+  500 emoji are 2,000. socialchimp counts the way Threads does.
+- **Post options**: `carousel` (only needed to force a single picture into a
+  carousel; two or more already make one). 2 to 20 items — twice what
+  Instagram takes.
+- **The daily limits are read, not written down**: 250 posts and 1,000
+  replies in a rolling 24 hours, and **replies do not come out of the posts**.
+  Posts left lands in `limits().posts_left_today`; `allowance()` gives you
+  both numbers.
+- **Deleting works**, which it does not on Instagram. 100 a day per account.
+- **No scheduling** — there is no call for it.
+- **Webhooks are narrower than the rest of Meta's**: only `replies`,
+  `mentions`, `publish` and `delete`, and **nothing at all where a private
+  account is involved**. Verify with `check_signature` on the raw bytes,
+  before anything parses them.
 
 ---
 
