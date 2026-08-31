@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AccountChoice",
+    "AskForDetails",
     "CanCheckSignature",
     "CanCreateApp",
     "CanDeletePosts",
@@ -42,6 +43,7 @@ __all__ = [
     "CanResumeLogin",
     "ChooseAccount",
     "Finished",
+    "LoginField",
     "LoginRequest",
     "LoginStep",
     "Platform",
@@ -97,6 +99,53 @@ class SendToNetwork:
 
 
 @dataclass(frozen=True, slots=True)
+class LoginField:
+    """One thing to ask a person for.
+
+    Attributes:
+        name: What to call this value when handing it back. Put it in the
+            `callback` mapping given to `finish_login` under this name.
+        label: What to show next to the box, in words a person understands.
+        secret: True for anything that should not be shown as it is typed,
+            or written to a log.
+        help_text: A sentence under the box, usually saying where on the
+            network to find the value.
+    """
+
+    name: str
+    label: str
+    secret: bool = False
+    help_text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AskForDetails:
+    """Step one, for networks that have no sign-in page to send people to.
+
+    Bluesky uses an app password, and Discord and Telegram use a bot token
+    that someone pastes in. There is nowhere to redirect to, so instead the
+    platform says what to ask for, your app shows a form, and the answers go
+    back through `finish_login` as the `callback` mapping.
+
+    Show the fields in the order given, and never log anything marked
+    `secret`.
+
+    Nothing leaves your app on this route, so `LoginRequest.state` is not
+    used - there is no trip through a browser to match up afterwards. If your
+    sign-in code expects every step to carry state back, this is the one that
+    will not.
+
+    Attributes:
+        fields: What to ask for.
+        help_url: A page explaining where to get these, worth linking to
+            beside the form.
+    """
+
+    fields: tuple[LoginField, ...]
+    help_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AccountChoice:
     """One of several accounts a person could connect.
 
@@ -139,10 +188,10 @@ class Finished:
     connection: Connection
 
 
-# Where a login can get to after a person comes back from the network. Match
-# on it, so a new step added later becomes a type error rather than a
-# silently skipped branch.
-LoginStep = SendToNetwork | ChooseAccount | Finished
+# Every place a sign-in can get to. Match on it rather than checking types
+# by hand, so a step added later becomes a type error in your code instead
+# of a branch that is quietly never taken.
+LoginStep = SendToNetwork | AskForDetails | ChooseAccount | Finished
 
 
 @runtime_checkable
@@ -165,6 +214,37 @@ class Platform(Protocol):
     name: str
     features: Feature
 
+    def api_base(self, connection: Connection) -> str:
+        """Return where this network's API lives for this account.
+
+        Most networks have one address for everyone. Mastodon has a
+        different one per server, which is why the connection is passed in
+        rather than this being a plain attribute.
+
+        Args:
+            connection: The account we are about to act as.
+
+        Returns:
+            The address to send requests to, with no trailing slash, for
+            example `"https://graph.facebook.com/v21.0"`.
+        """
+        ...
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        """Return the headers that prove we may act as this account.
+
+        Usually one `Authorization` header. Called on every request, so
+        keep it cheap and do not go to the network here - the token has
+        already been renewed by the time this runs.
+
+        Args:
+            connection: The account we are acting as.
+
+        Returns:
+            Headers to add to the request.
+        """
+        ...
+
     async def limits(self, connection: Connection) -> Limits:
         """Look up the numbers this network is enforcing right now.
 
@@ -180,14 +260,20 @@ class Platform(Protocol):
         """
         ...
 
-    async def start_login(self, request: LoginRequest) -> SendToNetwork:
+    async def start_login(self, request: LoginRequest) -> LoginStep:
         """Begin signing someone in.
+
+        Most networks answer with `SendToNetwork`: redirect the person there
+        and wait for them to come back. Networks that use an app password or
+        a bot token answer with `AskForDetails` instead, because there is
+        nowhere to send anyone - your app shows a form and passes the answers
+        to `finish_login`.
 
         Args:
             request: Where to send them back to, and what to ask for.
 
         Returns:
-            Where to send the person next.
+            What to do next.
         """
         ...
 

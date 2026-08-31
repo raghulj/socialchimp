@@ -42,7 +42,7 @@ import hmac
 import inspect
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
@@ -70,12 +70,14 @@ from socialchimp.models import (
 )
 from socialchimp.platform import (
     AccountChoice,
+    AskForDetails,
     CanCheckSignature,
     CanCreateApp,
     CanDeletePosts,
     CanReadUpdates,
     ChooseAccount,
     Finished,
+    LoginField,
     LoginRequest,
     LoginStep,
     Platform,
@@ -83,7 +85,7 @@ from socialchimp.platform import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable
 
     from socialchimp.models import RawData
 
@@ -95,10 +97,15 @@ __all__ = [
     "StorageCall",
 ]
 
-# The methods every platform provides. `registry` keeps the same short list
-# for its own early warning, privately - copying five names is cheaper than
-# two modules reaching into each other.
+# The methods every platform provides as `async def`. `registry` keeps the
+# same five for its own early warning, privately - copying five names is
+# cheaper than two modules reaching into each other.
 _MUST_HAVE: Final = ("limits", "start_login", "finish_login", "refresh", "publish")
+
+# A redirect address for the check that has to start a login. Nobody is ever
+# sent there - only its shape matters, because a platform reads it and hands
+# back what to do next without asking anybody anything.
+_A_REDIRECT: Final = "https://app.example/callback"
 
 # A platform that cannot post anything is not a platform anyone can use.
 _WAYS_TO_POST: Final = Feature.POST_TEXT | Feature.POST_IMAGE | Feature.POST_VIDEO
@@ -164,6 +171,25 @@ def _method_is_wrong(owner: object, name: str, *, wants_async: bool) -> bool:
     if not callable(found):
         return True
     return inspect.iscoroutinefunction(found) is not wants_async
+
+
+def _must_be_a_plain_function(platform: object, name: str) -> None:
+    """Stop a check unless a method is there and is a plain function.
+
+    Args:
+        platform: The platform being checked.
+        name: The method it should have.
+    """
+    if not _method_is_wrong(platform, name, wants_async=False):
+        return
+
+    pytest.fail(
+        f"{type(platform).__name__} is missing {name}, or has it as an "
+        f"`async def`. It runs before every single request, and the token "
+        f"has already been renewed by the time it does, so it is a plain "
+        f"function that reads what it needs off the connection. Anything "
+        f"you would wait for here belongs in refresh()."
+    )
 
 
 def _posts_it_should_refuse(features: Feature, limits: Limits) -> list[Post]:
@@ -485,6 +511,10 @@ class FakePlatform:
     `HttpClient`, so retries, rate limits and error handling all run. Leave
     the transport out and it answers from memory.
 
+    Give it `ask_for` and signing in asks for those instead of sending
+    anybody anywhere, the way Bluesky's app password and the bot-token
+    networks work.
+
     Example:
         transport = RecordingTransport({"POST /posts": {"id": "1"}})
         platform = FakePlatform(transport=transport)
@@ -495,6 +525,8 @@ class FakePlatform:
         features: What it says it can do.
         accounts: Accounts sign-in offers to choose between. Empty means it
             never asks.
+        ask_for: What signing in should ask a person for. Empty sends them
+            to a sign-in page instead, which is what most networks do.
         secret: The secret `check_signature` expects, unless told another.
         updates: What `fetch_updates` hands back.
         token_lifetime: How long a fresh token lasts. `None` for a token
@@ -517,6 +549,7 @@ class FakePlatform:
         limits: Limits | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         accounts: tuple[AccountChoice, ...] = (),
+        ask_for: tuple[LoginField, ...] = (),
         secret: str = _FAKE_SIGNING_KEY,
         updates: Sequence[Update] = (),
         token_lifetime: timedelta | None = timedelta(hours=1),
@@ -531,6 +564,8 @@ class FakePlatform:
             transport: Where `publish` sends its request. Left out, it does
                 not send one.
             accounts: Accounts to offer during sign-in. Empty never asks.
+            ask_for: What signing in should ask a person for. Empty sends
+                them to a sign-in page instead.
             secret: The secret `check_signature` expects.
             updates: What `fetch_updates` hands back.
             token_lifetime: How long a fresh token lasts, or `None` for one
@@ -540,6 +575,7 @@ class FakePlatform:
         self.name = name
         self.features = features
         self.accounts = accounts
+        self.ask_for = ask_for
         self.secret = secret
         self.updates = tuple(updates)
         self.token_lifetime = token_lifetime
@@ -607,6 +643,31 @@ class FakePlatform:
         digest = hmac.new(used.encode(), body, hashlib.sha256).hexdigest()
         return {_FAKE_SIGNATURE_HEADER: f"sha256={digest}"}
 
+    def api_base(self, connection: Connection) -> str:
+        """Return where this fake's API lives.
+
+        One address for every account, the way most real networks work.
+
+        Args:
+            connection: The account we are about to act as. Ignored here.
+
+        Returns:
+            The address every path is joined onto.
+        """
+        return f"https://{self.name}.example"
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        """Return the header that proves we may act as this account.
+
+        Args:
+            connection: The account we are acting as.
+
+        Returns:
+            An ordinary bearer token header, built from the connection and
+            nothing else.
+        """
+        return {"Authorization": f"Bearer {connection.token.access_token}"}
+
     async def limits(self, connection: Connection) -> Limits:
         """Return what this fake currently allows.
 
@@ -618,15 +679,25 @@ class FakePlatform:
         """
         return self._limits
 
-    async def start_login(self, request: LoginRequest) -> SendToNetwork:
+    async def start_login(self, request: LoginRequest) -> LoginStep:
         """Begin signing someone in.
+
+        Asks for details when this fake was given `ask_for`, the way a
+        network with no sign-in page does, and sends the person to one
+        otherwise.
 
         Args:
             request: Where to send them back to, and what to ask for.
 
         Returns:
-            Where to send the person next.
+            Where to send the person next, or what to ask them for.
         """
+        if self.ask_for:
+            return AskForDetails(
+                fields=self.ask_for,
+                help_url=f"https://{self.name}.example/help/signing-in",
+            )
+
         state = request.state if request.state is not None else _FAKE_STATE
         return SendToNetwork(
             url=f"https://{self.name}.example/authorize?state={state}",
@@ -706,7 +777,7 @@ class FakePlatform:
 
         if self._transport is not None:
             async with HttpClient(
-                f"https://{self.name}.example",
+                self.api_base(connection),
                 platform=self.name,
                 transport=self._transport,
             ) as http:
@@ -973,9 +1044,11 @@ class PlatformChecks:
 
         if not isinstance(platform, Platform):
             pytest.fail(
-                f"{type(platform).__name__} has the methods but not the two "
-                f"attributes. A platform also has `name`, the word people "
-                f"ask for it by, and `features`, what it can do."
+                f"{type(platform).__name__} has those methods but is still "
+                f"not a platform. It also needs `name`, the word people ask "
+                f"for it by, `features`, what it can do, and `api_base` and "
+                f"`auth_headers`, which say where to send a request and what "
+                f"to send with it."
             )
 
     async def test_its_name_can_be_an_entry_point_name(self) -> None:
@@ -1046,6 +1119,88 @@ class PlatformChecks:
                     f"{claim.feature.name} out of features. socialchimp "
                     f"reads features before it calls anything, so a claim "
                     f"nothing answers breaks apps that believed it."
+                )
+
+    async def test_it_says_where_its_api_lives(self) -> None:
+        """`api_base` gives a whole address that a path can be joined onto."""
+        connection = self.connection_or_skip()
+        platform = self.platform
+        _must_be_a_plain_function(platform, "api_base")
+
+        # Read as `object` on purpose: what turns up is the point, and an
+        # annotation is only as good as the type checker its author ran.
+        address: object = platform.api_base(connection)
+
+        if not isinstance(address, str) or not address.startswith("https://"):
+            pytest.fail(
+                f"api_base() returned {address!r}. Every path is joined onto "
+                f"it, so it has to be a whole address starting with "
+                f'"https://" - "https://graph.facebook.com/v21.0", not '
+                f'"graph.facebook.com".'
+            )
+
+        if address.endswith("/"):
+            pytest.fail(
+                f"api_base() returned {address!r}, which ends in a slash. "
+                f"The paths joined onto it start with one already, so this "
+                f"sends every request to an address with two."
+            )
+
+    async def test_it_says_what_headers_prove_who_we_are(self) -> None:
+        """`auth_headers` gives headers that can go on a request as they are."""
+        connection = self.connection_or_skip()
+        platform = self.platform
+        _must_be_a_plain_function(platform, "auth_headers")
+
+        headers: object = platform.auth_headers(connection)
+
+        if not isinstance(headers, Mapping) or not all(
+            isinstance(name, str) and isinstance(value, str)
+            for name, value in headers.items()
+        ):
+            pytest.fail(
+                f"auth_headers() returned {headers!r}. It goes straight onto "
+                f"the request, so it has to be a mapping of header names to "
+                f'header values, both text: {{"Authorization": "Bearer ..."}}.'
+            )
+
+    async def test_the_details_it_asks_for_can_be_shown_in_a_form(self) -> None:
+        """A network with no sign-in page asks for things a person can type.
+
+        Bluesky takes an app password, Discord and Telegram a bot token.
+        There is nowhere to send anybody, so the platform says what to ask
+        for and the app draws the form. A box with no label on it is a box
+        nobody knows what to put in.
+        """
+        platform = self.platform
+
+        try:
+            step = await platform.start_login(LoginRequest(redirect_uri=_A_REDIRECT))
+        except SocialChimpError as refused:
+            pytest.skip(
+                f"{platform.name} will not start a login without your app's "
+                f"credentials, so there is no first step to look at: {refused}"
+            )
+
+        if not isinstance(step, AskForDetails):
+            # Every other kind of first step sends the person to the
+            # network's own page, and there is no form of ours to look at.
+            return
+
+        if not step.fields:
+            pytest.fail(
+                f"{platform.name} asks for details but names no fields, so "
+                f"there is nothing for an app to draw. Say what to ask for, "
+                f"or send the person to a sign-in page instead."
+            )
+
+        for asked in step.fields:
+            if not asked.name or not asked.label:
+                pytest.fail(
+                    f"{platform.name} asks for {asked!r}. Every field needs "
+                    f"a name, which is where the answer comes back under, "
+                    f"and a label, which is what the person reads next to "
+                    f"the box."
                 )
 
     async def test_its_limits_are_never_zero_for_unknown(self) -> None:

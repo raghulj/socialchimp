@@ -42,6 +42,12 @@ class FakePlatform:
     name = "fake"
     features = Feature.POST_TEXT
 
+    def api_base(self, connection: Connection) -> str:
+        return "https://fake.example"
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        return {"Authorization": f"Bearer {connection.token.access_token}"}
+
     async def limits(self, connection: Connection) -> Limits:
         return Limits(max_text_length=100)
 

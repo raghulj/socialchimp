@@ -31,8 +31,10 @@ from socialchimp.client import Account, PostError, PostJob, SocialChimp
 from socialchimp.http import HttpClient
 from socialchimp.platform import (
     AccountChoice,
+    AskForDetails,
     ChooseAccount,
     Finished,
+    LoginField,
     LoginRequest,
     LoginStep,
     SendToNetwork,
@@ -41,6 +43,10 @@ from socialchimp.registry import register_platform, unregister_platform
 
 HOST = "fake.example"
 BASE = f"https://{HOST}"
+
+# Where a network that lives at one address for everybody keeps its API.
+# Nothing about a connection could tell you this - only the platform knows.
+FIXED_BASE = "https://graph.fake.example/v21.0"
 
 OLD_ACCESS = "old-access"
 NEW_ACCESS = "new-access"
@@ -154,11 +160,17 @@ class FakePlatform:
         self.remembered: list[RawData | None] = []
         self.resumed: list[tuple[str, str]] = []
 
+    def api_base(self, connection: Connection) -> str:
+        return BASE
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        return {"Authorization": f"Bearer {connection.token.access_token}"}
+
     async def limits(self, connection: Connection) -> Limits:
         self.asked_limits.append(connection)
         return self.allowed
 
-    async def start_login(self, request: LoginRequest) -> SendToNetwork:
+    async def start_login(self, request: LoginRequest) -> LoginStep:
         self.started.append(request)
         return SendToNetwork(
             url=f"{BASE}/oauth/authorize",
@@ -273,6 +285,47 @@ class ChoosyPlatform(FakePlatform):
         )
 
 
+class FixedAddressPlatform(FakePlatform):
+    """A network that lives at one address, whatever the account says.
+
+    Facebook, X and most others work this way, and they do not all use
+    `Authorization: Bearer` either.
+    """
+
+    name = "fixed"
+
+    def api_base(self, connection: Connection) -> str:
+        return FIXED_BASE
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        return {"X-Api-Key": connection.token.access_token}
+
+
+class PerServerPlatform(FakePlatform):
+    """A network that is thousands of separate servers, the way Mastodon is."""
+
+    name = "per-server"
+
+    def api_base(self, connection: Connection) -> str:
+        return f"https://{connection.host}"
+
+
+class AppPasswordPlatform(FakePlatform):
+    """A network you sign in to by pasting a password, the way Bluesky is."""
+
+    name = "app-password"
+
+    async def start_login(self, request: LoginRequest) -> LoginStep:
+        self.started.append(request)
+        return AskForDetails(
+            fields=(
+                LoginField(name="handle", label="Your handle"),
+                LoginField(name="app_password", label="App password", secret=True),
+            ),
+            help_url="https://app-password.example/settings",
+        )
+
+
 class BrokenPlatform(FakePlatform):
     """A platform whose network is having a bad day."""
 
@@ -307,6 +360,9 @@ FAKES: dict[str, type[FakePlatform]] = {
     "appmaker": AppMakerPlatform,
     "lying-appmaker": LyingAppMaker,
     "choosy": ChoosyPlatform,
+    "fixed": FixedAddressPlatform,
+    "per-server": PerServerPlatform,
+    "app-password": AppPasswordPlatform,
     "broken": BrokenPlatform,
     "cancels": CancellingPlatform,
     "slow": SlowPlatform,
@@ -494,6 +550,39 @@ class TestSigningSomeoneIn:
             {"verifier": "the-secret-half"},
             {"verifier": "the-secret-half"},
         ]
+
+    async def test_a_network_with_no_sign_in_page_asks_for_details(self) -> None:
+        # Bluesky takes an app password, so there is nowhere to send anybody.
+        # The step comes back untouched for your app to draw a form from.
+        sc = SocialChimp(await storage_holding_the_app("app-password"))
+
+        step = await sc.start_login("app-password", redirect_uri=REDIRECT, host=HOST)
+
+        assert step == AskForDetails(
+            fields=(
+                LoginField(name="handle", label="Your handle"),
+                LoginField(name="app_password", label="App password", secret=True),
+            ),
+            help_url="https://app-password.example/settings",
+        )
+
+    async def test_what_the_person_typed_finishes_that_login(self) -> None:
+        storage = await storage_holding_the_app("app-password")
+        sc = SocialChimp(storage)
+
+        step = await sc.finish_login(
+            "app-password",
+            callback={"handle": "ada.example", "app_password": "abcd-efgh"},
+            redirect_uri=REDIRECT,
+            host=HOST,
+        )
+
+        assert isinstance(step, Finished)
+        assert await storage.get_connection("conn-new") == step.connection
+        assert made("app-password").finished[0][1] == {
+            "handle": "ada.example",
+            "app_password": "abcd-efgh",
+        }
 
     async def test_choosing_on_a_network_that_never_asks_says_so(self) -> None:
         sc = SocialChimp(await storage_holding_the_app())
@@ -728,8 +817,60 @@ class TestGoingDirect:
             "HEAD",
         ]
 
-    async def test_a_connection_with_no_host_needs_the_whole_address(self) -> None:
-        storage = await storage_holding(a_connection(host=None))
+    async def test_the_address_is_the_one_the_platform_gave(self) -> None:
+        # The connection says fake.example, and the request goes somewhere
+        # else entirely, because the platform is the only thing that knows
+        # where its API lives.
+        storage = await storage_holding(a_connection(platform="fixed"))
+        sc = SocialChimp(storage)
+
+        with respx.mock() as network:
+            route = network.get(f"{FIXED_BASE}/me").mock(
+                return_value=httpx.Response(200, json={})
+            )
+
+            await sc.account("conn-1").direct.get("/me")
+
+        assert route.called
+
+    async def test_the_headers_are_the_ones_the_platform_gave(self) -> None:
+        # Not every network signs with Authorization: Bearer, and guessing
+        # that it does is what this replaced.
+        storage = await storage_holding(a_connection(platform="fixed"))
+        sc = SocialChimp(storage)
+
+        with respx.mock() as network:
+            route = network.get(f"{FIXED_BASE}/me").mock(
+                return_value=httpx.Response(200, json={})
+            )
+
+            await sc.account("conn-1").direct.get("/me")
+
+        sent = route.calls.last.request
+        assert sent.headers["X-Api-Key"] == OLD_ACCESS
+        assert "Authorization" not in sent.headers
+
+    async def test_a_network_with_no_host_on_the_connection_still_works(self) -> None:
+        # Only networks with more than one server put a host on a connection.
+        # Everywhere else there is nothing to guess from, which is the whole
+        # reason the platform is asked.
+        storage = await storage_holding(a_connection(platform="fixed", host=None))
+        sc = SocialChimp(storage)
+
+        with respx.mock() as network:
+            route = network.get(f"{FIXED_BASE}/me").mock(
+                return_value=httpx.Response(200, json={})
+            )
+
+            await sc.account("conn-1").direct.get("/me")
+
+        assert route.called
+
+    async def test_a_whole_address_you_pass_is_used_as_it_is(self) -> None:
+        # Several networks keep their uploads on a different host from
+        # everything else, so a whole address has to win over the one the
+        # platform gave.
+        storage = await storage_holding(a_connection())
         sc = SocialChimp(storage)
 
         with respx.mock() as network:
@@ -741,16 +882,46 @@ class TestGoingDirect:
 
         assert route.called
 
-    async def test_a_host_that_already_says_https_is_left_alone(self) -> None:
-        storage = await storage_holding(a_connection(host=BASE))
+    async def test_accounts_on_different_servers_get_a_client_each(self) -> None:
+        storage = await storage_holding(
+            a_connection(
+                connection_id="conn-a", platform="per-server", host="one.example"
+            ),
+            a_connection(
+                connection_id="conn-b", platform="per-server", host="two.example"
+            ),
+        )
+        sc = SocialChimp(storage)
+
+        with respx.mock() as network:
+            one = network.get("https://one.example/me").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            two = network.get("https://two.example/me").mock(
+                return_value=httpx.Response(200, json={})
+            )
+
+            await sc.account("conn-a").direct.get("/me")
+            await sc.account("conn-b").direct.get("/me")
+
+        assert one.called
+        assert two.called
+        assert len(sc._http_made) == 2
+
+    async def test_accounts_on_the_same_server_share_one_client(self) -> None:
+        storage = await storage_holding(
+            a_connection(connection_id="conn-a"),
+            a_connection(connection_id="conn-b"),
+        )
         sc = SocialChimp(storage)
 
         with respx.mock(base_url=BASE) as network:
-            route = network.get("/me").mock(return_value=httpx.Response(200, json={}))
+            network.get("/me").mock(return_value=httpx.Response(200, json={}))
 
-            await sc.account("conn-1").direct.get("/me")
+            await sc.account("conn-a").direct.get("/me")
+            await sc.account("conn-b").direct.get("/me")
 
-        assert route.called
+        assert len(sc._http_made) == 1
 
     async def test_the_http_client_you_pass_in_is_the_one_used(self) -> None:
         storage = await storage_holding(a_connection())

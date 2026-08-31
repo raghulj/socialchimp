@@ -27,8 +27,10 @@ from socialchimp.http import HttpClient
 from socialchimp.models import RawData
 from socialchimp.platform import (
     AccountChoice,
+    AskForDetails,
     ChooseAccount,
     Finished,
+    LoginField,
     LoginRequest,
     LoginStep,
     Platform,
@@ -113,15 +115,23 @@ async def skip_from(checks: PlatformChecks, name: str) -> str:
 
 
 class Methods:
-    """The five methods a platform must have, and nothing else at all."""
+    """The methods a platform must have, and nothing else at all."""
 
     limits_reply: ClassVar[object] = Limits()
+    address: ClassVar[object] = "https://x.example"
+    headers_reply: ClassVar[object] = {"Authorization": "Bearer abc"}
     publish_error: Exception | None = None
+
+    def api_base(self, connection: Connection) -> str:
+        return cast(str, self.address)
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        return cast(Mapping[str, str], self.headers_reply)
 
     async def limits(self, connection: Connection) -> Limits:
         return cast(Limits, self.limits_reply)
 
-    async def start_login(self, request: LoginRequest) -> SendToNetwork:
+    async def start_login(self, request: LoginRequest) -> LoginStep:
         return SendToNetwork(url="https://x.example/authorize", state="s")
 
     async def finish_login(
@@ -225,6 +235,12 @@ class MissingPublish:
     name = "missingpublish"
     features = Feature.POST_TEXT
 
+    def api_base(self, connection: Connection) -> str:
+        return "https://x.example"
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        return {"Authorization": "Bearer abc"}
+
     async def limits(self, connection: Connection) -> Limits:
         return Limits()
 
@@ -250,6 +266,12 @@ class SyncRefresh:
     name = "syncrefresh"
     features = Feature.POST_TEXT
 
+    def api_base(self, connection: Connection) -> str:
+        return "https://x.example"
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        return {"Authorization": "Bearer abc"}
+
     async def limits(self, connection: Connection) -> Limits:
         return Limits()
 
@@ -269,6 +291,84 @@ class SyncRefresh:
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
         return PostResult(id="1")
+
+
+class AddressIsNotAnAddress(Methods):
+    """Gives a bare server name where a whole address belongs."""
+
+    name = "bareaddress"
+    features = Feature.POST_TEXT
+    address: ClassVar[object] = "x.example"
+
+
+class AddressEndsInASlash(Methods):
+    """Gives an address a path would be joined onto twice."""
+
+    name = "trailingslash"
+    features = Feature.POST_TEXT
+    address: ClassVar[object] = "https://x.example/"
+
+
+class AsyncApiBase:
+    """`api_base` written as an `async def`. Not inheriting Methods, because
+    an override this wrong is a type error, which is the point being made."""
+
+    name = "asyncapibase"
+    features = Feature.POST_TEXT
+
+    async def api_base(self, connection: Connection) -> str:
+        return "https://x.example"
+
+
+class HeadersAreNotAMapping(Methods):
+    """Hands back one header as text, rather than a mapping of them."""
+
+    name = "headersaretext"
+    features = Feature.POST_TEXT
+    headers_reply: ClassVar[object] = "Bearer abc"
+
+
+class HeadersAreNotText(Methods):
+    """Hands back a header value that cannot go on a request as it is."""
+
+    name = "headersarenumbers"
+    features = Feature.POST_TEXT
+    headers_reply: ClassVar[object] = {"X-Count": 3}
+
+
+class AsksForNothing(Methods):
+    """Says it has no sign-in page, then asks for nothing at all."""
+
+    name = "asksfornothing"
+    features = Feature.POST_TEXT
+
+    async def start_login(self, request: LoginRequest) -> LoginStep:
+        return AskForDetails(fields=())
+
+
+class AsksForABlankBox(Methods):
+    """Asks for something without saying what it is."""
+
+    name = "blankbox"
+    features = Feature.POST_TEXT
+
+    async def start_login(self, request: LoginRequest) -> LoginStep:
+        return AskForDetails(
+            fields=(
+                LoginField(name="handle", label="Your handle"),
+                LoginField(name="app_password", label=""),
+            )
+        )
+
+
+class WantsCredentialsFirst(Methods):
+    """Will not start a login until your app is registered, as OAuth does."""
+
+    name = "wantscredentials"
+    features = Feature.POST_TEXT
+
+    async def start_login(self, request: LoginRequest) -> LoginStep:
+        raise ConfigError("this login request carries no app credentials")
 
 
 class SendsThenRefuses(Methods):
@@ -321,7 +421,7 @@ class TestTheKitItself:
         assert not PlatformChecks.__name__.startswith("Test")
 
     def test_there_is_a_check_for_each_thing_we_promised(self) -> None:
-        assert len(every_check()) == 9
+        assert len(every_check()) == 12
 
     async def test_a_good_fake_platform_passes_every_check(self) -> None:
         for name in every_check():
@@ -371,6 +471,8 @@ class TestTheMustHaveCheck:
 
         assert "name" in message
         assert "features" in message
+        assert "api_base" in message
+        assert "auth_headers" in message
 
 
 class TestTheNameCheck:
@@ -427,6 +529,97 @@ class TestTheClaimsCheck:
 
         assert "DELETE_POST" in message
         assert "delete_post" in message
+
+
+class TestTheAddressCheck:
+    name = "test_it_says_where_its_api_lives"
+
+    async def test_a_bare_server_name_is_refused(self) -> None:
+        checks = checks_for(AddressIsNotAnAddress(), connection=a_connection())
+
+        message = await failure_from(checks, self.name)
+
+        assert "'x.example'" in message
+        assert "https://" in message
+
+    async def test_an_address_that_ends_in_a_slash_is_refused(self) -> None:
+        checks = checks_for(AddressEndsInASlash(), connection=a_connection())
+
+        message = await failure_from(checks, self.name)
+
+        assert "ends in a slash" in message
+        assert "two" in message
+
+    async def test_working_it_out_only_when_awaited_is_refused(self) -> None:
+        checks = checks_for(AsyncApiBase(), connection=a_connection())
+
+        message = await failure_from(checks, self.name)
+
+        assert "api_base" in message
+        assert "async def" in message
+
+    async def test_it_skips_without_an_account(self) -> None:
+        message = await skip_from(checks_for(FakePlatform()), self.name)
+
+        assert "make_connection" in message
+
+
+class TestTheHeadersCheck:
+    name = "test_it_says_what_headers_prove_who_we_are"
+
+    async def test_something_that_is_not_a_mapping_is_refused(self) -> None:
+        checks = checks_for(HeadersAreNotAMapping(), connection=a_connection())
+
+        message = await failure_from(checks, self.name)
+
+        assert "'Bearer abc'" in message
+        assert "Authorization" in message
+
+    async def test_a_header_that_is_not_text_is_refused(self) -> None:
+        checks = checks_for(HeadersAreNotText(), connection=a_connection())
+
+        message = await failure_from(checks, self.name)
+
+        assert "X-Count" in message
+
+    async def test_it_skips_without_an_account(self) -> None:
+        message = await skip_from(checks_for(FakePlatform()), self.name)
+
+        assert "make_connection" in message
+
+
+class TestTheLoginFormCheck:
+    name = "test_the_details_it_asks_for_can_be_shown_in_a_form"
+
+    async def test_asking_for_nothing_at_all_is_refused(self) -> None:
+        message = await failure_from(checks_for(AsksForNothing()), self.name)
+
+        assert "no fields" in message
+
+    async def test_a_box_with_no_label_on_it_is_refused(self) -> None:
+        message = await failure_from(checks_for(AsksForABlankBox()), self.name)
+
+        assert "app_password" in message
+        assert "label" in message
+
+    async def test_a_form_a_person_can_fill_in_passes(self) -> None:
+        platform = FakePlatform(
+            ask_for=(
+                LoginField(name="handle", label="Your handle"),
+                LoginField(name="app_password", label="App password", secret=True),
+            )
+        )
+
+        await getattr(checks_for(platform), self.name)()
+
+    async def test_a_platform_that_sends_people_to_a_sign_in_page_passes(self) -> None:
+        # Nothing of ours is drawn, so there is no form to look at.
+        await getattr(checks_for(FakePlatform()), self.name)()
+
+    async def test_it_skips_a_platform_that_wants_credentials_first(self) -> None:
+        message = await skip_from(checks_for(WantsCredentialsFirst()), self.name)
+
+        assert "credentials" in message
 
 
 class TestTheLimitsCheck:
@@ -749,6 +942,15 @@ class TestFakePlatform:
 
         assert platform.published == []
 
+    def test_it_says_where_it_lives_and_how_to_prove_who_we_are(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+
+        assert platform.api_base(connection) == "https://fake.example"
+        assert platform.auth_headers(connection) == {
+            "Authorization": "Bearer fake-access"
+        }
+
     async def test_signing_in_hands_back_a_connection(self) -> None:
         platform = FakePlatform()
         request = LoginRequest(redirect_uri="https://app.example/back")
@@ -756,6 +958,7 @@ class TestFakePlatform:
         sent = await platform.start_login(request)
         step = await platform.finish_login(request, {"code": "abc"})
 
+        assert isinstance(sent, SendToNetwork)
         assert sent.state == "fake-state"
         assert sent.url.endswith("state=fake-state")
         assert isinstance(step, Finished)
@@ -767,7 +970,26 @@ class TestFakePlatform:
 
         sent = await platform.start_login(request)
 
+        assert isinstance(sent, SendToNetwork)
         assert sent.state == "mine"
+
+    async def test_it_can_ask_for_details_instead_of_sending_anyone_away(self) -> None:
+        # What Bluesky and the bot-token networks do: there is no sign-in
+        # page, so the fake says what a form should ask for.
+        platform = FakePlatform(
+            ask_for=(
+                LoginField(name="app_password", label="App password", secret=True),
+            )
+        )
+
+        step = await platform.start_login(
+            LoginRequest(redirect_uri="https://app.example/back")
+        )
+
+        assert isinstance(step, AskForDetails)
+        assert step.fields[0].name == "app_password"
+        assert step.fields[0].secret is True
+        assert step.help_url is not None
 
     async def test_giving_it_accounts_makes_signing_in_ask_which(self) -> None:
         platform = FakePlatform(accounts=(AccountChoice(id="7", name="A page"),))

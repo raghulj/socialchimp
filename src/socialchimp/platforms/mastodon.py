@@ -562,6 +562,36 @@ class MastodonPlatform:
             errors=mastodon_errors,
         )
 
+    def api_base(self, connection: Connection) -> str:
+        """Return the address of the server this account is on.
+
+        Mastodon is thousands of separate servers, so there is no one
+        address to write down here. The account says which server it is on,
+        and that is where its requests go.
+
+        Args:
+            connection: The account we are about to act as.
+
+        Returns:
+            The server's address, such as `"https://mastodon.social"`.
+
+        Raises:
+            ConfigError: If the connection was saved without a server on it.
+        """
+        return f"https://{_host_of(connection)}"
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        """Return the header that proves we may act as this account.
+
+        Args:
+            connection: The account we are acting as.
+
+        Returns:
+            Mastodon's `Authorization` header. Its tokens do not expire, so
+            the one on the connection is always the right one.
+        """
+        return {"Authorization": f"Bearer {connection.token.access_token}"}
+
     async def create_app(
         self,
         *,
@@ -633,8 +663,10 @@ class MastodonPlatform:
                 for, and your app's credentials for that server.
 
         Returns:
-            The address to redirect their browser to, the state value that
-            will come back with them, and the secret to hand back.
+            Always a `SendToNetwork`: Mastodon has an approval page, so
+            there is somewhere to send people. It carries the address to
+            redirect their browser to, the state value that will come back
+            with them, and the secret to hand back.
 
         Raises:
             ConfigError: If no server was named, or the request carries no

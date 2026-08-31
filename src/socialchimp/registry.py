@@ -69,6 +69,8 @@ Add a network here when it becomes installable.
 """
 
 _PLATFORM_METHODS: Final = (
+    "api_base",
+    "auth_headers",
     "limits",
     "start_login",
     "finish_login",

@@ -19,7 +19,9 @@ apply; only the request is yours.
 **Nothing is guessed.** Where a network cannot do something - Bluesky cannot
 schedule, most networks cannot register an app for you - you get a
 `NotSupportedError` that names the network and the thing it cannot do, rather
-than something else happening quietly.
+than something else happening quietly. Where a network lives and how it wants
+to be asked come from the platform for the same reason: a host name is not
+enough to work either one out.
 
 **Nothing is shared between accounts.** `post_to_many` sends to every account
 at once and gives each one its own result, so one account failing never hides
@@ -58,7 +60,7 @@ if TYPE_CHECKING:
 
     from socialchimp.features import Limits
     from socialchimp.models import AppCredentials, Connection, Post, RawData
-    from socialchimp.platform import LoginStep, Platform, SendToNetwork
+    from socialchimp.platform import LoginStep, Platform
     from socialchimp.storage import Storage
 
 __all__ = [
@@ -152,24 +154,6 @@ def _no_app_saved(platform: str, host: str | None) -> str:
     )
 
 
-def _address_of(host: str | None) -> str:
-    """Work out the address to send requests to for one connection.
-
-    Args:
-        host: The connection's host, such as `"mastodon.social"`.
-
-    Returns:
-        The address every path is joined onto. Empty for a connection with
-        no host, because a network with one address is not something a
-        connection tells us about - pass the whole address in that case.
-    """
-    if host is None:
-        return ""
-    if host.startswith(("http://", "https://")):
-        return host
-    return f"https://{host}"
-
-
 def _refuse(platform: Platform, feature: Feature, what: str) -> None:
     """Stop here if the network cannot do this.
 
@@ -254,8 +238,9 @@ class Direct:
             json={"status": "hello", "visibility": "unlisted"},
         )
 
-    Paths are joined onto the address of the connection's host. A connection
-    with no host has no address to join onto, so pass the whole one.
+    Paths are joined onto the address the platform gives for this account -
+    the account's own server for Mastodon, the one address everybody uses
+    for Facebook. Pass a whole address instead and it is used as it is.
     """
 
     def __init__(self, client: SocialChimp, connection_id: str) -> None:
@@ -279,10 +264,14 @@ class Direct:
 
         Returns:
             The client to send through, and the headers to send. A header
-            the caller set wins over ours.
+            the caller set wins over the platform's.
         """
         connection = await self._client.fresh_connection(self._connection_id)
-        sending = {"Authorization": f"Bearer {connection.token.access_token}"}
+        platform = self._client.platform_for(connection.platform)
+        # The platform says how it proves who we are. Guessing a bearer token
+        # here would be right for Mastodon and wrong for every network that
+        # signs its requests some other way.
+        sending = dict(platform.auth_headers(connection))
         if headers is not None:
             sending.update(headers)
         return self._client.http_for(connection), sending
@@ -299,10 +288,11 @@ class Direct:
 
         Args:
             method: `"GET"`, `"POST"` and so on.
-            path: Joined onto the address of the connection's host.
-            headers: Sent along with the ones we set. A header you set here
-                wins, including `Authorization` - a network that signs its
-                requests some other way is not in anyone's way here.
+            path: Joined onto the address the platform gives for this
+                account.
+            headers: Sent along with the ones the platform set. A header
+                you set here wins, so a request that has to be signed some
+                other way is still yours to send.
             **kwargs: Anything `httpx.AsyncClient.request` takes, such as
                 `params`, `json`, `content` or `files`.
 
@@ -326,8 +316,9 @@ class Direct:
         """Send a GET request as this account.
 
         Args:
-            path: Joined onto the address of the connection's host.
-            headers: Sent along with the ones we set.
+            path: Joined onto the address the platform gives for this
+                account.
+            headers: Sent along with the ones the platform set.
             **kwargs: Anything `request` takes.
 
         Returns:
@@ -345,8 +336,9 @@ class Direct:
         """Send a POST request as this account.
 
         Args:
-            path: Joined onto the address of the connection's host.
-            headers: Sent along with the ones we set.
+            path: Joined onto the address the platform gives for this
+                account.
+            headers: Sent along with the ones the platform set.
             **kwargs: Anything `request` takes.
 
         Returns:
@@ -364,8 +356,9 @@ class Direct:
         """Send a PUT request as this account.
 
         Args:
-            path: Joined onto the address of the connection's host.
-            headers: Sent along with the ones we set.
+            path: Joined onto the address the platform gives for this
+                account.
+            headers: Sent along with the ones the platform set.
             **kwargs: Anything `request` takes.
 
         Returns:
@@ -383,8 +376,9 @@ class Direct:
         """Send a DELETE request as this account.
 
         Args:
-            path: Joined onto the address of the connection's host.
-            headers: Sent along with the ones we set.
+            path: Joined onto the address the platform gives for this
+                account.
+            headers: Sent along with the ones the platform set.
             **kwargs: Anything `request` takes.
 
         Returns:
@@ -404,8 +398,9 @@ class Direct:
 
         Args:
             method: `"GET"`, `"POST"` and so on.
-            path: Joined onto the address of the connection's host.
-            headers: Sent along with the ones we set.
+            path: Joined onto the address the platform gives for this
+                account.
+            headers: Sent along with the ones the platform set.
             **kwargs: Anything `request` takes.
 
         Returns:
@@ -573,7 +568,7 @@ class SocialChimp:
         self._one_token_manager = token_manager
         self._token_managers: dict[str, TokenManager] = {}
         self._http = http
-        self._http_made: dict[tuple[str, str | None], HttpClient] = {}
+        self._http_made: dict[tuple[str, str], HttpClient] = {}
 
     def platform_for(self, name: str) -> Platform:
         """Return the platform for one network, making it if need be.
@@ -619,26 +614,27 @@ class SocialChimp:
         return manager
 
     def http_for(self, connection: Connection) -> HttpClient:
-        """Return the HTTP client for one connection's network and server.
+        """Return the HTTP client for one connection's network and address.
 
         Args:
             connection: The account whose network we are talking to.
 
         Returns:
             The client, made on first use unless you passed one in. One per
-            network and server, so connections to the same server are
-            shared.
+            network and address, so accounts on the same server share one.
         """
         if self._http is not None:
             return self._http
 
-        key = (connection.platform, connection.host)
+        # The platform says where its API is: the account's own server for
+        # Mastodon, one address for everybody on Facebook. So the address is
+        # what tells two clients apart, rather than anything on the
+        # connection.
+        address = self.platform_for(connection.platform).api_base(connection)
+        key = (connection.platform, address)
         made = self._http_made.get(key)
         if made is None:
-            made = HttpClient(
-                _address_of(connection.host),
-                platform=connection.platform,
-            )
+            made = HttpClient(address, platform=connection.platform)
             self._http_made[key] = made
         return made
 
@@ -780,7 +776,7 @@ class SocialChimp:
         scopes: tuple[str, ...] = (),
         host: str | None = None,
         state: str | None = None,
-    ) -> SendToNetwork:
+    ) -> LoginStep:
         """Begin signing someone in to a network.
 
         Args:
@@ -795,9 +791,18 @@ class SocialChimp:
                 leave it out.
 
         Returns:
-            Where to send the person next. Redirect their browser to
-            `step.url`, and keep `step.remember` with that person's session:
-            `finish_login` needs it back, and only you can carry it there.
+            What to do next, handed back exactly as the platform gave it.
+
+            Usually `SendToNetwork`: redirect the person's browser to
+            `step.url`, and keep `step.remember` with that person's session,
+            because `finish_login` needs it back and only you can carry it
+            there.
+
+            Networks signed in to with an app password or a bot token answer
+            with `AskForDetails` instead, because there is nowhere to send
+            anybody. Show a box for each of `step.fields`, hide the ones
+            marked `secret`, and pass what the person typed to `finish_login`
+            as `callback`, under the names the fields gave.
 
         Raises:
             ConfigError: If your app is not registered with this network yet.
@@ -812,7 +817,12 @@ class SocialChimp:
             host=host,
             state=state,
         )
-        return await starter.start_login(request)
+        step = await starter.start_login(request)
+        # Saved here too, not just in finish_login. A network that needs
+        # nothing from the person could answer with Finished right away, and
+        # a connection dropped on one path out of three is the kind of bug
+        # that only shows up on the one network that does it.
+        return await self._save_if_finished(step)
 
     async def finish_login(
         self,
@@ -831,6 +841,9 @@ class SocialChimp:
             platform: Which network, for example `"mastodon"`.
             callback: The query values the network sent back, such as
                 Django's `request.GET` or FastAPI's `request.query_params`.
+                For a network that asked for details instead of sending the
+                person anywhere, this is what they typed into your form,
+                under the names `AskForDetails` gave.
             redirect_uri: The same one the login was started with.
             scopes: The same ones the login was started with.
             host: The same server the login was started on.

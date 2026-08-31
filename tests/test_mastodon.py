@@ -36,6 +36,7 @@ from socialchimp.platform import (
     CanReadUpdates,
     LoginRequest,
     Platform,
+    SendToNetwork,
 )
 from socialchimp.platforms import mastodon as mastodon_module
 from socialchimp.platforms.mastodon import MastodonPlatform, post_fingerprint
@@ -116,6 +117,13 @@ def login(
     )
 
 
+async def start(platform: MastodonPlatform, request: LoginRequest) -> SendToNetwork:
+    """Start a login, and insist Mastodon answered with an address to visit."""
+    step = await platform.start_login(request)
+    assert isinstance(step, SendToNetwork)
+    return step
+
+
 def stub_instance(
     network: respx.Router,
     *,
@@ -179,6 +187,40 @@ class TestWhatItSaysItCanDo:
         # No per-account webhook exists, so we check on a timer instead.
         assert Feature.PUSH_UPDATES not in platform.features
         assert Feature.READ_STATS not in platform.features
+
+
+class TestWhereTheServerIs:
+    def test_the_address_is_the_server_the_account_is_on(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        # Every Mastodon server is its own network, so this is the one thing
+        # that cannot be written into the platform once and for all.
+        assert platform.api_base(account) == f"https://{HOST}"
+
+    def test_a_connection_saved_without_a_server_says_so(
+        self,
+        platform: MastodonPlatform,
+    ) -> None:
+        homeless = Connection(
+            id="conn-3",
+            platform="mastodon",
+            host=None,
+            account_id="3",
+            account_name="@nobody",
+            token=Token(access_token="tok"),
+        )
+
+        with pytest.raises(ConfigError, match="which server"):
+            platform.api_base(homeless)
+
+    def test_the_headers_carry_the_accounts_own_token(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        assert platform.auth_headers(account) == {"Authorization": "Bearer user-token"}
 
 
 class TestRegisteringAnApp:
@@ -311,7 +353,7 @@ class TestStartingALogin:
         self,
         platform: MastodonPlatform,
     ) -> None:
-        step = await platform.start_login(login(state="my-state"))
+        step = await start(platform, login(state="my-state"))
 
         parts = urlparse(step.url)
         query = parse_qs(parts.query)
@@ -330,7 +372,7 @@ class TestStartingALogin:
         self,
         platform: MastodonPlatform,
     ) -> None:
-        step = await platform.start_login(login())
+        step = await start(platform, login())
 
         verifier = step.remember["code_verifier"]
         challenge = parse_qs(urlparse(step.url).query)["code_challenge"][0]
@@ -344,7 +386,7 @@ class TestStartingALogin:
         self,
         platform: MastodonPlatform,
     ) -> None:
-        step = await platform.start_login(login())
+        step = await start(platform, login())
 
         assert step.state
         assert f"state={step.state}" in step.url
@@ -353,9 +395,7 @@ class TestStartingALogin:
         self,
         platform: MastodonPlatform,
     ) -> None:
-        step = await platform.start_login(
-            login(scopes=("read:statuses", "write:statuses"))
-        )
+        step = await start(platform, login(scopes=("read:statuses", "write:statuses")))
 
         query = parse_qs(urlparse(step.url).query)
         assert query["scope"] == ["read:statuses write:statuses"]
@@ -374,7 +414,7 @@ class TestFinishingALogin:
         platform: MastodonPlatform,
     ) -> None:
         request = login(state="my-state")
-        started = await platform.start_login(request)
+        started = await start(platform, request)
         challenge = parse_qs(urlparse(started.url).query)["code_challenge"][0]
 
         with respx.mock(base_url=f"https://{HOST}") as network:
@@ -439,7 +479,7 @@ class TestFinishingALogin:
         # start_login and finish_login often run in different web workers.
         # Whatever your app kept and handed back is what we use, so a
         # separate instance finishes a login the first one started.
-        started = await MastodonPlatform(retries=ONCE).start_login(login())
+        started = await start(MastodonPlatform(retries=ONCE), login())
 
         with respx.mock(base_url=f"https://{HOST}") as network:
             token = network.post("/oauth/token").mock(
@@ -471,7 +511,7 @@ class TestFinishingALogin:
         platform: MastodonPlatform,
     ) -> None:
         request = login(scopes=("read:statuses",))
-        started = await platform.start_login(request)
+        started = await start(platform, request)
 
         with respx.mock(base_url=f"https://{HOST}") as network:
             network.post("/oauth/token").mock(

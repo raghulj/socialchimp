@@ -15,11 +15,13 @@ from socialchimp import (
 from socialchimp.events import Update, UpdateKind
 from socialchimp.platform import (
     AccountChoice,
+    AskForDetails,
     CanCheckSignature,
     CanCreateApp,
     CanReadUpdates,
     ChooseAccount,
     Finished,
+    LoginField,
     LoginRequest,
     LoginStep,
     Platform,
@@ -37,10 +39,16 @@ class FakePlatform:
     name = "fake"
     features = Feature.POST_TEXT
 
+    def api_base(self, connection: Connection) -> str:
+        return "https://fake.example"
+
+    def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+        return {"Authorization": f"Bearer {connection.token.access_token}"}
+
     async def limits(self, connection: Connection) -> Limits:
         return Limits(max_text_length=100)
 
-    async def start_login(self, request: LoginRequest) -> SendToNetwork:
+    async def start_login(self, request: LoginRequest) -> LoginStep:
         return SendToNetwork(url="https://fake.example/authorize", state="xyz")
 
     async def finish_login(
@@ -58,11 +66,11 @@ class FakePlatform:
         return PostResult(id="1", url="https://fake.example/1")
 
 
-def _a_connection() -> Connection:
+def _a_connection(host: str | None = None) -> Connection:
     return Connection(
         id="conn-1",
         platform="fake",
-        host=None,
+        host=host,
         account_id="42",
         account_name="someone",
         token=Token(access_token="abc"),
@@ -90,11 +98,74 @@ def test_creating_an_app_is_an_extra_a_platform_opts_into() -> None:
     assert not isinstance(FakePlatform(), CanCreateApp)
 
 
+class TestWhereTheNetworkLives:
+    def test_a_platform_says_where_its_api_is_and_how_to_prove_who_we_are(
+        self,
+    ) -> None:
+        platform: Platform = FakePlatform()
+        connection = _a_connection()
+
+        assert platform.api_base(connection) == "https://fake.example"
+        assert platform.auth_headers(connection) == {"Authorization": "Bearer abc"}
+
+    def test_the_address_can_be_different_for_every_account(self) -> None:
+        # Mastodon is thousands of separate servers, so the address cannot be
+        # a plain attribute on the platform. That is why the connection is
+        # passed in.
+        class PerServer(FakePlatform):
+            def api_base(self, connection: Connection) -> str:
+                return f"https://{connection.host}"
+
+        platform: Platform = PerServer()
+
+        assert platform.api_base(_a_connection("one.example")) == "https://one.example"
+        assert platform.api_base(_a_connection("two.example")) == "https://two.example"
+
+    def test_a_network_can_prove_who_we_are_without_a_bearer_token(self) -> None:
+        # Not every network uses Authorization: Bearer. A platform that signs
+        # its requests some other way says so here instead of being guessed
+        # at.
+        class SignsItsOwnWay(FakePlatform):
+            def auth_headers(self, connection: Connection) -> Mapping[str, str]:
+                return {"X-Api-Key": connection.token.access_token}
+
+        platform: Platform = SignsItsOwnWay()
+
+        assert platform.auth_headers(_a_connection()) == {"X-Api-Key": "abc"}
+
+
 class TestLoginSteps:
     def test_the_first_step_sends_the_person_to_the_network(self) -> None:
         step = SendToNetwork(url="https://example.com/auth", state="abc")
 
         assert step.url == "https://example.com/auth"
+
+    def test_a_network_with_no_sign_in_page_asks_for_details_instead(self) -> None:
+        # Bluesky takes an app password; Discord and Telegram take a bot
+        # token. There is nowhere to send anybody, so the platform says what
+        # to ask for and the app draws the form.
+        step = AskForDetails(
+            fields=(
+                LoginField(name="handle", label="Your handle"),
+                LoginField(
+                    name="app_password",
+                    label="App password",
+                    secret=True,
+                    help_text="Settings, then App Passwords.",
+                ),
+            ),
+            help_url="https://bsky.app/settings/app-passwords",
+        )
+
+        assert [asked.name for asked in step.fields] == ["handle", "app_password"]
+        assert step.fields[0].secret is False
+        assert step.fields[1].secret is True
+        assert step.fields[1].help_text == "Settings, then App Passwords."
+
+    def test_a_form_can_be_asked_for_without_a_page_to_link_to(self) -> None:
+        step = AskForDetails(fields=(LoginField(name="token", label="Bot token"),))
+
+        assert step.help_url is None
 
     def test_a_network_can_pause_to_ask_which_account_to_use(self) -> None:
         # Facebook asks which page, YouTube asks which channel. A two-call
