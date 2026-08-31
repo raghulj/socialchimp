@@ -668,7 +668,7 @@ them wants a different response from your app.
 | `AuthError` | The network would not accept who we say we are. | Usually the same: reconnect the account. | No |
 | `NotAllowedError` | Real account, missing permission. | Ask for the right scope the next time somebody connects. | No |
 | `NotSupportedError` | This network cannot, ever. | Fix the code, or skip this network. | Never |
-| `InvalidPostError` | The post breaks a rule. | Fix the post. | Not unchanged |
+| `InvalidPostError` | The post breaks a rule. | Fix the post. | Not as it is |
 | `NotFoundError` | The post, account or page is not there. | Stop referring to it. | No |
 | `NetworkError` | Nobody answered. | Try again in a few minutes. | Yes |
 | `SignatureError` | The request did not come from the network it claims to. | Answer 401 and nothing else. Do not say which check failed. | No |

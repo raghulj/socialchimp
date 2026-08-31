@@ -203,7 +203,12 @@ instead of sending a doomed renewal to find out.
 ## What we promise about changes
 
 The way a platform is written settled at 0.1.0, and it is now something you
-can build against.
+can build against. This promise is about that shape specifically - the
+methods and protocols on this page - not about socialchimp's behaviour
+everywhere else. 0.3.0, for instance, also changed what `Dispatcher.deliver`
+does with a handler that raises and removed `post_to_many` entirely; neither
+touches what a platform provides, so neither is covered by what follows. See
+the [changelog](changelog.md) for those.
 
 Writing the first nine networks changed it four times, and each change came
 from a real network showing a gap: signing in had nowhere to carry a secret
@@ -217,19 +222,22 @@ From here:
 
 - **Adding something is a minor release.** A new `Feature`, a new
   `UpdateKind`, a new optional `Can...` extra, a new field on `Limits` with a
-  default. Your platform keeps working and does not need touching.
-  `Feature.NEEDS_NO_APP` arrived in 0.3.0 this way: a platform that does not
-  list it behaves exactly as it did.
+  default. Your platform keeps working and does not need touching. Two
+  releases have done exactly this: 0.2.0 added the `CanCheckState`,
+  `CanAnswerSetupCheck` and `CanReadPushedUpdates` extras, and 0.3.0 added
+  `Feature.NEEDS_NO_APP` for a network with no app to register. A platform
+  written against 0.1.0 needed no changes for either.
 - **Changing or removing something is a major release**, and comes with a
   note saying what to do about it.
 - **Anything named with a leading underscore is ours**, including
   `platforms/_meta.py`. It can change in any release.
 
 Pin the contract in your own package the way a database driver pins its
-library:
+library. Every release from 0.1 through the current line has only added to
+it, so:
 
 ```toml
-dependencies = ["socialchimp>=0.1,<0.2"]
+dependencies = ["socialchimp>=0.1,<0.4"]
 ```
 
 Run `PlatformChecks` in your own tests and a change that affects you shows up

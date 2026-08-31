@@ -62,7 +62,7 @@ flask = ["flask>=3.0"]
 
 [project.urls]
 Homepage = "https://github.com/raghulj/socialchimp"
-Documentation = "https://github.com/raghulj/socialchimp/tree/main/docs"
+Documentation = "https://raghulj.github.io/socialchimp/"
 Issues = "https://github.com/raghulj/socialchimp/issues"
 
 # Platforms that ship with socialchimp register themselves here.

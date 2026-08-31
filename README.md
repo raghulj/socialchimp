@@ -14,38 +14,53 @@ One simple way to connect your app to social networks.
 — the tutorial, the reference and everything below, searchable and easier to
 read than markdown files in a repository.
 
-> **Status: 0.1.0, the first release.** All nine networks below work. The way
-> platforms are written is now settled - see
-> [the promise about changes](docs/adding-a-platform.md#what-we-promise-about-changes)
-> before you write your own.
-
 **Mastodon · Bluesky · Facebook Pages · Instagram · YouTube · TikTok · X · Pinterest · Threads**
+
+Sign people in, keep their tokens working, post for them, and hear about what
+happens - a comment, a like - the same way whether the network pushes it to
+you or socialchimp checks on a timer. One way to do this across all nine
+networks, and direct access to any one of them when its own features are
+what you need.
 
 ---
 
 ## What it does
 
-Your app needs to let people connect their social accounts, then post for
-them and read what happens. Every network does this differently. socialchimp
-gives you one way to do it, and gets out of the way when you need the network's
-own features.
-
 - **Connect accounts.** Sign in with Mastodon, Bluesky, Facebook, Instagram,
-  YouTube, TikTok, X, Pinterest, Threads and more.
-- **Keep tokens working.** Refresh them before they expire, safely, even when
+  YouTube, TikTok, X, Pinterest or Threads.
+- **Keep tokens working.** Refreshed before they expire, safely, even when
   several workers run at once.
-- **Post and read.** Text, pictures, video. Read posts and their numbers back.
-- **Know what happened.** Comments and likes reach you the same way whether the
-  network pushes them to you or we have to check on a timer.
+- **Post and read.** Text, pictures, video. Read a post's numbers back where
+  the network allows it.
+- **Know what happened.** Comments and likes reach you the same way whether
+  the network pushes them to you or socialchimp checks on a timer.
+- **Get out of the way when you need more.** `account.direct` sends a
+  request of your own through the same token, the same retries and the same
+  rate limits - only the request is yours.
 
 ## What it does not do
 
 - **It does not touch your database.** No models, no migrations. You write a
   small storage class, socialchimp hands you data to save. Your schema stays
   yours, and it works the same on Django, FastAPI, Flask, or nothing at all.
+- **It does not post to several accounts in one call.** `account.post(...)`
+  posts as one account and raises if that one fails. Looping over your
+  accounts, and deciding what one failure means for the rest, is a few lines
+  in your own app - only your app knows the right answer.
 - **It does not pretend networks are the same.** Pinterest needs a board.
-  Bluesky cannot schedule. YouTube has no text-only post. Where networks
-  differ, the API says so instead of guessing for you.
+  Bluesky cannot schedule. YouTube has no text-only post. Where a network
+  genuinely cannot do something, the answer says so by name instead of
+  guessing.
+
+## The real cost of starting
+
+Two of the nine need nothing you have to build: socialchimp registers a
+Mastodon app for you, and Bluesky has no app at all - just a handle and an
+app password. The other seven - Facebook, Instagram, YouTube, TikTok, X,
+Pinterest, Threads - need you to create an app by hand in that network's own
+developer portal, and most of those review it before it works for anyone but
+you. That review is usually the slowest part of getting started, so begin it
+early. [Networks](docs/platforms.md) says what each one needs.
 
 ---
 
@@ -63,28 +78,21 @@ pip install "socialchimp[django]"    # or [fastapi], or [flask]
 
 ## A first look
 
+Once somebody has connected an account - the [tutorial](docs/tutorial.md)
+covers signing them in - posting for them looks like this:
+
 ```python
 from socialchimp import SocialChimp, Post
 
-sc = SocialChimp(storage=MyStorage())
+sc = SocialChimp(storage=my_storage)
 
-# Post to a connected account.
 account = sc.account(connection_id)
 result = await account.post(Post(text="Hello from socialchimp"))
 print(result.url)
 ```
 
-Need something only that network can do? Same connection, direct access:
-
-```python
-await account.direct.post(
-    "/api/v1/statuses",
-    json={"status": "Hello", "visibility": "unlisted"},
-)
-```
-
-Tokens, retries and rate limits are still handled for you. Only the request
-is yours.
+`my_storage` is five methods you write once; `connection_id` is whichever
+account you saved when that person signed in.
 
 ---
 
@@ -114,7 +122,7 @@ explains why this is harder than one HTTP request.
 - [Networks](docs/platforms.md) - what each one can do, and what it needs
 - [Frameworks](docs/frameworks.md) - the ready-made routes in detail
 - [Adding a platform](docs/adding-a-platform.md) - a network we do not support yet
-- [Examples](examples/) - runnable programs
+- [Examples](examples/) - runnable programs, including two whole sample apps
 - [Changelog](CHANGELOG.md) - what changed, and what it means for you
 
 **Project**

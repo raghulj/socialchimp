@@ -3,7 +3,7 @@
 This is the living plan for socialchimp. It changes as we learn things.
 Every finished item links to the pull request or commit that did it.
 
-Last updated: 2026-08-31 (0.1.0 released)
+Last updated: 2026-08-31 (0.3.1 released)
 
 ---
 
@@ -148,6 +148,12 @@ against**, not partway through as first planned. See
 [the promise about changes](adding-a-platform.md#what-we-promise-about-changes)
 for what that means for a platform written today.
 
+Two releases have tested that promise since: 0.2.0 added `CanCheckState`,
+`CanAnswerSetupCheck` and `CanReadPushedUpdates`, and 0.3.0 added
+`Feature.NEEDS_NO_APP` for a network with no app to register. Both were
+additions a platform written against 0.1.0 did not have to do anything
+about, which is exactly what the promise says should happen.
+
 ---
 
 ## Notes for people working on this
@@ -172,7 +178,9 @@ The full `uv run pytest` is the one that has to pass before pushing.
 ## Decided
 
 - **The name is `socialchimp`**, on PyPI and here. Settled at 0.1.0.
-- **The way platforms are written is settled** as of 0.1.0. See
+- **The way platforms are written is settled** as of 0.1.0, and 0.2.0 and
+  0.3.0 have each added to it since without breaking anything already
+  written. See
   [the promise about changes](adding-a-platform.md#what-we-promise-about-changes).
 
 ## Next

@@ -1,16 +1,21 @@
 # Releasing
 
-## One-time setup: let GitHub publish for you
+## One-time setup: let GitHub publish for you (already done)
 
 PyPI can be told to trust one workflow in one repository, so releases go out
 with no API token anywhere. Nothing to store, nothing to leak, nothing to
 rotate, and nobody can publish from their laptop by accident.
 
-Because `socialchimp` does not exist on PyPI yet, add it as a **pending
-publisher** — the project gets created on the first upload.
+`socialchimp` is on PyPI now, and this was done once, before the 0.1.0
+upload: the **pending publisher** below was added, and PyPI promoted it to a
+regular one itself the moment that first upload succeeded. Nothing here
+needs doing again unless the project or the repository is ever recreated -
+kept below for that day, and for anyone setting up the same thing for a
+package of their own.
 
-Go to <https://pypi.org/manage/account/publishing/>, and under *Add a new
-pending publisher* choose **GitHub** and fill in exactly:
+Before a project's first upload, go to
+<https://pypi.org/manage/account/publishing/>, and under *Add a new pending
+publisher* choose **GitHub** and fill in exactly:
 
 | Field | Value |
 |---|---|
@@ -30,7 +35,8 @@ Two things people get wrong here:
 
 Optionally, on GitHub under **Settings → Environments → pypi**, add yourself
 as a required reviewer. Then every publish waits for you to press a button,
-which is a cheap way to make an accidental release impossible.
+which is a cheap way to make an accidental release impossible. (This project
+has: every release since 0.1.0 has paused for that approval.)
 
 ## Where work happens
 
@@ -38,7 +44,7 @@ which is a cheap way to make an accidental release impossible.
 been released.
 
 `main` is protected: no force pushes, no deletions, CI has to pass on all
-three Python versions, and changes arrive by pull request. So a release is a
+four Python versions, and changes arrive by pull request. So a release is a
 pull request from `dev` to `main`, and the tag goes on `main`.
 
 Publishing has a second gate on top of that: the `pypi` environment needs
@@ -80,30 +86,37 @@ button, even if a bad commit gets onto `main`.
    green**, then tag the merge commit:
 
    ```bash
-   gh pr create --base main --head dev --title "Release 0.2.0"
+   gh pr create --base main --head dev --title "Release 0.4.0"
    # once it is merged:
    git checkout main && git pull
-   git tag -a v0.2.0 -m "socialchimp 0.2.0"
-   git push origin v0.2.0
+   git tag -a v0.4.0 -m "socialchimp 0.4.0"
+   git push origin v0.4.0
    git checkout dev
    ```
+
+   This is a merge commit, not a squash - `git log` on `main` should show
+   one merge per release, each tagged, as it has for 0.1.0 through 0.3.1.
 
 6. **Publish the GitHub release.** That is what starts the upload:
 
    ```bash
-   gh release create v0.2.0 --title "0.2.0 - what it is" --notes-file notes.md
+   gh release create v0.4.0 --title "0.4.0 - what it is" --notes-file notes.md
    ```
 
-   The workflow runs the whole gate again on three Python versions, builds,
+   The workflow runs the whole gate again on four Python versions, builds,
    checks the files are uploadable, and only then publishes. **Publishing
    cannot be undone** — PyPI never allows a version number to be reused, even
    after deleting it — so it is worth the few minutes.
 
 ## Numbering
 
-While the first number is 0, treat the middle one as the breaking one:
-`0.1.x` is safe, `0.2.0` may not be. What that means for people writing their
-own networks is in
+While the first number is 0, treat the middle one as the breaking one: a
+`0.3.1` on top of `0.3.0` is safe, a `0.4.0` may not be. Both 0.2.0 and 0.3.0
+did break something - 0.2.0 changed the shape of `Update.raw` for Facebook,
+Instagram and Threads, and 0.3.0 changed how `Dispatcher.deliver` behaves and
+removed `post_to_many` entirely - and each said so at the top of its
+`CHANGELOG.md` section. What a version bump means for people writing their
+own networks specifically (a narrower promise than "nothing breaks") is in
 [adding a platform](adding-a-platform.md#what-we-promise-about-changes).
 
 ## Trying it without the real thing
