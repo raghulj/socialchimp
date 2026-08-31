@@ -314,15 +314,19 @@ the tokens themselves, so a hidden form field would be handing them out.
 
 ### Blocking storage anywhere, not only Django
 
-`socialchimp.contrib.shared.sync_storage` takes a storage class written the
-ordinary blocking way and hands back the `Storage` the core wants, running
-each call on a spare thread:
+`sync_storage` takes a storage class written the ordinary blocking way and
+hands back the `Storage` the core wants, running each call on a spare thread:
 
 ```python
-from socialchimp.contrib.shared import sync_storage
+from socialchimp import sync_storage
 
 sc = SocialChimp(storage=sync_storage(MyBlockingStorage()))
 ```
+
+It lives in `socialchimp.storage` and needs no framework at all, so an app
+with none can use it too - see [getting started](getting-started.md#when-your-database-layer-is-not-async).
+`socialchimp.contrib.shared` still re-exports it, so the older import goes on
+working.
 
 `socialchimp.contrib.django.orm_storage` is the same thing with Django's
 thread rule applied, which is why Django gets its own name for it.

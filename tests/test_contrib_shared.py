@@ -4,18 +4,19 @@ import json
 import subprocess
 import sys
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 import pytest
 
+from socialchimp import storage
 from socialchimp.client import SocialChimp
+from socialchimp.contrib import shared
 from socialchimp.contrib.shared import (
     InMemoryLoginMemory,
     Reply,
     Routes,
     read_form,
     status_for,
-    sync_storage,
 )
 from socialchimp.errors import (
     AuthError,
@@ -33,19 +34,20 @@ from socialchimp.errors import (
 )
 from socialchimp.features import Feature
 from socialchimp.models import AppCredentials, Connection, Token
-from socialchimp.platform import AccountChoice, Finished, LoginField
-from socialchimp.storage import Storage
+from socialchimp.platform import (
+    AccountChoice,
+    ChooseAccount,
+    LoginField,
+)
 from socialchimp.testing import FakePlatform, RecordingStorage
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
 
     from socialchimp.events import Update
     from socialchimp.features import Limits
     from socialchimp.models import Post, PostResult, RawData
     from socialchimp.platform import LoginRequest, LoginStep
-
-T = TypeVar("T")
 
 APP = AppCredentials(
     platform="fake",
@@ -66,23 +68,13 @@ UPDATE_BODY = json.dumps(
 ).encode()
 
 
-class ChoosyPlatform(FakePlatform):
-    """A network that asks which page to use, and can carry on afterwards."""
+class NeverCarriesOn(FakePlatform):
+    """Asks which page to use and then cannot carry on. Wrong on purpose.
 
-    async def resume_login(
-        self,
-        request: LoginRequest,
-        *,
-        resume_token: str,
-        account_id: str,
-        remember: RawData | None = None,
-    ) -> LoginStep:
-        self.resumed = (resume_token, account_id, remember)
-        return Finished(connection=self.connection(account_id=account_id))
-
-
-class RefusingPlatform(FakePlatform):
-    """A network that will not finish a sign-in, however it is asked."""
+    A well-behaved fake given `accounts` can resume, which is the point of
+    `FakePlatform`. This is the platform `PlatformChecks` exists to catch,
+    and the only way to see what socialchimp does when it meets one.
+    """
 
     async def finish_login(
         self,
@@ -90,7 +82,10 @@ class RefusingPlatform(FakePlatform):
         callback: Mapping[str, str],
         remember: RawData | None = None,
     ) -> LoginStep:
-        raise AuthError("that code has already been used", platform=self.name)
+        return ChooseAccount(
+            options=(AccountChoice(id="7", name="A Page"),),
+            resume_token="carry-on",
+        )
 
 
 class LyingPusher:
@@ -301,80 +296,18 @@ async def test_login_memory_drops_the_oldest_when_it_is_full() -> None:
 
 
 # --------------------------------------------------------------------------
-# Storage written the ordinary blocking way
+# Storage written the ordinary blocking way, which lives in the core now
 # --------------------------------------------------------------------------
 
 
-class PlainStorage:
-    """Five methods, none of them async, the way most apps already have."""
-
-    def __init__(self) -> None:
-        self.connections: dict[str, Connection] = {}
-        self.apps: dict[tuple[str, str | None], AppCredentials] = {}
-
-    def get_connection(self, connection_id: str) -> Connection | None:
-        return self.connections.get(connection_id)
-
-    def save_connection(self, connection: Connection) -> None:
-        self.connections[connection.id] = connection
-
-    def delete_connection(self, connection_id: str) -> None:
-        self.connections.pop(connection_id, None)
-
-    def get_app(self, platform: str, host: str | None) -> AppCredentials | None:
-        return self.apps.get((platform, host))
-
-    def save_app(self, app: AppCredentials) -> None:
-        self.apps[app.key] = app
-
-
-def test_sync_storage_is_a_storage_the_core_can_use() -> None:
-    assert isinstance(sync_storage(PlainStorage()), Storage)
-
-
-async def test_sync_storage_reads_and_writes_connections() -> None:
-    wrapped = sync_storage(PlainStorage())
-
-    await wrapped.save_connection(a_connection())
-    found = await wrapped.get_connection("c1")
-    assert found is not None
-    assert found.account_name == "someone"
-
-    await wrapped.delete_connection("c1")
-    assert await wrapped.get_connection("c1") is None
-
-
-async def test_sync_storage_reads_and_writes_app_credentials() -> None:
-    wrapped = sync_storage(PlainStorage())
-    await wrapped.save_app(APP)
-    assert await wrapped.get_app("fake", None) == APP
-
-
-async def test_sync_storage_runs_the_work_however_it_was_told_to() -> None:
-    ran: list[str] = []
-
-    async def run_here(work: Callable[[], T]) -> T:
-        ran.append("here")
-        return work()
-
-    wrapped = sync_storage(PlainStorage(), run=run_here)
-    await wrapped.save_app(APP)
-    assert await wrapped.get_app("fake", None) == APP
-    assert ran == ["here", "here"]
-
-
-async def test_sync_storage_really_gets_off_the_event_loop() -> None:
-    import threading
-
-    threads: list[str] = []
-
-    class Nosy(PlainStorage):
-        def save_app(self, app: AppCredentials) -> None:
-            threads.append(threading.current_thread().name)
-            super().save_app(app)
-
-    await sync_storage(Nosy()).save_app(APP)
-    assert threads[0] != threading.current_thread().name
+def test_the_blocking_storage_names_are_still_reachable_from_here() -> None:
+    # They moved to socialchimp.storage, and plenty of apps already import
+    # them from this module. Both spellings have to go on meaning the same
+    # four things.
+    assert shared.SyncStorage is storage.SyncStorage
+    assert shared.sync_storage is storage.sync_storage
+    assert shared.RunInThread is storage.RunInThread
+    assert shared.in_a_thread is storage.in_a_thread
 
 
 # --------------------------------------------------------------------------
@@ -473,7 +406,7 @@ async def test_a_finished_sign_in_is_forgotten() -> None:
 
 async def test_the_callback_offers_the_accounts_to_choose_between() -> None:
     routes, _ = make_routes(
-        ChoosyPlatform(accounts=(AccountChoice(id="7", name="A Page", kind="page"),))
+        FakePlatform(accounts=(AccountChoice(id="7", name="A Page", kind="page"),))
     )
     await routes.start("fake", {"state": "mine"})
     reply = await routes.finish("fake", {"state": "mine", "code": "c"})
@@ -486,7 +419,7 @@ async def test_the_callback_offers_the_accounts_to_choose_between() -> None:
 
 async def test_the_resume_token_never_reaches_the_browser() -> None:
     routes, _ = make_routes(
-        ChoosyPlatform(accounts=(AccountChoice(id="7", name="A Page"),))
+        FakePlatform(accounts=(AccountChoice(id="7", name="A Page"),))
     )
     await routes.start("fake", {"state": "mine"})
     reply = await routes.finish("fake", {"state": "mine", "code": "c"})
@@ -494,14 +427,15 @@ async def test_the_resume_token_never_reaches_the_browser() -> None:
 
 
 async def test_choosing_an_account_finishes_the_sign_in() -> None:
-    choosy = ChoosyPlatform(accounts=(AccountChoice(id="7", name="A Page"),))
+    choosy = FakePlatform(accounts=(AccountChoice(id="7", name="A Page"),))
     routes, _ = make_routes(choosy)
     await routes.start("fake", {"state": "mine"})
     await routes.finish("fake", {"state": "mine", "code": "c"})
 
     reply = await routes.choose("fake", {"state": "mine", "account_id": "7"})
     assert body_of(reply)["step"] == "connected"
-    assert choosy.resumed == ("fake-resume", "7", {"verifier": "fake-verifier"})
+    assert choosy.resumed == [("fake-resume", "7")]
+    assert choosy.last_remember == {"verifier": "fake-verifier"}
 
 
 async def test_choosing_needs_a_state() -> None:
@@ -647,7 +581,13 @@ async def test_the_setup_check_needs_a_token_to_check_against() -> None:
 
 
 async def test_the_callback_says_what_the_network_said_when_it_refuses() -> None:
-    routes, _ = make_routes(RefusingPlatform())
+    routes, _ = make_routes(
+        FakePlatform(
+            login_fails_with=AuthError(
+                "that code has already been used", platform="fake"
+            )
+        )
+    )
     await routes.start("fake", {"state": "mine"})
     reply = await routes.finish("fake", {"state": "mine", "code": "c"})
     assert reply.status == 401
@@ -655,7 +595,7 @@ async def test_the_callback_says_what_the_network_said_when_it_refuses() -> None
 
 
 async def test_choosing_refuses_a_network_that_signs_in_in_one_step() -> None:
-    routes, _ = make_routes(FakePlatform(accounts=(AccountChoice(id="7", name="A"),)))
+    routes, _ = make_routes(NeverCarriesOn())
     await routes.start("fake", {"state": "mine"})
     await routes.finish("fake", {"state": "mine", "code": "c"})
 

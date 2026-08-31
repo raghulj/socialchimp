@@ -21,21 +21,22 @@ into a status code.
 sign-in are two separate requests, and the second one needs what the first
 was handed - so it has to be written down somewhere your app controls.
 
-`sync_storage` lets you write the five storage methods as ordinary blocking
-code. Most apps with a database already have a blocking layer, and there is
-no reason to rewrite it.
+`sync_storage` and the three names around it are re-exported from
+`socialchimp.storage`, where they now live. Writing your five storage methods
+as ordinary blocking code has nothing to do with any framework, so an app
+with no framework at all should not have to import from `contrib` to do it.
+The names here go on working.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import math
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from secrets import token_urlsafe
-from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from urllib.parse import parse_qsl
 
 from socialchimp.errors import (
@@ -59,15 +60,20 @@ from socialchimp.platform import (
     ChooseAccount,
     SendToNetwork,
 )
+from socialchimp.storage import (
+    RunInThread,
+    SyncStorage,
+    in_a_thread,
+    sync_storage,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
 
     from socialchimp.client import SocialChimp
     from socialchimp.events import DeliverUpdate
-    from socialchimp.models import AppCredentials, Connection, RawData
+    from socialchimp.models import RawData
     from socialchimp.platform import LoginStep
-    from socialchimp.storage import Storage
 
 __all__ = [
     "InMemoryLoginMemory",
@@ -92,8 +98,6 @@ _STATE_BYTES = 32
 # How many half-finished sign-ins `InMemoryLoginMemory` keeps before it
 # starts forgetting the oldest.
 _DEFAULT_MEMORY_SIZE = 10_000
-
-T = TypeVar("T")
 
 # Our errors and the status code each one deserves, most particular first.
 # `TokenExpiredError` is an `AuthError` and both answer 401, so the order
@@ -338,177 +342,6 @@ class InMemoryLoginMemory:
             state: The sign-in's state.
         """
         self._kept.pop(state, None)
-
-
-@runtime_checkable
-class SyncStorage(Protocol):
-    """`Storage`, written the ordinary blocking way.
-
-    The same five methods, none of them `async`. Most apps with a database
-    already have a layer like this - the Django ORM, a psycopg cursor, a
-    SQLAlchemy session - and there is no reason to rewrite it as async code
-    just to keep socialchimp happy.
-
-    Hand one to `sync_storage` and it becomes a `Storage` the core can use.
-    """
-
-    def get_connection(self, connection_id: str) -> Connection | None:
-        """Look up one connected account.
-
-        Args:
-            connection_id: The id your app gave this connection.
-
-        Returns:
-            The connection, or `None` if there is no such connection.
-        """
-        ...
-
-    def save_connection(self, connection: Connection) -> None:
-        """Write a connection, replacing any earlier one with the same id.
-
-        Args:
-            connection: The connection to write.
-        """
-        ...
-
-    def delete_connection(self, connection_id: str) -> None:
-        """Remove a connection. Quiet if it is already gone.
-
-        Args:
-            connection_id: The id your app gave this connection.
-        """
-        ...
-
-    def get_app(self, platform: str, host: str | None) -> AppCredentials | None:
-        """Look up your app's credentials for one network.
-
-        Args:
-            platform: Which network.
-            host: Which server, or `None`.
-
-        Returns:
-            The credentials, or `None` if none are stored yet.
-        """
-        ...
-
-    def save_app(self, app: AppCredentials) -> None:
-        """Write your app's credentials for one network.
-
-        Args:
-            app: The credentials to write.
-        """
-        ...
-
-
-class RunInThread(Protocol):
-    """Runs one piece of blocking work without blocking the event loop.
-
-    There is more than one right answer to this, which is why it is a
-    setting rather than a decision. `in_a_thread` hands the work to any
-    spare thread, which is what a plain app wants. Django wants it run on
-    the thread the request arrived on, because that is where its database
-    connection lives - see `socialchimp.contrib.django`.
-    """
-
-    async def __call__(self, work: Callable[[], T]) -> T:
-        """Run the work and hand back what it returned.
-
-        Args:
-            work: The blocking call, already given its arguments.
-
-        Returns:
-            Whatever the work returned.
-        """
-        ...
-
-
-async def in_a_thread(work: Callable[[], T]) -> T:
-    """Run blocking work on a spare thread.
-
-    Args:
-        work: The blocking call, already given its arguments.
-
-    Returns:
-        Whatever the work returned.
-    """
-    return await asyncio.to_thread(work)
-
-
-class _StorageInAThread:
-    """A `SyncStorage` dressed up as the `Storage` the core asks for."""
-
-    def __init__(self, inner: SyncStorage, run: RunInThread) -> None:
-        """Wrap one blocking storage class.
-
-        Args:
-            inner: The storage class you wrote.
-            run: How to run one of its methods.
-        """
-        self._inner = inner
-        self._run = run
-
-    async def get_connection(self, connection_id: str) -> Connection | None:
-        """Look up one connected account.
-
-        Args:
-            connection_id: The id your app gave this connection.
-
-        Returns:
-            The connection, or `None`.
-        """
-        return await self._run(lambda: self._inner.get_connection(connection_id))
-
-    async def save_connection(self, connection: Connection) -> None:
-        """Write a connection.
-
-        Args:
-            connection: The connection to write.
-        """
-        await self._run(lambda: self._inner.save_connection(connection))
-
-    async def delete_connection(self, connection_id: str) -> None:
-        """Remove a connection.
-
-        Args:
-            connection_id: The id your app gave this connection.
-        """
-        await self._run(lambda: self._inner.delete_connection(connection_id))
-
-    async def get_app(self, platform: str, host: str | None) -> AppCredentials | None:
-        """Look up your app's credentials for one network.
-
-        Args:
-            platform: Which network.
-            host: Which server, or `None`.
-
-        Returns:
-            The credentials, or `None`.
-        """
-        return await self._run(lambda: self._inner.get_app(platform, host))
-
-    async def save_app(self, app: AppCredentials) -> None:
-        """Write your app's credentials for one network.
-
-        Args:
-            app: The credentials to write.
-        """
-        await self._run(lambda: self._inner.save_app(app))
-
-
-def sync_storage(inner: SyncStorage, *, run: RunInThread | None = None) -> Storage:
-    """Let the core use a storage class you wrote as blocking code.
-
-    Args:
-        inner: Your storage class, with the five methods written the
-            ordinary way.
-        run: How to run one of those methods. Left out, each call goes to a
-            spare thread, which is right for anything but Django - see
-            `socialchimp.contrib.django.orm_storage`.
-
-    Returns:
-        A `Storage` to hand to `SocialChimp`.
-    """
-    return _StorageInAThread(inner, run if run is not None else in_a_thread)
 
 
 class Routes:

@@ -198,9 +198,10 @@ Install it with `pip install "socialchimp[testing]"`.
 
 These hold you to what you claim: a platform declaring it can create apps
 must actually be able to, a post over a declared limit must be refused before
-anything reaches the network, and scheduling on a platform without
+anything reaches the network, scheduling on a platform without
 `Feature.SCHEDULE` must raise `NotSupportedError` rather than quietly
-posting.
+posting, and a platform that pauses to ask which account to use must have a
+`resume_login` socialchimp can actually call.
 
 Add `make_connection()` and `make_transport()` to unlock the checks that need
 a working platform. Leave them out and those skip with a line telling you

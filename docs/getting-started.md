@@ -232,6 +232,40 @@ Three things to get right:
 
 `Connection` holds a token. Encrypt it at rest if you can.
 
+### When your database layer is not async
+
+Most apps already have a blocking one - the Django ORM, a psycopg cursor, a
+SQLAlchemy session - and there is no reason to rewrite it as async code just
+to keep socialchimp happy. Write the same five methods without `async`, and
+hand the class to `sync_storage`:
+
+```python
+from socialchimp import SocialChimp, sync_storage
+
+
+class MyStorage:
+    def get_connection(self, connection_id):
+        row = session.get(SocialAccount, connection_id)
+        return row.to_connection() if row else None
+
+    def save_connection(self, connection): ...
+    def delete_connection(self, connection_id): ...
+    def get_app(self, platform, host): ...
+    def save_app(self, app): ...
+
+
+sc = SocialChimp(storage=sync_storage(MyStorage()))
+```
+
+Each call then runs on a spare thread, so a slow query does not hold up
+everything else that is in the air at the same time. The three rules above
+apply exactly as they do to the async version.
+
+On Django, use `socialchimp.contrib.django.orm_storage` instead. Same idea,
+with the one difference that matters there: Django keeps a database
+connection per thread and a transaction belongs to the thread that opened it,
+so your ORM code is run back on the thread the request arrived on.
+
 ### Running more than one process
 
 Tokens are renewed under a lock so that two workers cannot renew the same

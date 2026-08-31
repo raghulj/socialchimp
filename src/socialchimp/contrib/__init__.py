@@ -19,7 +19,8 @@ them does not import the other two. Install the framework you use:
 
     pip install "socialchimp[django]"    # or [fastapi], or [flask]
 
-`socialchimp.contrib.shared` needs none of them, and neither does
+`socialchimp.contrib.shared` needs none of them. If all you came here for was
 `sync_storage`, which lets you write your five storage methods as ordinary
-blocking code.
+blocking code, that lives in `socialchimp.storage` now - it never needed a
+framework - and is exported as `socialchimp.sync_storage`.
 """

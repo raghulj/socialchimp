@@ -13,7 +13,7 @@ from socialchimp.contrib.flask import blueprint, run
 from socialchimp.contrib.shared import sync_storage
 from socialchimp.events import Dispatcher, UpdateKind
 from socialchimp.models import AppCredentials, Connection, Token
-from socialchimp.platform import AccountChoice, Finished
+from socialchimp.platform import AccountChoice
 from socialchimp.testing import FakePlatform, RecordingStorage
 
 if TYPE_CHECKING:
@@ -22,8 +22,6 @@ if TYPE_CHECKING:
     from flask.testing import FlaskClient
 
     from socialchimp.events import Update
-    from socialchimp.models import RawData
-    from socialchimp.platform import LoginRequest, LoginStep
 
 APP = AppCredentials(
     platform="fake",
@@ -53,20 +51,6 @@ class WatchfulPlatform(FakePlatform):
     ) -> None:
         self.checked.append(body)
         super().check_signature(body, headers, secret=secret)
-
-
-class ChoosyPlatform(WatchfulPlatform):
-    """A network that asks which page to use, the way Facebook does."""
-
-    async def resume_login(
-        self,
-        request: LoginRequest,
-        *,
-        resume_token: str,
-        account_id: str,
-        remember: RawData | None = None,
-    ) -> LoginStep:
-        return Finished(connection=self.connection(account_id=account_id))
 
 
 def update_body(text: str = "hello") -> bytes:
@@ -156,7 +140,7 @@ def test_the_callback_takes_a_posted_form_too(client: FlaskClient) -> None:
 def test_the_callback_offers_the_accounts_to_choose_between(
     seen: list[Update],
 ) -> None:
-    choosy = ChoosyPlatform(accounts=(AccountChoice(id="7", name="A Page"),))
+    choosy = WatchfulPlatform(accounts=(AccountChoice(id="7", name="A Page"),))
     client = build(choosy, seen, name="two")
     client.get("/social/connect/fake?state=mine")
 
@@ -169,7 +153,7 @@ def test_the_callback_offers_the_accounts_to_choose_between(
 
 
 def test_choosing_an_account_finishes_the_sign_in(seen: list[Update]) -> None:
-    choosy = ChoosyPlatform(accounts=(AccountChoice(id="7", name="A Page"),))
+    choosy = WatchfulPlatform(accounts=(AccountChoice(id="7", name="A Page"),))
     client = build(choosy, seen, name="three")
     client.get("/social/connect/fake?state=mine")
     client.get("/social/callback/fake?state=mine&code=c")

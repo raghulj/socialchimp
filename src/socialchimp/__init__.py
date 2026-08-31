@@ -65,7 +65,14 @@ from socialchimp.models import (
     require_timezone,
 )
 from socialchimp.registry import available_platforms, register_platform
-from socialchimp.storage import InMemoryStorage, Storage
+from socialchimp.storage import (
+    InMemoryStorage,
+    RunInThread,
+    Storage,
+    SyncStorage,
+    in_a_thread,
+    sync_storage,
+)
 from socialchimp.tokens import TokenManager
 
 __version__ = "0.0.1"
@@ -97,11 +104,13 @@ __all__ = [
     "PostState",
     "RateLimitError",
     "RawData",
+    "RunInThread",
     "SeenUpdates",
     "SignatureError",
     "SocialChimp",
     "SocialChimpError",
     "Storage",
+    "SyncStorage",
     "TextCount",
     "Token",
     "TokenExpiredError",
@@ -115,10 +124,12 @@ __all__ = [
     "check_option_names",
     "check_post",
     "count_graphemes",
+    "in_a_thread",
     "measure_text",
     "poll",
     "register_platform",
     "require_timezone",
+    "sync_storage",
     "verify_hmac_sha256",
     "verify_shared_secret",
 ]

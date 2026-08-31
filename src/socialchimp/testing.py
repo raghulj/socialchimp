@@ -75,6 +75,7 @@ from socialchimp.platform import (
     CanCreateApp,
     CanDeletePosts,
     CanReadUpdates,
+    CanResumeLogin,
     ChooseAccount,
     Finished,
     LoginField,
@@ -109,6 +110,9 @@ _A_REDIRECT: Final = "https://app.example/callback"
 
 # A platform that cannot post anything is not a platform anyone can use.
 _WAYS_TO_POST: Final = Feature.POST_TEXT | Feature.POST_IMAGE | Feature.POST_VIDEO
+
+# What `SocialChimp.choose` passes to `resume_login`, all of them by name.
+_RESUME_ARGUMENTS: Final = ("resume_token", "account_id", "remember")
 
 # Fields on `Limits` that this check leaves alone.
 #
@@ -560,9 +564,11 @@ class FakePlatform:
 
     Every knob is a way of making it misbehave on purpose, so you can see
     what your app does about it. Give it `accounts` and signing in stops to
-    ask which one. Give it `publish_fails_with` and every post raises that.
-    Give it `token_lifetime=None` and its tokens never expire, the way
-    Mastodon's do not.
+    ask which one, and carries on once one is picked. Give it
+    `publish_fails_with` and every post raises that; `login_fails_with` and
+    signing in raises that instead of finishing. Give it
+    `token_lifetime=None` and its tokens never expire, the way Mastodon's do
+    not.
 
     Give it a transport and `publish` really sends a request through
     `HttpClient`, so retries, rate limits and error handling all run. Leave
@@ -581,7 +587,9 @@ class FakePlatform:
         name: How this platform is named in code.
         features: What it says it can do.
         accounts: Accounts sign-in offers to choose between. Empty means it
-            never asks.
+            never asks - and then there is no `resume_login` either, so a
+            fake with no accounts is not a `CanResumeLogin`, the same as a
+            network that signs somebody in in one step.
         ask_for: What signing in should ask a person for. Empty sends them
             to a sign-in page instead, which is what most networks do.
         secret: The secret `check_signature` expects, unless told another.
@@ -590,9 +598,16 @@ class FakePlatform:
             that never expires.
         publish_fails_with: An error every `publish` raises instead of
             working.
+        login_fails_with: An error raised instead of finishing a sign-in, by
+            `finish_login` and by `resume_login`. Those are the two halves
+            where a real network refuses - a code already used, a person who
+            changed their mind. Starting a sign-in is left alone, so a test
+            can send somebody away and have only the return go wrong.
         published: Every post published, as (connection id, post).
         deleted: The id of every post deleted.
         created_apps: Every app registered.
+        resumed: Every account picked part way through a sign-in, as
+            (resume token, account id).
         refreshed: The id of every connection whose token was renewed.
         refreshed_with: Your app's credentials as each renewal was handed
             them, in the same order as `refreshed`. `None` where a renewal
@@ -615,6 +630,7 @@ class FakePlatform:
         updates: Sequence[Update] = (),
         token_lifetime: timedelta | None = timedelta(hours=1),
         publish_fails_with: SocialChimpError | None = None,
+        login_fails_with: SocialChimpError | None = None,
     ) -> None:
         """Set up a fake network that behaves however you need it to.
 
@@ -624,7 +640,8 @@ class FakePlatform:
             limits: What it allows. Left out, a sensible small set.
             transport: Where `publish` sends its request. Left out, it does
                 not send one.
-            accounts: Accounts to offer during sign-in. Empty never asks.
+            accounts: Accounts to offer during sign-in. Empty never asks,
+                and leaves this fake without a `resume_login`.
             ask_for: What signing in should ask a person for. Empty sends
                 them to a sign-in page instead.
             secret: The secret `check_signature` expects.
@@ -632,6 +649,8 @@ class FakePlatform:
             token_lifetime: How long a fresh token lasts, or `None` for one
                 that never expires.
             publish_fails_with: An error every `publish` raises.
+            login_fails_with: An error `finish_login` and `resume_login`
+                raise instead of finishing.
         """
         self.name = name
         self.features = features
@@ -641,9 +660,11 @@ class FakePlatform:
         self.updates = tuple(updates)
         self.token_lifetime = token_lifetime
         self.publish_fails_with = publish_fails_with
+        self.login_fails_with = login_fails_with
         self.published: list[tuple[str, Post]] = []
         self.deleted: list[str] = []
         self.created_apps: list[AppCredentials] = []
+        self.resumed: list[tuple[str, str]] = []
         self.refreshed: list[str] = []
         self.refreshed_with: list[AppCredentials | None] = []
         self.last_remember: RawData | None = None
@@ -655,6 +676,14 @@ class FakePlatform:
         self._transport = transport
         self._live: set[str] = set()
         self._counter = 0
+        if accounts and not hasattr(self, "resume_login"):
+            # Put on the instance rather than written as a method, so that a
+            # fake with nothing to choose between has no `resume_login` at
+            # all and is not a `CanResumeLogin`. socialchimp reads that
+            # before it will carry a login on, and a fake that claimed it
+            # while never pausing would let a wrong app pass its own tests.
+            # A subclass that wrote its own keeps it - hence the hasattr.
+            self.resume_login = self._resume_login
 
     def _expiry(self) -> datetime | None:
         """Work out when a token handed out now would stop working."""
@@ -787,11 +816,50 @@ class FakePlatform:
 
         Returns:
             The finished connection, or the question to ask first.
+
+        Raises:
+            SocialChimpError: Whatever `login_fails_with` holds.
         """
+        # Written down before the refusal, so a test can still say what your
+        # app carried between the two halves of a sign-in that went wrong.
         self.last_remember = remember
+        if self.login_fails_with is not None:
+            raise self.login_fails_with
         if self.accounts and "account" not in callback:
             return ChooseAccount(options=self.accounts, resume_token=_FAKE_RESUME)
         account_id = callback.get("account", _FAKE_ACCOUNT)
+        return Finished(connection=self.connection(account_id=account_id))
+
+    async def _resume_login(
+        self,
+        request: LoginRequest,
+        *,
+        resume_token: str,
+        account_id: str,
+        remember: RawData | None = None,
+    ) -> LoginStep:
+        """Carry on with a sign-in now that an account has been picked.
+
+        Reached as `resume_login`, and only on a fake that was given
+        `accounts` - see `__init__`.
+
+        Args:
+            request: The same request the login was started with.
+            resume_token: The value `ChooseAccount` handed out.
+            account_id: Which of the offered accounts was picked.
+            remember: Whatever `start_login` asked to be kept. Left on
+                `last_remember`, the same as `finish_login` leaves it.
+
+        Returns:
+            The finished connection, for the account that was picked.
+
+        Raises:
+            SocialChimpError: Whatever `login_fails_with` holds.
+        """
+        self.resumed.append((resume_token, account_id))
+        self.last_remember = remember
+        if self.login_fails_with is not None:
+            raise self.login_fails_with
         return Finished(connection=self.connection(account_id=account_id))
 
     async def refresh(
@@ -1313,6 +1381,49 @@ class PlatformChecks:
                     f"and a label, which is what the person reads next to "
                     f"the box."
                 )
+
+    async def test_a_platform_that_pauses_to_ask_can_carry_on(self) -> None:
+        """A `resume_login` is `async def` and takes what it will be given.
+
+        Facebook asks which page, Instagram which business account, YouTube
+        which channel. All three answer `finish_login` with `ChooseAccount`
+        and finish the job in `resume_login`, and socialchimp calls that one
+        by name with `resume_token`, `account_id` and `remember`. A plain
+        `def`, or arguments under other names, leaves the person stuck on
+        the page where they picked - and it fails there, in someone else's
+        app, rather than here.
+        """
+        platform = self.platform
+        if not hasattr(platform, "resume_login"):
+            # Most networks sign somebody in in one step. Nothing to check.
+            return
+
+        if _method_is_wrong(
+            platform, "resume_login", wants_async=True
+        ) or not isinstance(platform, CanResumeLogin):
+            pytest.fail(
+                f"{platform.name} has a resume_login, but not one socialchimp "
+                f"can use. It is `async def resume_login(self, request, *, "
+                f"resume_token, account_id, remember=None)`. Anything else - "
+                f"a plain def, something that is not callable - and choose() "
+                f"refuses the login instead of carrying it on."
+            )
+
+        taken = inspect.signature(platform.resume_login).parameters
+        if any(given.kind is inspect.Parameter.VAR_KEYWORD for given in taken.values()):
+            # Something that takes whatever it is handed cannot be missing an
+            # argument, so there is nothing left to look at.
+            return
+
+        missing = [name for name in _RESUME_ARGUMENTS if name not in taken]
+        if missing:
+            pytest.fail(
+                f"{platform.name}.resume_login does not take "
+                f"{', '.join(missing)}. socialchimp passes all of "
+                f"{', '.join(_RESUME_ARGUMENTS)} by name, so an argument "
+                f"spelled some other way is a TypeError the moment somebody "
+                f"picks an account."
+            )
 
     async def test_its_limits_are_never_zero_for_unknown(self) -> None:
         """`limits()` gives a Limits, and every number is None or positive."""

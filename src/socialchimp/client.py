@@ -134,6 +134,22 @@ class PostJob:
         return f"PostJob({len(self.succeeded)} posted, {len(failed)} failed: {names})"
 
 
+@dataclass(frozen=True, slots=True)
+class _ClientKey:
+    """What tells one cached HTTP client apart from another.
+
+    Attributes:
+        loop: The event loop the client was made on, and the only one it can
+            be used from.
+        platform: Which network it talks to.
+        address: Which address on that network.
+    """
+
+    loop: asyncio.AbstractEventLoop
+    platform: str
+    address: str
+
+
 def _no_app_saved(platform: str, host: str | None) -> str:
     """Write the message for a network whose app has not been registered.
 
@@ -569,8 +585,11 @@ class SocialChimp:
                 same connection at once, and on the networks that replace the
                 refresh token each time that disconnects the account.
             http: Sends requests for `Account.direct`. Left out, one client
-                is made for each network and server, and closed by `aclose`.
-                One you pass in is yours to close.
+                is made for each network, server and event loop, and closed
+                by `aclose`. One you pass in is used everywhere and is yours
+                to close - so leave this out if your app runs each call on a
+                new event loop, as Django does under WSGI, and let
+                socialchimp keep one per loop for you.
         """
         self.storage = storage
         self._platforms: dict[str, Platform] = dict(platforms or {})
@@ -578,7 +597,7 @@ class SocialChimp:
         self._make_lock = make_lock
         self._token_managers: dict[str, TokenManager] = {}
         self._http = http
-        self._http_made: dict[tuple[str, str], HttpClient] = {}
+        self._http_made: dict[_ClientKey, HttpClient] = {}
 
     def platform_for(self, name: str) -> Platform:
         """Return the platform for one network, making it if need be.
@@ -661,6 +680,40 @@ class SocialChimp:
             self._token_managers[name] = manager
         return manager
 
+    def _this_loop(self) -> asyncio.AbstractEventLoop:
+        """Return the loop the caller is running on.
+
+        Returns:
+            The running loop.
+
+        Raises:
+            ConfigError: If there is not one, because then there is no
+                honest answer to give.
+        """
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError as nothing_running:
+            message = (
+                "http_for has to be called from async code. A client and its "
+                "open sockets belong to the event loop they were made on, so "
+                "outside one there is no client to hand back. Call it from "
+                "the same place the request will be sent from - which is "
+                "what Account.direct does."
+            )
+            raise ConfigError(message) from nothing_running
+
+    def _forget_finished_loops(self) -> None:
+        """Let go of the clients whose loop has finished.
+
+        Nothing here is closed first, because closing a socket means asking
+        the loop that opened it to close it, and that loop has gone. Letting
+        go is all that is left: the client is unusable either way, and this
+        is what stops one piling up per request.
+        """
+        finished = [key for key in self._http_made if key.loop.is_closed()]
+        for key in finished:
+            del self._http_made[key]
+
     def http_for(self, connection: Connection) -> HttpClient:
         """Return the HTTP client for one connection's network and address.
 
@@ -669,7 +722,12 @@ class SocialChimp:
 
         Returns:
             The client, made on first use unless you passed one in. One per
-            network and address, so accounts on the same server share one.
+            network, address and event loop, so accounts on the same server
+            share one.
+
+        Raises:
+            ConfigError: If you call this from outside async code, where
+                there is no loop for a client to belong to.
         """
         if self._http is not None:
             return self._http
@@ -679,7 +737,14 @@ class SocialChimp:
         # what tells two clients apart, rather than anything on the
         # connection.
         address = self.platform_for(connection.platform).api_base(connection)
-        key = (connection.platform, address)
+        # And the loop tells them apart as well, because a client holds open
+        # sockets that belong to the loop it was made on. Django under WSGI
+        # runs each request on a loop of its own and closes it at the end, so
+        # without this the second request reuses a client whose loop, and
+        # whose sockets, have gone. One long-lived loop - FastAPI, a script -
+        # asks for the same key every time and keeps its pooling.
+        key = _ClientKey(self._this_loop(), connection.platform, address)
+        self._forget_finished_loops()
         made = self._http_made.get(key)
         if made is None:
             made = HttpClient(address, platform=connection.platform)
@@ -1075,9 +1140,17 @@ class SocialChimp:
 
         A client you passed in yourself is left alone - it is yours, and you
         may still be using it.
+
+        A client whose loop has finished is let go of rather than closed,
+        for the same reason `_forget_finished_loops` gives: there is nobody
+        left to ask to close its sockets, and trying would raise here and
+        leave the rest of the clients open behind it.
         """
-        for http in self._http_made.values():
-            await http.aclose()
+        made = list(self._http_made.items())
+        self._http_made.clear()
+        for key, http in made:
+            if not key.loop.is_closed():
+                await http.aclose()
 
     async def __aenter__(self) -> SocialChimp:
         """Hand this client to an `async with` block.

@@ -22,13 +22,19 @@ from socialchimp import (
     Update,
     UpdateKind,
 )
-from socialchimp.errors import ConfigError, NotFoundError, NotSupportedError
+from socialchimp.errors import (
+    AuthError,
+    ConfigError,
+    NotFoundError,
+    NotSupportedError,
+)
 from socialchimp.features import TextCount
 from socialchimp.http import HttpClient
 from socialchimp.models import MediaKind, RawData
 from socialchimp.platform import (
     AccountChoice,
     AskForDetails,
+    CanResumeLogin,
     ChooseAccount,
     Finished,
     LoginField,
@@ -447,6 +453,52 @@ class AsksForABlankBox(Methods):
         )
 
 
+class CarriesOnWithoutWaiting(Methods):
+    """Pauses to ask which page, then carries on without awaiting anything."""
+
+    name = "carriesonwithoutwaiting"
+    features = Feature.POST_TEXT
+
+    def resume_login(
+        self,
+        request: LoginRequest,
+        *,
+        resume_token: str,
+        account_id: str,
+        remember: RawData | None = None,
+    ) -> LoginStep:
+        return Finished(connection=a_connection())
+
+
+class CarriesOnItsOwnWay(Methods):
+    """Has a resume_login, under names socialchimp never calls it with."""
+
+    name = "carriesonitsownway"
+    features = Feature.POST_TEXT
+
+    async def resume_login(
+        self,
+        request: LoginRequest,
+        token: str = "",
+        account: str = "",
+    ) -> LoginStep:
+        return Finished(connection=a_connection())
+
+
+class CarriesOnHoweverItIsAsked(Methods):
+    """Takes whatever it is handed, which is nobody's mistake."""
+
+    name = "carriesonhoweveritisasked"
+    features = Feature.POST_TEXT
+
+    async def resume_login(
+        self,
+        request: LoginRequest,
+        **whatever: object,
+    ) -> LoginStep:
+        return Finished(connection=a_connection())
+
+
 class WantsCredentialsFirst(Methods):
     """Will not start a login until your app is registered, as OAuth does."""
 
@@ -513,7 +565,7 @@ class TestTheKitItself:
     )
 
     def test_there_is_a_check_for_each_thing_we_promised(self) -> None:
-        assert len(every_check()) == 14
+        assert len(every_check()) == 15
 
     async def test_a_good_fake_platform_passes_every_check(self) -> None:
         for name in every_check():
@@ -1243,6 +1295,87 @@ class TestFakePlatform:
         assert isinstance(done, Finished)
         assert done.connection.account_id == "7"
 
+    async def test_it_carries_a_login_on_once_an_account_is_picked(self) -> None:
+        platform = FakePlatform(accounts=(AccountChoice(id="7", name="A page"),))
+        request = LoginRequest(redirect_uri="https://app.example/back")
+
+        done = await platform.resume_login(
+            request,
+            resume_token="fake-resume",
+            account_id="7",
+            remember={"verifier": "fake-verifier"},
+        )
+
+        assert isinstance(done, Finished)
+        assert done.connection.account_id == "7"
+        assert platform.resumed == [("fake-resume", "7")]
+        assert platform.last_remember == {"verifier": "fake-verifier"}
+
+    def test_a_fake_that_never_asks_cannot_be_carried_on(self) -> None:
+        # A platform that signs somebody in in one step has nothing to carry
+        # on from, and socialchimp reads CanResumeLogin to decide. A fake
+        # that claimed it anyway would let a wrong app pass its own tests.
+        assert not isinstance(FakePlatform(), CanResumeLogin)
+        assert isinstance(
+            FakePlatform(accounts=(AccountChoice(id="7", name="A page"),)),
+            CanResumeLogin,
+        )
+
+    async def test_a_subclass_keeps_its_own_way_of_carrying_on(self) -> None:
+        class MyFake(FakePlatform):
+            async def resume_login(
+                self,
+                request: LoginRequest,
+                *,
+                resume_token: str,
+                account_id: str,
+                remember: RawData | None = None,
+            ) -> LoginStep:
+                return Finished(connection=self.connection(account_id="mine"))
+
+        platform = MyFake(accounts=(AccountChoice(id="7", name="A page"),))
+
+        done = await platform.resume_login(
+            LoginRequest(redirect_uri="https://app.example/back"),
+            resume_token="fake-resume",
+            account_id="7",
+        )
+
+        assert isinstance(done, Finished)
+        assert done.connection.account_id == "mine"
+
+    async def test_signing_in_can_be_made_to_fail(self) -> None:
+        # A code already used, a person who changed their mind: the second
+        # half of a sign-in is where a network refuses.
+        refused = AuthError("that code has already been used", platform="fake")
+        platform = FakePlatform(
+            accounts=(AccountChoice(id="7", name="A page"),),
+            login_fails_with=refused,
+        )
+        request = LoginRequest(redirect_uri="https://app.example/back")
+
+        with pytest.raises(AuthError):
+            await platform.finish_login(request, {"code": "abc"})
+
+        with pytest.raises(AuthError):
+            await platform.resume_login(
+                request, resume_token="fake-resume", account_id="7"
+            )
+
+    async def test_a_failing_sign_in_still_writes_down_what_it_was_handed(
+        self,
+    ) -> None:
+        platform = FakePlatform(login_fails_with=AuthError("no", platform="fake"))
+
+        with pytest.raises(AuthError):
+            await platform.finish_login(
+                LoginRequest(redirect_uri="https://app.example/back"),
+                {"code": "abc"},
+                {"verifier": "fake-verifier"},
+            )
+
+        assert platform.last_remember == {"verifier": "fake-verifier"}
+
     async def test_refreshing_hands_back_a_new_token(self) -> None:
         platform = FakePlatform()
 
@@ -1346,3 +1479,40 @@ class TestFakePlatform:
         assert update.kind is UpdateKind.COMMENT_CREATED
         assert update.created_at == datetime(2026, 1, 1, tzinfo=UTC)
         assert update.platform == "fake"
+
+
+class TestTheCarryingOnCheck:
+    name = "test_a_platform_that_pauses_to_ask_can_carry_on"
+
+    async def test_a_platform_that_never_pauses_has_nothing_to_answer(self) -> None:
+        await getattr(checks_for(FakePlatform()), self.name)()
+
+    async def test_a_platform_that_can_carry_on_passes(self) -> None:
+        platform = FakePlatform(accounts=(AccountChoice(id="7", name="A page"),))
+
+        await getattr(checks_for(platform), self.name)()
+
+    async def test_carrying_on_as_a_plain_function_is_refused(self) -> None:
+        message = await failure_from(checks_for(CarriesOnWithoutWaiting()), self.name)
+
+        assert "resume_login" in message
+        assert "async def" in message
+
+    async def test_carrying_on_under_the_wrong_argument_names_is_refused(self) -> None:
+        message = await failure_from(checks_for(CarriesOnItsOwnWay()), self.name)
+
+        assert "resume_token" in message
+        assert "account_id" in message
+
+    async def test_a_resume_login_that_is_not_even_callable_is_refused(self) -> None:
+        class CarriesOnWithNothing(Methods):
+            name = "carriesonwithnothing"
+            features = Feature.POST_TEXT
+            resume_login = None
+
+        message = await failure_from(checks_for(CarriesOnWithNothing()), self.name)
+
+        assert "resume_login" in message
+
+    async def test_taking_whatever_it_is_given_passes(self) -> None:
+        await getattr(checks_for(CarriesOnHoweverItIsAsked()), self.name)()

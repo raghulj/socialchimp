@@ -41,13 +41,12 @@ work - Django adapts a sync view either way - so this is one bridge, in one
 place, whichever way you serve.
 
 One thing to know about that bridge under WSGI: `async_to_sync` runs each
-call on a fresh event loop, so an HTTP client socialchimp kept from an
-earlier request belongs to a loop that has gone. Platforms open and close
-their own client per call, so signing in and posting are unaffected; the one
-that is not is `account.direct`, which reuses a client between calls. Give
-`SocialChimp` an `http` client of your own, or make those calls from a
-worker, or serve under ASGI, where there is one loop and none of this
-applies.
+call on a fresh event loop, and an HTTP client holds sockets that belong to
+the loop it was made on. `SocialChimp` knows this - it keeps one client per
+loop as well as per network and address, and lets go of a client as soon as
+its loop has finished - so `account.direct` from a sync view needs nothing
+doing about it. Under ASGI there is one loop for the life of the process, and
+one client goes on being shared, which is what you want.
 """
 
 from __future__ import annotations
@@ -61,15 +60,16 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from asgiref.sync import async_to_sync, sync_to_async
 
 from socialchimp.client import SocialChimp
-from socialchimp.contrib.shared import Routes, read_form, sync_storage
+from socialchimp.contrib.shared import Routes, read_form
 from socialchimp.errors import ConfigError
+from socialchimp.storage import sync_storage
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Sequence
 
-    from socialchimp.contrib.shared import LoginMemory, Reply, SyncStorage
+    from socialchimp.contrib.shared import LoginMemory, Reply
     from socialchimp.events import DeliverUpdate
-    from socialchimp.storage import Storage
+    from socialchimp.storage import Storage, SyncStorage
 
 __all__ = ["Request", "get_client", "orm_storage", "urls"]
 

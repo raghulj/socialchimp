@@ -971,6 +971,77 @@ class TestGoingDirect:
         assert [str(request.url) for request in seen] == ["https://yours.example/me"]
 
 
+class TestALoopThatDoesNotLast:
+    # Django on WSGI runs every request through asgiref's async_to_sync,
+    # which builds an event loop for that one call and closes it at the end.
+    # asyncio.run does the same thing and needs no Django to do it, so these
+    # are the shape a Django app is in - see tests/test_contrib_django.py for
+    # the same thing through the real bridge.
+
+    def test_each_loop_gets_a_client_of_its_own(self) -> None:
+        storage = asyncio.run(storage_holding(a_connection()))
+        sc = SocialChimp(storage)
+        used: list[HttpClient] = []
+
+        async def one_request() -> None:
+            with respx.mock(base_url=BASE) as network:
+                network.get("/me").mock(return_value=httpx.Response(200, json={}))
+                await sc.account("conn-1").direct.get("/me")
+            used.extend(sc._http_made.values())
+
+        for _ in range(3):
+            asyncio.run(one_request())
+
+        # A client kept from an earlier request belongs to a loop that has
+        # gone, and so do the sockets it is holding open. Handing that one
+        # back is the bug.
+        assert len({id(http) for http in used}) == 3
+
+    def test_a_client_whose_loop_has_finished_is_let_go_of(self) -> None:
+        storage = asyncio.run(storage_holding(a_connection()))
+        sc = SocialChimp(storage)
+
+        async def one_request() -> None:
+            with respx.mock(base_url=BASE) as network:
+                network.get("/me").mock(return_value=httpx.Response(200, json={}))
+                await sc.account("conn-1").direct.get("/me")
+
+        for _ in range(5):
+            asyncio.run(one_request())
+
+        # One per loop would be a leak of its own if they piled up. Only the
+        # last loop's client is still held.
+        assert len(sc._http_made) == 1
+
+    def test_closing_lets_go_of_what_it_cannot_close(self) -> None:
+        storage = asyncio.run(storage_holding(a_connection()))
+        sc = SocialChimp(storage)
+
+        async def one_request() -> None:
+            with respx.mock(base_url=BASE) as network:
+                network.get("/me").mock(return_value=httpx.Response(200, json={}))
+                await sc.account("conn-1").direct.get("/me")
+
+        asyncio.run(one_request())
+        made_there = list(sc._http_made.values())
+
+        asyncio.run(sc.aclose())
+
+        # Closing a socket means asking the loop that opened it, and that
+        # loop has finished. So the client is dropped rather than closed,
+        # and closing does not fall over trying.
+        assert [http.is_closed for http in made_there] == [False]
+        assert not sc._http_made
+
+    def test_asking_outside_async_code_says_where_to_ask_from(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(ConfigError) as refused:
+            sc.http_for(a_connection())
+
+        assert "async" in str(refused.value)
+
+
 class TestPostingToManyAccounts:
     async def test_every_account_gets_its_own_result_in_order(self) -> None:
         storage = await storage_holding(

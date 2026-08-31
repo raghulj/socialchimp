@@ -6,22 +6,23 @@ from datetime import UTC, datetime
 from importlib import import_module
 from typing import TYPE_CHECKING, Protocol, cast
 
+import httpx
 import pytest
+import respx
 from asgiref.sync import async_to_sync
 
 from socialchimp.client import SocialChimp
 from socialchimp.errors import ConfigError
 from socialchimp.events import Dispatcher, UpdateKind
+from socialchimp.http import HttpClient
 from socialchimp.models import AppCredentials, Connection
-from socialchimp.platform import AccountChoice, Finished
+from socialchimp.platform import AccountChoice
 from socialchimp.testing import FakePlatform, RecordingStorage
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from socialchimp.events import Update
-    from socialchimp.models import RawData
-    from socialchimp.platform import LoginRequest, LoginStep
 
 
 # --------------------------------------------------------------------------
@@ -149,20 +150,6 @@ class WatchfulPlatform(FakePlatform):
     ) -> None:
         self.checked.append(body)
         super().check_signature(body, headers, secret=secret)
-
-
-class ChoosyPlatform(WatchfulPlatform):
-    """A network that asks which page to use, the way Facebook does."""
-
-    async def resume_login(
-        self,
-        request: LoginRequest,
-        *,
-        resume_token: str,
-        account_id: str,
-        remember: RawData | None = None,
-    ) -> LoginStep:
-        return Finished(connection=self.connection(account_id=account_id))
 
 
 class OrmStorage:
@@ -347,7 +334,7 @@ def test_the_callback_offers_the_accounts_to_choose_between(
     factory: Factory,
 ) -> None:
     routes = build(
-        ChoosyPlatform(accounts=(AccountChoice(id="7", name="A Page"),)),
+        WatchfulPlatform(accounts=(AccountChoice(id="7", name="A Page"),)),
         seen,
     )
     call(routes, "socialchimp-connect", factory.get("/c/fake", {"state": "mine"}))
@@ -369,7 +356,7 @@ def test_choosing_an_account_finishes_the_sign_in(
     factory: Factory,
 ) -> None:
     routes = build(
-        ChoosyPlatform(accounts=(AccountChoice(id="7", name="A Page"),)),
+        WatchfulPlatform(accounts=(AccountChoice(id="7", name="A Page"),)),
         seen,
     )
     call(routes, "socialchimp-connect", factory.get("/c/fake", {"state": "mine"}))
@@ -522,6 +509,38 @@ def test_your_own_forms_still_need_one() -> None:
     browser = make_browser(enforce_csrf_checks=True)
     answer = browser.post("/choose/fake", b"state=x&account_id=7", FORM)
     assert answer.status_code == 403
+
+
+# --------------------------------------------------------------------------
+# Going direct from an ordinary sync view
+# --------------------------------------------------------------------------
+
+
+def test_each_request_gets_an_http_client_made_on_its_own_loop() -> None:
+    # async_to_sync builds an event loop for each call and closes it at the
+    # end, so this is what several requests in a row look like under WSGI. A
+    # client kept from an earlier one belongs to a loop that has gone, and so
+    # do the sockets it is holding open.
+    fake = FakePlatform()
+    connection = fake.connection()
+    sc = SocialChimp(
+        storage=RecordingStorage(connections=[connection]),
+        platforms={"fake": fake},
+    )
+    used: list[HttpClient] = []
+
+    async def one_request() -> None:
+        with respx.mock(base_url=fake.api_base(connection)) as network:
+            network.get("/me").mock(return_value=httpx.Response(200, json={}))
+            await sc.account(connection.id).direct.get("/me")
+        used.append(sc.http_for(connection))
+
+    for _ in range(3):
+        async_to_sync(one_request)()
+
+    assert len({id(http) for http in used}) == 3
+    # And the finished loops took their clients with them.
+    assert len(sc._http_made) == 1
 
 
 # --------------------------------------------------------------------------
