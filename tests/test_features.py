@@ -13,7 +13,12 @@ from socialchimp import (
     Post,
     check_post,
 )
-from socialchimp.features import TextCount, count_graphemes, measure_text
+from socialchimp.features import (
+    TextCount,
+    check_option_names,
+    count_graphemes,
+    measure_text,
+)
 
 # One thumbs-up with a skin tone on it. One letter to a person, two
 # characters to Python, four bytes written out, two units to a network
@@ -123,6 +128,91 @@ class TestCheckPost:
                 limits=Limits(max_images=3),
             )
 
+    def test_words_alone_on_a_network_with_no_text_post_are_refused(self) -> None:
+        # YouTube, Instagram, Pinterest and TikTok all have nothing to
+        # publish a post of words as. Each of them used to say so itself,
+        # four times over, in four slightly different sentences.
+        with pytest.raises(NotSupportedError) as refused:
+            check_post(
+                Post(text="hello"),
+                platform="youtube",
+                features=Feature.POST_VIDEO,
+                limits=Limits(),
+            )
+
+        assert refused.value.what == "posting words on their own"
+        assert str(refused.value) == (
+            "youtube does not support posting words on their own. Every post "
+            "here carries a video, so attach one."
+        )
+
+    def test_it_names_both_when_the_network_takes_either(self) -> None:
+        with pytest.raises(NotSupportedError) as refused:
+            check_post(
+                Post(text="hello"),
+                platform="pinterest",
+                features=Feature.POST_IMAGE | Feature.POST_VIDEO,
+                limits=Limits(),
+            )
+
+        assert "a picture or a video" in str(refused.value)
+
+    def test_a_platform_can_add_a_sentence_of_its_own(self) -> None:
+        with pytest.raises(NotSupportedError) as refused:
+            check_post(
+                Post(text="hello"),
+                platform="youtube",
+                features=Feature.POST_VIDEO,
+                limits=Limits(),
+                words_alone_advice="Community posts are not in the API.",
+            )
+
+        assert str(refused.value).endswith(
+            "so attach one. Community posts are not in the API."
+        )
+
+    def test_a_network_with_nothing_to_attach_says_only_that(self) -> None:
+        # A platform claiming none of the three ways to post cannot take
+        # anything at all, so there is no "attach one instead" to offer.
+        with pytest.raises(NotSupportedError) as refused:
+            check_post(
+                Post(text="hello"),
+                platform="nowhere",
+                features=Feature.REPLY,
+                limits=Limits(),
+            )
+
+        assert str(refused.value) == (
+            "nowhere does not support posting words on their own."
+        )
+
+    def test_a_post_with_media_gets_past_that(self) -> None:
+        check_post(
+            Post(text="hello", media=(Media.from_bytes(b"x", filename="a.mp4"),)),
+            platform="youtube",
+            features=Feature.POST_VIDEO,
+            limits=Limits(),
+        )
+
+    def test_a_network_that_can_post_text_takes_words_alone(self) -> None:
+        check_post(
+            Post(text="hello"),
+            platform="mastodon",
+            features=Feature.POST_TEXT,
+            limits=Limits(),
+        )
+
+    def test_a_post_too_long_to_send_is_refused_for_that_first(self) -> None:
+        # Both wrong at once. The length is the one the person can fix
+        # without changing what they are posting, so it is the one to say.
+        with pytest.raises(InvalidPostError):
+            check_post(
+                Post(text="far too long"),
+                platform="youtube",
+                features=Feature.POST_VIDEO,
+                limits=Limits(max_text_length=3),
+            )
+
     def test_a_reply_on_a_network_that_cannot_reply_is_refused(self) -> None:
         with pytest.raises(NotSupportedError, match="repl"):
             check_post(
@@ -154,6 +244,55 @@ class TestCheckPost:
                 features=EVERYTHING,
                 limits=Limits(max_videos=1),
             )
+
+
+class TestCheckingOptionNames:
+    def test_a_setting_the_network_knows_is_left_alone(self) -> None:
+        check_option_names(
+            {"visibility": "public"},
+            platform="mastodon",
+            allowed=("visibility", "language"),
+        )
+
+    def test_no_settings_at_all_is_fine(self) -> None:
+        check_option_names({}, platform="mastodon", allowed=("visibility",))
+
+    def test_a_setting_it_has_never_heard_of_is_refused(self) -> None:
+        # A typo here used to cost a request and a slice of the rate limit
+        # before the network said no in its own words.
+        with pytest.raises(InvalidPostError) as refused:
+            check_option_names(
+                {"visibilty": "public"},
+                platform="mastodon",
+                allowed=("visibility", "language"),
+            )
+
+        assert str(refused.value) == (
+            "mastodon does not know the post option 'visibilty'. It "
+            "accepts: visibility, language."
+        )
+        assert refused.value.platform == "mastodon"
+
+    def test_the_first_unknown_setting_is_the_one_named(self) -> None:
+        with pytest.raises(InvalidPostError, match="'one'"):
+            check_option_names(
+                {"one": 1, "two": 2},
+                platform="mastodon",
+                allowed=(),
+            )
+
+    def test_a_platform_can_add_a_sentence_of_its_own(self) -> None:
+        with pytest.raises(InvalidPostError) as refused:
+            check_option_names(
+                {"description": "a chair"},
+                platform="pinterest",
+                allowed=("title",),
+                advice="Post.text is the pin's description.",
+            )
+
+        assert str(refused.value).endswith(
+            "It accepts: title. Post.text is the pin's description."
+        )
 
 
 class TestCountingLetters:

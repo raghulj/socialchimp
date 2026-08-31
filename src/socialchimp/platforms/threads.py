@@ -145,7 +145,13 @@ from socialchimp.errors import (
 )
 from socialchimp.events import Update
 from socialchimp.events import answer_setup_check as echo_the_challenge
-from socialchimp.features import Feature, Limits, TextCount, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_option_names,
+    check_post,
+)
 from socialchimp.http import HttpClient
 from socialchimp.models import (
     Connection,
@@ -418,12 +424,13 @@ def _app_must_be_made_by_hand() -> NotSupportedError:
     """
     return NotSupportedError(
         platform=PLATFORM_NAME,
-        what=(
-            f"registering an app for you. No Meta network does - there is no "
-            f"call for it. Make the app by hand at {DEVELOPER_PORTAL}, add "
-            f"the Threads use case to it, and save the id and secret with "
-            f"Storage.save_app. {SEPARATE_APP} Meta also has to review the "
-            f"app before it works for anybody but you"
+        what="registering an app for you",
+        suggestion=(
+            f"No Meta network does - there is no call for it. Make the app "
+            f"by hand at {DEVELOPER_PORTAL}, add the Threads use case to it, "
+            f"and save the id and secret with Storage.save_app. "
+            f"{SEPARATE_APP} Meta also has to review the app before it works "
+            f"for anybody but you."
         ),
     )
 
@@ -516,13 +523,9 @@ def _checked_options(options: RawData) -> bool:
         InvalidPostError: If a setting is unknown or its value is wrong. This
             happens before any request, so a typo costs nothing.
     """
+    check_option_names(options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
+
     for key, value in options.items():
-        if key not in POST_OPTIONS:
-            message = (
-                f"Threads does not know the post option {key!r}. It accepts: "
-                f"{', '.join(POST_OPTIONS)}."
-            )
-            raise InvalidPostError(message)
         if not isinstance(value, bool):
             message = (
                 f"{key} is {value!r}, but it has to be True or False. True "
@@ -541,13 +544,14 @@ def _needs_a_web_address() -> NotSupportedError:
     """
     return NotSupportedError(
         platform=PLATFORM_NAME,
-        what=(
-            "being sent a file. It fetches every picture and video itself, "
-            "from a web address, and has no upload of any kind - so "
-            "Media.from_file and Media.from_bytes cannot be published here. "
-            "Put the file somewhere the public internet can reach it, such "
-            "as object storage with a public link or your own web server, "
-            "and use Media.from_url(...) instead"
+        what="being sent a file",
+        suggestion=(
+            "It fetches every picture and video itself, from a web address, "
+            "and has no upload of any kind - so Media.from_file and "
+            "Media.from_bytes cannot be published here. Put the file "
+            "somewhere the public internet can reach it, such as object "
+            "storage with a public link or your own web server, and use "
+            "Media.from_url(...) instead."
         ),
     )
 

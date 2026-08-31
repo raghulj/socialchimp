@@ -47,7 +47,6 @@ from socialchimp.platforms.x import (
     DEFAULT_SCOPES,
     PartialThreadError,
     XPlatform,
-    rate_limit_in,
 )
 from socialchimp.testing import PlatformChecks, RecordingTransport
 
@@ -1522,38 +1521,6 @@ class TestSettingItUp:
         # The rest of these tests watch the pauses instead of taking them,
         # so this is the one that runs the waiting itself.
         await x_module._wait(0.0)
-
-
-class TestReadingTheAllowance:
-    def test_it_reads_the_three_headers_x_actually_sends(self) -> None:
-        resets_at = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
-        headers = httpx.Headers(
-            {
-                "x-rate-limit-limit": "300",
-                "x-rate-limit-remaining": "12",
-                "x-rate-limit-reset": str(int(resets_at.timestamp())),
-            }
-        )
-
-        left = rate_limit_in(headers)
-
-        assert left is not None
-        assert left.limit == 300
-        assert left.remaining == 12
-        assert left.resets_at == resets_at
-        assert not left.is_used_up
-
-    def test_a_reply_that_says_nothing_reads_as_nothing(self) -> None:
-        assert rate_limit_in(httpx.Headers({})) is None
-
-    def test_it_shrugs_off_headers_it_cannot_read(self) -> None:
-        left = rate_limit_in(
-            httpx.Headers({"x-rate-limit-remaining": "0", "x-rate-limit-limit": "lots"})
-        )
-
-        assert left is not None
-        assert left.limit is None
-        assert left.is_used_up
 
 
 class TestXBehavesLikeTheOthers(PlatformChecks):

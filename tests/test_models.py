@@ -52,6 +52,47 @@ class TestToken:
         with pytest.raises(ValueError, match="timezone"):
             Token(access_token="abc", expires_at=datetime(2030, 1, 1))  # noqa: DTZ001
 
+    def test_a_refresh_token_with_no_expiry_never_runs_out(self) -> None:
+        # Most networks never expire the refresh token, so this stays unset
+        # and every question about it answers no.
+        token = Token(access_token="abc", refresh_token="def")
+
+        assert token.refresh_token_expires_at is None
+        assert token.refresh_token_expires_within(seconds=999_999) is False
+        assert token.refresh_token_is_expired is False
+
+    def test_a_refresh_token_can_say_when_it_runs_out(self) -> None:
+        # Pinterest's lasts sixty days, and an app that cannot see that
+        # only finds out on the day the account stops working.
+        in_a_month = datetime.now(UTC) + timedelta(days=30)
+        token = Token(
+            access_token="abc",
+            refresh_token="def",
+            refresh_token_expires_at=in_a_month,
+        )
+
+        assert token.refresh_token_expires_at == in_a_month
+        assert token.refresh_token_expires_within(seconds=60 * 60 * 24 * 60) is True
+        assert token.refresh_token_expires_within(seconds=60) is False
+        assert token.refresh_token_is_expired is False
+
+    def test_a_refresh_token_past_its_expiry_is_expired(self) -> None:
+        past = datetime.now(UTC) - timedelta(seconds=1)
+        token = Token(
+            access_token="abc",
+            refresh_token="def",
+            refresh_token_expires_at=past,
+        )
+
+        assert token.refresh_token_is_expired is True
+
+    def test_a_refresh_expiry_without_a_timezone_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="timezone"):
+            Token(
+                access_token="abc",
+                refresh_token_expires_at=datetime(2030, 1, 1),  # noqa: DTZ001
+            )
+
 
 class TestMedia:
     def test_media_can_be_built_from_a_file(self, tmp_path: Path) -> None:

@@ -44,7 +44,6 @@ from socialchimp.platforms.pinterest import (
     DEFAULT_SCOPES,
     Board,
     PinterestPlatform,
-    rate_limit_in,
 )
 from socialchimp.testing import PlatformChecks, RecordingTransport
 
@@ -444,6 +443,45 @@ class TestFinishingTheSignIn:
 
         assert done.connection.scopes == DEFAULT_SCOPES
 
+    async def test_it_records_when_the_refresh_token_itself_runs_out(
+        self,
+        platform: PinterestPlatform,
+    ) -> None:
+        # Pinterest is one of the few networks that says. An app that keeps
+        # this can warn somebody in week eight; an app that cannot only
+        # finds out on the day the account stops working.
+        before = datetime.now(UTC)
+
+        with respx.mock() as network:
+            network.post(f"{API}/oauth/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+            stub_me(network)
+
+            done = await platform.finish_login(login(), {"code": "the-code"})
+
+        runs_out = done.connection.token.refresh_token_expires_at
+        assert runs_out is not None
+        assert runs_out >= before + timedelta(days=59)
+
+    async def test_a_reply_that_does_not_say_leaves_that_unknown(
+        self,
+        platform: PinterestPlatform,
+    ) -> None:
+        # A guess here would have an app telling somebody to reconnect an
+        # account that was fine. Unknown means unknown.
+        with respx.mock() as network:
+            reply = a_token()
+            del reply["refresh_token_expires_in"]
+            network.post(f"{API}/oauth/token").mock(
+                return_value=httpx.Response(200, json=reply)
+            )
+            stub_me(network)
+
+            done = await platform.finish_login(login(), {"code": "the-code"})
+
+        assert done.connection.token.refresh_token_expires_at is None
+
     async def test_a_token_with_no_expiry_is_treated_as_lasting_a_month(
         self,
         platform: PinterestPlatform,
@@ -567,6 +605,54 @@ class TestRenewingAToken:
             token = await platform.refresh(account, APP)
 
         assert token.refresh_token == "refresh-one"
+
+    async def test_a_renewal_records_the_new_refresh_token_expiry(
+        self,
+        platform: PinterestPlatform,
+        account: Connection,
+    ) -> None:
+        before = datetime.now(UTC)
+
+        with respx.mock() as network:
+            network.post(f"{API}/oauth/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+
+            token = await platform.refresh(account, APP)
+
+        runs_out = token.refresh_token_expires_at
+        assert runs_out is not None
+        assert runs_out >= before + timedelta(days=59)
+
+    async def test_a_renewal_that_does_not_say_keeps_what_we_already_knew(
+        self,
+        platform: PinterestPlatform,
+    ) -> None:
+        knew = datetime.now(UTC) + timedelta(days=40)
+        account = Connection(
+            id=f"pinterest:{ACCOUNT}",
+            platform="pinterest",
+            host=None,
+            account_id=ACCOUNT,
+            account_name=ACCOUNT,
+            token=Token(
+                access_token="access-one",
+                refresh_token="refresh-one",
+                refresh_token_expires_at=knew,
+            ),
+            scopes=DEFAULT_SCOPES,
+        )
+
+        with respx.mock() as network:
+            reply = a_token(access_token="access-two")
+            del reply["refresh_token_expires_in"]
+            network.post(f"{API}/oauth/token").mock(
+                return_value=httpx.Response(200, json=reply)
+            )
+
+            token = await platform.refresh(account, APP)
+
+        assert token.refresh_token_expires_at == knew
 
     async def test_renewing_without_credentials_says_where_to_get_them(
         self,
@@ -961,7 +1047,9 @@ class TestPublishing:
         with pytest.raises(NotSupportedError) as refused:
             await platform.publish(account, Post(text="just some words"))
 
-        assert "every pin is a picture or a video" in str(refused.value).lower()
+        said = str(refused.value)
+        assert "a picture or a video" in said
+        assert "the pin's description" in said
 
     async def test_replying_says_pinterest_has_no_comments_at_all(
         self,
@@ -970,6 +1058,20 @@ class TestPublishing:
     ) -> None:
         with pytest.raises(NotSupportedError, match="no comments in it at all"):
             await platform.publish(account, a_post(reply_to="9876543210"))
+
+    async def test_the_reason_for_that_is_a_sentence_of_its_own(
+        self,
+        platform: PinterestPlatform,
+        account: Connection,
+    ) -> None:
+        # `what` finishes the sentence "pinterest does not support ...", so
+        # a paragraph in there reads as one enormous sentence.
+        with pytest.raises(NotSupportedError) as refused:
+            await platform.publish(account, a_post(reply_to="9876543210"))
+
+        assert refused.value.what == "replying to pins"
+        assert refused.value.suggestion is not None
+        assert "no comments in it at all" in refused.value.suggestion
 
     async def test_scheduling_is_refused_rather_than_pinned_now(
         self,
@@ -1438,53 +1540,6 @@ class TestWhenPinterestSaysNo:
                 await platform.delete_post(account, "1")
 
         assert slow.value.retry_after == 30.0
-
-
-class TestReadingTheAllowance:
-    def test_it_reads_the_headers_pinterest_sends(self) -> None:
-        left = rate_limit_in(
-            httpx.Headers({"x-ratelimit-limit": "1000", "x-ratelimit-remaining": "998"})
-        )
-
-        assert left is not None
-        assert left.limit == 1000
-        assert left.remaining == 998
-        assert not left.is_used_up
-
-    def test_it_takes_the_first_window_when_several_are_listed(self) -> None:
-        # Pinterest sometimes lists every window it is counting in one
-        # header: "100, 100;w=1, 1000;w=60". The bare number in front is the
-        # one that applies right now.
-        left = rate_limit_in(
-            httpx.Headers(
-                {
-                    "x-ratelimit-limit": "100, 100;w=1, 1000;w=60",
-                    "x-ratelimit-remaining": "0",
-                }
-            )
-        )
-
-        assert left is not None
-        assert left.limit == 100
-        assert left.is_used_up
-
-    def test_a_reply_that_says_nothing_reads_as_nothing(self) -> None:
-        assert rate_limit_in(httpx.Headers({})) is None
-
-    def test_it_shrugs_off_a_header_it_cannot_read(self) -> None:
-        left = rate_limit_in(
-            httpx.Headers({"x-ratelimit-limit": "lots", "x-ratelimit-remaining": "4"})
-        )
-
-        assert left is not None
-        assert left.limit is None
-        assert left.remaining == 4
-
-    def test_it_reads_a_reset_when_there_is_one(self) -> None:
-        left = rate_limit_in(httpx.Headers({"x-ratelimit-reset": "60"}))
-
-        assert left is not None
-        assert left.resets_at is not None
 
 
 class TestSettingItUp:

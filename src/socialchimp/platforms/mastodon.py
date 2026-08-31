@@ -91,7 +91,13 @@ from socialchimp.errors import (
     PlatformError,
 )
 from socialchimp.events import Update
-from socialchimp.features import Feature, Limits, TextCount, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_option_names,
+    check_post,
+)
 from socialchimp.http import HttpClient, error_from_response, read_body
 from socialchimp.models import (
     AppCredentials,
@@ -424,16 +430,8 @@ def _checked_options(options: RawData) -> dict[str, str]:
         InvalidPostError: If a setting is unknown or its value is wrong. This
             happens before any request, so a typo costs nothing.
     """
-    checked: dict[str, str] = {}
-    for key, value in options.items():
-        if key not in POST_OPTIONS:
-            message = (
-                f"Mastodon does not know the post option {key!r}. It accepts: "
-                f"{', '.join(POST_OPTIONS)}."
-            )
-            raise InvalidPostError(message)
-        checked[key] = _checked_option(key, value)
-    return checked
+    check_option_names(options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
+    return {key: _checked_option(key, value) for key, value in options.items()}
 
 
 def _limits_from_instance(reply: RawData) -> Limits:

@@ -144,11 +144,17 @@ from socialchimp.errors import (
     TokenExpiredError,
 )
 from socialchimp.events import Update
-from socialchimp.features import Feature, Limits, TextCount, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_option_names,
+    check_post,
+)
 from socialchimp.http import (
     HttpClient,
-    RateLimit,
     error_from_response,
+    rate_limit_from_headers,
     read_body,
     retry_after_seconds,
 )
@@ -173,7 +179,6 @@ if TYPE_CHECKING:
 __all__ = [
     "PartialThreadError",
     "XPlatform",
-    "rate_limit_in",
     "x_errors",
 ]
 
@@ -261,14 +266,6 @@ _DEFAULT_TOKEN_SECONDS: Final = 7200
 # Long enough that nobody can guess one, short enough to sit in a URL.
 _STATE_BYTES: Final = 24
 _VERIFIER_BYTES: Final = 48
-
-# The three headers X uses to say how much of an allowance is left. It spells
-# them differently from everybody else - `x-rate-limit-*` rather than
-# `x-ratelimit-*` - which is why the shared reader in `socialchimp.http` does
-# not see them and `rate_limit_in` exists.
-_LIMIT_HEADER: Final = "x-rate-limit-limit"
-_REMAINING_HEADER: Final = "x-rate-limit-remaining"
-_RESET_HEADER: Final = "x-rate-limit-reset"
 
 # What X says while it is still working on a file, and what it says when it
 # has given up. Anything else means the file is ready.
@@ -391,54 +388,6 @@ def _challenge_for(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
 
-def _whole_number(value: str | None) -> int | None:
-    """Read a header that should hold a count.
-
-    Args:
-        value: The header's value, or `None`.
-
-    Returns:
-        The count, or `None` if it is missing or not a whole number.
-    """
-    if value is None:
-        return None
-    try:
-        return int(value.strip())
-    except ValueError:
-        return None
-
-
-def rate_limit_in(headers: httpx.Headers) -> RateLimit | None:
-    """Read how much of X's allowance is left out of a reply's headers.
-
-    X spells these headers `x-rate-limit-limit`, `-remaining` and `-reset`,
-    where every other network socialchimp talks to spells them
-    `x-ratelimit-*`. That one hyphen means the shared reader in
-    `socialchimp.http` never sees them, so this reads them instead.
-
-    The reset is a moment in time, not a countdown. X counts in windows -
-    usually fifteen minutes, though it varies by endpoint and by plan - and
-    the header says when the current one starts again.
-
-    Args:
-        headers: The reply's headers.
-
-    Returns:
-        What X said, or `None` if it said nothing we recognise.
-    """
-    limit = _whole_number(headers.get(_LIMIT_HEADER))
-    remaining = _whole_number(headers.get(_REMAINING_HEADER))
-
-    resets_at: datetime | None = None
-    seconds = _whole_number(headers.get(_RESET_HEADER))
-    if seconds is not None:
-        resets_at = datetime.fromtimestamp(seconds, UTC)
-
-    if limit is None and remaining is None and resets_at is None:
-        return None
-    return RateLimit(limit=limit, remaining=remaining, resets_at=resets_at)
-
-
 def _how_long_to_wait(response: httpx.Response) -> float | None:
     """Work out how long to wait after X has asked us to slow down.
 
@@ -456,7 +405,7 @@ def _how_long_to_wait(response: httpx.Response) -> float | None:
     if asked_for is not None:
         return asked_for
 
-    left = rate_limit_in(response.headers)
+    left = rate_limit_from_headers(response.headers)
     if left is None or left.resets_at is None:
         return None
     return max((left.resets_at - datetime.now(UTC)).total_seconds(), 0.0)
@@ -806,16 +755,8 @@ def _checked_options(options: RawData) -> dict[str, str]:
         InvalidPostError: If a setting is unknown or its value is wrong. This
             happens before any request, so a typo costs nothing.
     """
-    checked: dict[str, str] = {}
-    for key, value in options.items():
-        if key not in POST_OPTIONS:
-            message = (
-                f"X does not know the post option {key!r}. It accepts: "
-                f"{', '.join(POST_OPTIONS)}."
-            )
-            raise InvalidPostError(message, platform=PLATFORM_NAME)
-        checked[key] = _checked_option(key, value)
-    return checked
+    check_option_names(options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
+    return {key: _checked_option(key, value) for key, value in options.items()}
 
 
 def _body_for(post: Post, options: dict[str, str], media_ids: list[str]) -> RawData:

@@ -204,7 +204,13 @@ from socialchimp.events import (
     Update,
     check_not_too_old,
 )
-from socialchimp.features import Feature, Limits, TextCount, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_option_names,
+    check_post,
+)
 from socialchimp.http import (
     HttpClient,
     error_from_response,
@@ -850,6 +856,11 @@ def _how_big(video: Media) -> int:
     return total
 
 
+# What `check_post` adds to its own "this network has no text-only post"
+# message here.
+WORDS_ALONE_ADVICE: Final = "Media.from_file('clip.mp4') will do it."
+
+
 def _the_video(post: Post) -> Media:
     """Find the one video a TikTok post is made of.
 
@@ -860,20 +871,11 @@ def _the_video(post: Post) -> Media:
         The video to upload.
 
     Raises:
-        NotSupportedError: If there is no video. This is not a gap in
-            socialchimp - TikTok has no text-only post to fall back to.
         InvalidPostError: If TikTok will not take this kind of file.
     """
     # By the time this runs, the carousel check has already turned away
-    # pictures and `check_post` any post carrying more than one video. So
-    # what is left is either exactly one video or nothing at all.
-    if not post.media:
-        what = (
-            "text-only posts. Everything on TikTok is a video, so attach one "
-            "with Media.from_file('clip.mp4')"
-        )
-        raise NotSupportedError(platform=PLATFORM_NAME, what=what)
-
+    # pictures, and `check_post` any post carrying more than one video or
+    # nothing at all. So what is left is exactly one video.
     video = post.media[0]
     if video.content_type not in VIDEO_TYPES:
         message = (
@@ -904,17 +906,21 @@ def _no_carousels(post: Post) -> None:
     if not any(item.kind is MediaKind.IMAGE for item in post.media):
         return
 
-    what = (
-        f"posting pictures yet. TikTok does have photo carousels - up to "
+    suggestion = (
+        f"TikTok does have photo carousels - up to "
         f"{MAX_IMAGES_PER_CAROUSEL} pictures in one post - but they go "
         f"through a different call ({CAROUSEL_ENDPOINT}) that makes TikTok "
         f"fetch each picture from a public web address rather than taking an "
         f"upload, and that address has to be on a domain you have proved is "
         f"yours. That is a different way of moving a file rather than "
         f"another setting, and socialchimp does not do it yet. Post a video "
-        f"instead, or put the carousel up in the TikTok app"
+        f"instead, or put the carousel up in the TikTok app."
     )
-    raise NotSupportedError(platform=PLATFORM_NAME, what=what)
+    raise NotSupportedError(
+        platform=PLATFORM_NAME,
+        what="posting pictures yet",
+        suggestion=suggestion,
+    )
 
 
 def _checked_options(options: RawData) -> None:
@@ -927,13 +933,7 @@ def _checked_options(options: RawData) -> None:
         InvalidPostError: If a setting is not one of ours. A typo costs no
             request and no part of the minute's allowance.
     """
-    for key in options:
-        if key not in POST_OPTIONS:
-            message = (
-                f"TikTok does not know the post option {key!r}. It accepts: "
-                f"{', '.join(POST_OPTIONS)}."
-            )
-            raise InvalidPostError(message, platform=PLATFORM_NAME)
+    check_option_names(options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
 
 
 def _where_to_send(options: RawData) -> str:
@@ -1707,7 +1707,13 @@ class TikTokPlatform:
         _no_carousels(post)
 
         limits = await self.limits(connection)
-        check_post(post, platform=PLATFORM_NAME, features=self.features, limits=limits)
+        check_post(
+            post,
+            platform=PLATFORM_NAME,
+            features=self.features,
+            limits=limits,
+            words_alone_advice=WORDS_ALONE_ADVICE,
+        )
 
         _checked_options(post.options)
         where = _where_to_send(post.options)

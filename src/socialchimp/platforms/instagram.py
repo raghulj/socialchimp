@@ -140,7 +140,13 @@ from socialchimp.errors import (
 )
 from socialchimp.events import Update
 from socialchimp.events import answer_setup_check as echo_the_challenge
-from socialchimp.features import Feature, Limits, TextCount, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_option_names,
+    check_post,
+)
 from socialchimp.http import HttpClient, read_body
 from socialchimp.models import (
     Connection,
@@ -619,13 +625,9 @@ def _checked_options(options: RawData) -> bool:
         InvalidPostError: If a setting is unknown or its value is wrong. This
             happens before any request, so a typo costs nothing.
     """
+    check_option_names(options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
+
     for key, value in options.items():
-        if key not in POST_OPTIONS:
-            message = (
-                f"Instagram does not know the post option {key!r}. It "
-                f"accepts: {', '.join(POST_OPTIONS)}."
-            )
-            raise InvalidPostError(message)
         if not isinstance(value, bool):
             message = (
                 f"{key} is {value!r}, but it has to be True or False. "
@@ -636,6 +638,16 @@ def _checked_options(options: RawData) -> bool:
     return bool(options.get("carousel", False))
 
 
+# What `check_post` adds to its own "this network has no text-only post"
+# message here. Instagram fetches every file itself, so the usual advice of
+# "attach one" would send somebody straight to Media.from_file and a second
+# refusal.
+WORDS_ALONE_ADVICE: Final = (
+    "Instagram fetches every file itself, so it has to be a "
+    "Media.from_url(...); your words become its caption."
+)
+
+
 def _needs_a_web_address() -> NotSupportedError:
     """Build the error for a file we were handed the bytes of.
 
@@ -644,15 +656,16 @@ def _needs_a_web_address() -> NotSupportedError:
     """
     return NotSupportedError(
         platform=PLATFORM_NAME,
-        what=(
-            "being sent a file. It fetches every picture and video itself, "
-            "from a web address, and has no upload of any kind - so "
-            "Media.from_file and Media.from_bytes cannot be published here. "
-            "Put the file somewhere the public internet can reach it, such "
-            "as object storage with a public link or your own web server, "
-            "and use Media.from_url(...) instead. socialchimp will not "
-            "quietly host it for you, because a file that appeared somewhere "
-            "you did not choose is a worse surprise than this message"
+        what="being sent a file",
+        suggestion=(
+            "It fetches every picture and video itself, from a web address, "
+            "and has no upload of any kind - so Media.from_file and "
+            "Media.from_bytes cannot be published here. Put the file "
+            "somewhere the public internet can reach it, such as object "
+            "storage with a public link or your own web server, and use "
+            "Media.from_url(...) instead. socialchimp will not quietly host "
+            "it for you, because a file that appeared somewhere you did not "
+            "choose is a worse surprise than this message."
         ),
     )
 
@@ -667,21 +680,10 @@ def _things_to_publish(post: Post) -> tuple[_Attachment, ...]:
         The pictures and videos, in the order they were given.
 
     Raises:
-        NotSupportedError: If the post has nothing attached, or a file we
-            would have to upload.
+        NotSupportedError: If the post carries a file we would have to
+            upload.
         InvalidPostError: If there are more attachments than fit in one post.
     """
-    if not post.media:
-        raise NotSupportedError(
-            platform=PLATFORM_NAME,
-            what=(
-                "posting words on their own. Every Instagram post carries a "
-                "picture or a video - there is no text-only post on it at "
-                "all - so attach one with Media.from_url(...) and your words "
-                "become its caption"
-            ),
-        )
-
     found: list[_Attachment] = []
     for item in post.media:
         if item.url is None:
@@ -1389,8 +1391,8 @@ class InstagramPlatform:
             ConfigError: If the connection names no Instagram account.
             InvalidPostError: If the post breaks one of Instagram's limits,
                 if a setting is unknown, or if Instagram gave up making it.
-            NotSupportedError: If the post is words alone, or carries a file
-                Instagram would have to be sent rather than fetch.
+            NotSupportedError: If the post is words alone, or carries a
+                file Instagram would have to be sent rather than fetch.
             PlatformError: If Instagram was still working when we stopped
                 watching. That is not a failure - see `_stopped_waiting`.
             SocialChimpError: If Instagram refuses any of the three steps.
@@ -1406,6 +1408,7 @@ class InstagramPlatform:
             platform=PLATFORM_NAME,
             features=self.features,
             limits=_what_it_allows(),
+            words_alone_advice=WORDS_ALONE_ADVICE,
         )
         _check_hashtags(post.text)
         things = _things_to_publish(post)

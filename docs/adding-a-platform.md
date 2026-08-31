@@ -105,6 +105,82 @@ mapping from scratch.
 **Use `HttpClient`.** Retries, `Retry-After`, rate limits and error mapping
 are already written. Rolling your own means writing all of it again, worse.
 
+## Shared helpers you should be using
+
+These exist because nine platforms each wrote their own and the copies drifted.
+Reach for them before writing a tenth.
+
+**`rate_limit_from_headers` reads both spellings.** From `socialchimp.http`.
+It knows `x-ratelimit-limit`, X's `x-rate-limit-limit` (one extra hyphen) and
+the bare `ratelimit-limit`, and it copes with a header that lists every window
+at once - Pinterest's `100, 100;w=1, 1000;w=60` - by taking the bare number in
+front. `HttpClient` already calls it after every reply, so `http.rate_limit`
+is filled in for you. If your network spells these some fourth way, add the
+name to `socialchimp.http` rather than writing a reader in your platform file:
+a private copy means `HttpClient.rate_limit` silently stays `None`, which
+nothing anywhere complains about.
+
+**`check_post` refuses a post of words on a network that has no such thing.**
+Leave `Feature.POST_TEXT` off and a post with nothing attached is turned away
+with a `NotSupportedError` naming what to attach instead. There is nothing to
+write. If your network has one more thing worth saying, pass it as
+`words_alone_advice=` and it is added to the message:
+
+```python
+check_post(
+    post,
+    platform=PLATFORM_NAME,
+    features=self.features,
+    limits=limits,
+    words_alone_advice=(
+        "Media.from_file('clip.mp4') will do it. Community posts are words, "
+        "but they are not in YouTube's API at all."
+    ),
+)
+```
+
+**`check_option_names` refuses a setting your network never heard of.** From
+`socialchimp.features`. It checks the *names* in `Post.options` against the
+list you accept, and raises `InvalidPostError` before anything is sent:
+
+```python
+POST_OPTIONS: Final = ("visibility", "language")
+
+check_option_names(post.options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
+```
+
+Pass `advice=` for one more sentence where the mistake has an obvious cause -
+Pinterest uses it to say that `Post.text` is the pin's description, because
+`description` is what people reach for first.
+
+It deliberately does **not** check the values. What each one has to be is
+different on every network - a web address on Facebook, true or false on
+Instagram, one of four words on Mastodon - and the sentence explaining that is
+the useful half of the message. Write that part yourself, right after.
+
+**`NotSupportedError` takes a `suggestion=`.** `what` finishes the sentence
+"yournetwork does not support ...", so keep it to a phrase. Everything else -
+why, and what to do instead - goes in `suggestion` and reads as its own
+sentences after it:
+
+```python
+raise NotSupportedError(
+    platform=PLATFORM_NAME,
+    what="replying to pins",
+    suggestion=(
+        "The Pinterest API has no comments in it at all, neither reading "
+        "them nor writing them, so there is nothing to reply to."
+    ),
+)
+```
+
+**`Token.refresh_token_expires_at` is there if your network says.** Most do
+not and it stays `None`. Pinterest's refresh token lasts sixty days and
+nothing renews it, so an app that cannot see the date only finds out on the
+day the account breaks. Fill it in where the network tells you, never guess
+it, and `TokenManager` will then say plainly which of the two tokens ran out
+instead of sending a doomed renewal to find out.
+
 ## Checking it behaves
 
 Subclass `PlatformChecks` and you inherit a battery of checks:
@@ -138,6 +214,31 @@ missing.
 
 **These are a floor, not a ceiling.** They prove your platform is shaped
 right. Only your own tests prove it talks to your network correctly.
+
+### One respx trap worth knowing
+
+The checks above are strict about a mistake costing no request, and the tests
+you write yourself should be too - the pattern is to set a route up, expect a
+refusal, and then assert nothing reached the network:
+
+```python
+with (
+    respx.mock(base_url=API, assert_all_called=False) as network,
+    pytest.raises(InvalidPostError),
+):
+    await platform.publish(connection, a_bad_post())
+
+assert not network.calls
+```
+
+`assert_all_called=False` is doing real work there. `respx.mock()` defaults it
+to `True`, which fails the test on the way out if any route you registered was
+never called - which is exactly what a test proving nothing was sent has
+arranged. Leave it out and the test fails with a respx complaint about an
+uncalled route rather than telling you anything about your platform, and the
+usual fix people reach for is to delete the route, which throws away the half
+of the test that proves the refusal happened before the request rather than
+after it.
 
 ## Letting socialchimp find it
 

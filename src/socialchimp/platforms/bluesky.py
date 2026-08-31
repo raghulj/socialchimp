@@ -118,6 +118,7 @@ from socialchimp.features import (
     Feature,
     Limits,
     TextCount,
+    check_option_names,
     check_post,
     count_graphemes,
 )
@@ -555,13 +556,7 @@ def _checked_langs(options: RawData) -> list[str]:
         InvalidPostError: If a setting is unknown or its value is wrong. This
             happens before any request, so a typo costs nothing.
     """
-    unknown = [key for key in options if key not in POST_OPTIONS]
-    if unknown:
-        message = (
-            f"Bluesky does not know the post option {unknown[0]!r}. It "
-            f"accepts: {', '.join(POST_OPTIONS)}."
-        )
-        raise InvalidPostError(message)
+    check_option_names(options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
 
     given = options.get("langs")
     if given is None:

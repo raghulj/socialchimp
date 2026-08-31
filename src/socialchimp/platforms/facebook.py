@@ -109,7 +109,13 @@ from socialchimp.errors import (
 )
 from socialchimp.events import Update
 from socialchimp.events import answer_setup_check as echo_the_challenge
-from socialchimp.features import Feature, Limits, TextCount, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_option_names,
+    check_post,
+)
 from socialchimp.http import HttpClient
 from socialchimp.models import (
     Connection,
@@ -284,14 +290,10 @@ def _checked_options(options: RawData) -> dict[str, str]:
         InvalidPostError: If a setting is unknown or its value is wrong. This
             happens before any request, so a typo costs nothing.
     """
+    check_option_names(options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
+
     checked: dict[str, str] = {}
     for key, value in options.items():
-        if key not in POST_OPTIONS:
-            message = (
-                f"Facebook does not know the post option {key!r}. It accepts: "
-                f"{', '.join(POST_OPTIONS)}."
-            )
-            raise InvalidPostError(message)
         if not isinstance(value, str) or not value:
             message = (
                 f"{key} is {value!r}, but it has to be some text - a whole "
@@ -1247,10 +1249,12 @@ def _video_too_big(size: int, allowed: int) -> NotSupportedError:
         platform=PLATFORM_NAME,
         what=(
             f"sending a video this big in one request - {size:,} bytes, "
-            f"where {allowed:,} is the most this sends at once. Facebook "
-            f"wants anything larger in pieces, over an upload it keeps open "
-            f"across several requests, and socialchimp does not do that yet. "
-            f"Send a smaller or shorter file - under a gigabyte and under "
-            f"twenty minutes - or put it on Facebook another way"
+            f"where {allowed:,} is the most this sends at once"
+        ),
+        suggestion=(
+            "Facebook wants anything larger in pieces, over an upload it "
+            "keeps open across several requests, and socialchimp does not do "
+            "that yet. Send a smaller or shorter file - under a gigabyte and "
+            "under twenty minutes - or put it on Facebook another way."
         ),
     )

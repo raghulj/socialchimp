@@ -964,10 +964,10 @@ class SocialChimp:
         if not isinstance(chooser, CanResumeLogin):
             raise NotSupportedError(
                 platform=chooser.name,
-                what=(
-                    "choosing an account part way through a login. It signs "
-                    "someone in in one step, so finish_login is the whole of "
-                    "it"
+                what="choosing an account part way through a login",
+                suggestion=(
+                    "It signs someone in in one step, so finish_login is the "
+                    "whole of it."
                 ),
             )
 

@@ -64,6 +64,32 @@ class TestNotSupportedError:
         assert "scheduling posts" in str(error)
         assert error.platform == "bluesky"
 
+    def test_without_a_suggestion_the_message_is_one_sentence(self) -> None:
+        error = NotSupportedError(platform="bluesky", what="scheduling posts")
+
+        assert str(error) == "bluesky does not support scheduling posts."
+        assert error.suggestion is None
+
+    def test_a_suggestion_reads_as_a_sentence_after_the_first(self) -> None:
+        # Without somewhere to put it, "here is what to do instead" ends up
+        # inside `what`, and the first sentence runs on for a paragraph.
+        error = NotSupportedError(
+            platform="pinterest",
+            what="replying to pins",
+            suggestion=(
+                "The Pinterest API has no comments in it at all, neither "
+                "reading them nor writing them."
+            ),
+        )
+
+        assert str(error) == (
+            "pinterest does not support replying to pins. The Pinterest API "
+            "has no comments in it at all, neither reading them nor writing "
+            "them."
+        )
+        assert error.what == "replying to pins"
+        assert error.suggestion is not None
+
 
 class TestPlatformError:
     def test_it_keeps_what_the_network_actually_said(self) -> None:

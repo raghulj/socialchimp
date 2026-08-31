@@ -250,15 +250,16 @@ def app_must_be_made_by_hand(platform: str) -> NotSupportedError:
     """
     return NotSupportedError(
         platform=platform,
-        what=(
-            f"registering an app for you. No Meta network does - there is no "
-            f"call for it. Make the app by hand at {DEVELOPER_PORTAL}, then "
-            f"save its id and secret with Storage.save_app. Two more things "
-            f"have to happen before it works for anybody but you: Meta has "
-            f"to review the app, and it needs business verification, which "
-            f"means sending Meta documents about the company behind it. "
-            f"Until both are done, posting works for people with a role on "
-            f"the app and silently fails for everyone else"
+        what="registering an app for you",
+        suggestion=(
+            f"No Meta network does - there is no call for it. Make the app "
+            f"by hand at {DEVELOPER_PORTAL}, then save its id and secret "
+            f"with Storage.save_app. Two more things have to happen before "
+            f"it works for anybody but you: Meta has to review the app, and "
+            f"it needs business verification, which means sending Meta "
+            f"documents about the company behind it. Until both are done, "
+            f"posting works for people with a role on the app and silently "
+            f"fails for everyone else."
         ),
     )
 

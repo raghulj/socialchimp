@@ -60,7 +60,11 @@ saved. `TokenManager` takes a lock and saves for you; if you call `refresh`
 yourself, that part is yours.
 
 An account nobody has posted from for two months therefore has to connect
-again, because its refresh token ran out before anything renewed it.
+again, because its refresh token ran out before anything renewed it. That day
+is on `Token.refresh_token_expires_at`, because Pinterest tells us: ask
+`connection.token.refresh_token_expires_within(seconds)` on a timer and you
+can put a "reconnect Pinterest" prompt in front of somebody in week eight,
+rather than finding out when a post fails in week nine.
 
 Apps created before late 2025 were given a different kind of refresh token:
 one that lasts a year and cannot be renewed at all. If yours is one of those
@@ -181,10 +185,15 @@ from socialchimp.errors import (
     SocialChimpError,
     TokenExpiredError,
 )
-from socialchimp.features import Feature, Limits, TextCount, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_option_names,
+    check_post,
+)
 from socialchimp.http import (
     HttpClient,
-    RateLimit,
     error_from_response,
     read_body,
     retry_after_seconds,
@@ -211,7 +220,6 @@ __all__ = [
     "Board",
     "PinterestPlatform",
     "pinterest_errors",
-    "rate_limit_in",
 ]
 
 PLATFORM_NAME: Final = "pinterest"
@@ -359,53 +367,6 @@ def _text(reply: RawData, key: str, when: str) -> str:
         f"{when}. That should not happen. The whole reply is on this error."
     )
     raise PlatformError(message, platform=PLATFORM_NAME, raw=reply)
-
-
-def _whole_number(value: str | None) -> int | None:
-    """Read a header that should hold a count.
-
-    Pinterest sometimes lists every window it is counting in one header, as
-    `"100, 100;w=1, 1000;w=60"`. The bare number in front is the one that
-    applies right now, so that is what is read and the rest is left alone.
-
-    Args:
-        value: The header's value, or `None`.
-
-    Returns:
-        The count, or `None` if it is missing or not a whole number.
-    """
-    if value is None:
-        return None
-    try:
-        return int(value.split(",")[0].strip())
-    except ValueError:
-        return None
-
-
-def rate_limit_in(headers: httpx.Headers) -> RateLimit | None:
-    """Read how much of Pinterest's allowance is left out of a reply's headers.
-
-    What the numbers mean depends on which tier the app is on. Trial counts
-    per **day**, Standard counts per minute and per second, and nothing in
-    the headers says which you are looking at.
-
-    Args:
-        headers: The reply's headers.
-
-    Returns:
-        What Pinterest said, or `None` if it said nothing we recognise.
-    """
-    limit = _whole_number(headers.get("x-ratelimit-limit"))
-    remaining = _whole_number(headers.get("x-ratelimit-remaining"))
-
-    resets_at: datetime | None = None
-    seconds = _whole_number(headers.get("x-ratelimit-reset"))
-    if seconds is not None:
-        resets_at = datetime.now(UTC) + timedelta(seconds=seconds)
-
-    if limit is None and remaining is None and resets_at is None:
-        return None
-    return RateLimit(limit=limit, remaining=remaining, resets_at=resets_at)
 
 
 def _said_in(body: RawData) -> str:
@@ -588,6 +549,32 @@ def _expiry_from(reply: RawData) -> datetime:
     return datetime.now(UTC) + timedelta(seconds=lasts)
 
 
+def _refresh_expiry_from(
+    reply: RawData, already_knew: datetime | None
+) -> datetime | None:
+    """Work out when the refresh token itself stops working.
+
+    Pinterest is one of the few networks that says. Sixty days is the usual
+    answer, and nothing renews it - so an account nobody has posted from
+    since the summer needs the person to sign in again, and this is what
+    lets an app say so before it happens rather than after.
+
+    Args:
+        reply: What Pinterest's token endpoint answered.
+        already_knew: The date we were holding before this reply, if any.
+
+    Returns:
+        The moment it runs out, `already_knew` on a reply that does not
+        mention it, or `None` when nobody has ever said. Nothing is guessed
+        here: a guess would have an app telling somebody to reconnect an
+        account that was fine.
+    """
+    seconds = reply.get("refresh_token_expires_in")
+    if not isinstance(seconds, int):
+        return already_knew
+    return datetime.now(UTC) + timedelta(seconds=seconds)
+
+
 def _no_board() -> InvalidPostError:
     """Build the error for a pin that does not say where it goes.
 
@@ -664,16 +651,15 @@ def _checked_options(options: RawData) -> dict[str, str]:
         InvalidPostError: If a setting is unknown, is not text, or is too
             long. This happens before any request, so a typo costs nothing.
     """
+    check_option_names(
+        options,
+        platform=PLATFORM_NAME,
+        allowed=POST_OPTIONS,
+        advice="Post.text is the pin's description.",
+    )
+
     checked: dict[str, str] = {}
     for key, value in options.items():
-        if key not in POST_OPTIONS:
-            message = (
-                f"Pinterest does not know the post option {key!r}. It "
-                f"accepts: {', '.join(POST_OPTIONS)}. Post.text is the pin's "
-                f"description."
-            )
-            raise InvalidPostError(message, platform=PLATFORM_NAME)
-
         if not isinstance(value, str) or not value:
             message = f"{key} is {value!r}, but it has to be some text."
             raise InvalidPostError(message, platform=PLATFORM_NAME)
@@ -751,6 +737,15 @@ def _several_pictures(items: tuple[Media, ...]) -> RawData:
     }
 
 
+# What `check_post` adds to its own "this network has no text-only post"
+# message here. Pinterest calls the text a description and has a separate
+# title, which is the thing people trip over.
+WORDS_ALONE_ADVICE: Final = (
+    "Media.from_file('chair.jpg') or Media.from_url(...) will do it, and "
+    "Post.text becomes the pin's description."
+)
+
+
 def _the_media(post: Post) -> tuple[tuple[Media, ...], Media | None]:
     """Sort out what a pin is made of.
 
@@ -761,20 +756,12 @@ def _the_media(post: Post) -> tuple[tuple[Media, ...], Media | None]:
         The pictures, and the video if there is one.
 
     Raises:
-        NotSupportedError: If there is nothing attached. This is not a gap in
-            socialchimp - Pinterest has no text-only pin to fall back to.
         InvalidPostError: If a pin carries both a video and pictures.
     """
+    # `check_post` has already turned away a post with nothing attached, so
+    # one of these two is not empty.
     pictures = tuple(item for item in post.media if item.kind is MediaKind.IMAGE)
     videos = tuple(item for item in post.media if item.kind is MediaKind.VIDEO)
-
-    if not post.media:
-        what = (
-            "text-only posts. Every pin is a picture or a video, so attach "
-            "one with Media.from_file('chair.jpg') or Media.from_url(...). "
-            "Post.text becomes the pin's description"
-        )
-        raise NotSupportedError(platform=PLATFORM_NAME, what=what)
 
     if videos and pictures:
         message = (
@@ -1026,6 +1013,7 @@ class PinterestPlatform:
                     access_token=access_token,
                     refresh_token=renewal if isinstance(renewal, str) else None,
                     expires_at=_expiry_from(reply),
+                    refresh_token_expires_at=_refresh_expiry_from(reply, None),
                 ),
                 scopes=scopes,
                 extra={
@@ -1114,6 +1102,13 @@ class PinterestPlatform:
                 replacement if isinstance(replacement, str) and replacement else renewal
             ),
             expires_at=_expiry_from(reply),
+            # Same reasoning as the refresh token above: a reply that does
+            # not mention this leaves what we already knew alone, rather
+            # than throwing away the one date that says when this account
+            # will need signing in again.
+            refresh_token_expires_at=_refresh_expiry_from(
+                reply, connection.token.refresh_token_expires_at
+            ),
         )
 
     async def boards(
@@ -1180,18 +1175,22 @@ class PinterestPlatform:
             PlatformError: If a video never finishes being processed.
         """
         if post.reply_to is not None:
-            what = (
-                "replying to pins - the Pinterest API has no comments in it "
-                "at all, neither reading them nor writing them, so there is "
-                "nothing to reply to"
+            raise NotSupportedError(
+                platform=PLATFORM_NAME,
+                what="replying to pins",
+                suggestion=(
+                    "The Pinterest API has no comments in it at all, neither "
+                    "reading them nor writing them, so there is nothing to "
+                    "reply to."
+                ),
             )
-            raise NotSupportedError(platform=PLATFORM_NAME, what=what)
 
         check_post(
             post,
             platform=PLATFORM_NAME,
             features=self.features,
             limits=_ALLOWED,
+            words_alone_advice=WORDS_ALONE_ADVICE,
         )
 
         pictures, video = _the_media(post)

@@ -67,9 +67,17 @@ _DEFAULT_TIMEOUT = 30.0
 # Headers different networks use for the same three numbers. httpx compares
 # header names without caring about case, so `X-RateLimit-Limit` and
 # `x-ratelimit-limit` both land on the first name below.
-_LIMIT_HEADERS = ("x-ratelimit-limit", "ratelimit-limit")
-_REMAINING_HEADERS = ("x-ratelimit-remaining", "ratelimit-remaining")
-_RESET_HEADERS = ("x-ratelimit-reset", "ratelimit-reset")
+#
+# X is the odd one out: it writes `x-rate-limit-*`, with a hyphen nobody else
+# has. It is one character, it is easy to miss, and missing it means the
+# allowance quietly reads as unknown forever - so both spellings are listed.
+_LIMIT_HEADERS = ("x-ratelimit-limit", "x-rate-limit-limit", "ratelimit-limit")
+_REMAINING_HEADERS = (
+    "x-ratelimit-remaining",
+    "x-rate-limit-remaining",
+    "ratelimit-remaining",
+)
+_RESET_HEADERS = ("x-ratelimit-reset", "x-rate-limit-reset", "ratelimit-reset")
 
 # A reset written as a number is either seconds from now (a handful) or a unix
 # time (a very large number). Nothing sensible sits between the two, so this
@@ -230,6 +238,23 @@ def _first_header(headers: httpx.Headers, names: tuple[str, ...]) -> str | None:
     return None
 
 
+def _the_one_that_applies_now(value: str) -> str:
+    """Return the figure a header is talking about right now.
+
+    Pinterest lists every window it is counting in one header, as
+    `"100, 100;w=1, 1000;w=60"`. The bare number in front is the one that
+    applies right now and the rest describe the longer windows, so that is
+    what is read and the rest is left alone.
+
+    Args:
+        value: The header's value.
+
+    Returns:
+        The first figure, with the spaces taken off.
+    """
+    return value.split(",")[0].strip()
+
+
 def _whole_number(value: str | None) -> int | None:
     """Read a header that should hold a count.
 
@@ -242,7 +267,7 @@ def _whole_number(value: str | None) -> int | None:
     if value is None:
         return None
     try:
-        return int(value.strip())
+        return int(_the_one_that_applies_now(value))
     except ValueError:
         return None
 
@@ -266,7 +291,7 @@ def _reset_time(value: str | None, now: datetime | None) -> datetime | None:
 
     text = value.strip()
     try:
-        number = float(text)
+        number = float(_the_one_that_applies_now(text))
     except ValueError:
         pass
     else:
@@ -290,6 +315,11 @@ def rate_limit_from_headers(
     now: datetime | None = None,
 ) -> RateLimit | None:
     """Read a reply's rate-limit headers.
+
+    Both spellings are read: `x-ratelimit-limit`, which nearly everybody
+    uses, and X's `x-rate-limit-limit`. So is Pinterest's habit of listing
+    every window in one header - `"100, 100;w=1, 1000;w=60"` - where the
+    bare number in front is the one that applies right now.
 
     Args:
         headers: The reply's headers.

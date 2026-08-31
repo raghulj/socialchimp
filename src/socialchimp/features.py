@@ -16,6 +16,11 @@ hardly any of them mean characters. Bluesky counts letters as a person would
 bytes. TikTok counts the way Java does, where an emoji is two. A platform
 says which once, and `check_post` then counts the same way the network will
 instead of guessing.
+
+`check_post` and `check_option_names` are the two checks every platform runs
+before it sends anything. Both refuse in plain words rather than letting the
+network answer with a code, and both cost no request and no part of a rate
+limit - which is the point of doing them here.
 """
 
 from __future__ import annotations
@@ -29,12 +34,15 @@ from socialchimp.errors import InvalidPostError, NotSupportedError
 from socialchimp.models import MediaKind
 
 if TYPE_CHECKING:
-    from socialchimp.models import Post
+    from collections.abc import Sequence
+
+    from socialchimp.models import Post, RawData
 
 __all__ = [
     "Feature",
     "Limits",
     "TextCount",
+    "check_option_names",
     "check_post",
     "count_graphemes",
     "measure_text",
@@ -386,12 +394,113 @@ def _check_length(post: Post, platform: str, limits: Limits) -> None:
             raise InvalidPostError(message)
 
 
+def check_option_names(
+    options: RawData,
+    *,
+    platform: str,
+    allowed: Sequence[str],
+    advice: str | None = None,
+) -> None:
+    """Refuse a setting in `Post.options` that this network never heard of.
+
+    Every platform needs this and every platform wrote it, so it is written
+    once here instead. It only checks the names. What each value has to be
+    is different on every network - a web address on Facebook, true or false
+    on Instagram, one of four words on Mastodon - and the message that says
+    so is the useful half, so that part stays in the platform file.
+
+    Called before anything is sent, so a typo costs no request and no part
+    of a rate limit.
+
+    Args:
+        options: What was put in `Post.options`.
+        platform: Name of the network, used in the message.
+        allowed: The settings this network takes, in the order to list them.
+        advice: One more sentence, for a network where the mistake has an
+            obvious cause. Pinterest uses it to say that `Post.text` is the
+            pin's description, because `description` is what people reach
+            for first.
+
+    Raises:
+        InvalidPostError: If any setting is not one this network takes. The
+            message names the first one and lists what is accepted.
+    """
+    for key in options:
+        if key in allowed:
+            continue
+        message = (
+            f"{platform} does not know the post option {key!r}. "
+            f"It accepts: {', '.join(allowed)}."
+        )
+        if advice is not None:
+            message = f"{message} {advice}"
+        raise InvalidPostError(message, platform=platform)
+
+
+def _what_it_can_carry(features: Feature) -> str:
+    """Name the kinds of file this network takes.
+
+    Args:
+        features: What the network can do.
+
+    Returns:
+        Something to finish "every post here carries ...", or an empty
+        string for a network that takes no files at all.
+    """
+    kinds = []
+    if Feature.POST_IMAGE in features:
+        kinds.append("a picture")
+    if Feature.POST_VIDEO in features:
+        kinds.append("a video")
+    return " or ".join(kinds)
+
+
+def _check_it_is_not_words_alone(
+    post: Post,
+    platform: str,
+    features: Feature,
+    advice: str | None,
+) -> None:
+    """Refuse a post of words on a network that has no such thing.
+
+    YouTube, Instagram, Pinterest and TikTok all publish nothing but files.
+    `Post(text="hello")` is the first thing anybody tries on each of them,
+    so it is worth one clear answer rather than four.
+
+    Args:
+        post: The post about to be sent.
+        platform: Name of the network, used in the message.
+        features: What the network can do.
+        advice: An extra sentence from the platform, or `None`.
+
+    Raises:
+        NotSupportedError: If the post has nothing attached and this network
+            cannot publish words on their own.
+    """
+    if post.media or Feature.POST_TEXT in features:
+        return
+
+    sentences = []
+    carries = _what_it_can_carry(features)
+    if carries:
+        sentences.append(f"Every post here carries {carries}, so attach one.")
+    if advice is not None:
+        sentences.append(advice)
+
+    raise NotSupportedError(
+        platform=platform,
+        what="posting words on their own",
+        suggestion=" ".join(sentences) if sentences else None,
+    )
+
+
 def check_post(
     post: Post,
     *,
     platform: str,
     features: Feature,
     limits: Limits,
+    words_alone_advice: str | None = None,
 ) -> None:
     """Check a post against a network's rules before sending it.
 
@@ -403,6 +512,11 @@ def check_post(
         platform: Name of the network, used in messages.
         features: What the network can do.
         limits: What the network currently allows.
+        words_alone_advice: One more sentence for the message a network with
+            no text-only post gives back, for anything worth saying that
+            "attach a picture or a video" does not cover. YouTube uses it to
+            say its community posts are not in the API at all, which is the
+            first thing somebody argues back.
 
     Raises:
         NotSupportedError: If the post needs something the network cannot do.
@@ -424,3 +538,8 @@ def check_post(
         raise InvalidPostError(message)
 
     _check_media(post, platform, features, limits)
+
+    # Last of all. A post that is both too long and has nothing attached is
+    # refused for the length, because that is the half the person can fix
+    # without changing what they were trying to post.
+    _check_it_is_not_words_alone(post, platform, features, words_alone_advice)

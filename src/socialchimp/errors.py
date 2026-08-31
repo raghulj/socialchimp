@@ -142,17 +142,34 @@ class NotSupportedError(SocialChimpError):
     Attributes:
         platform: The network that cannot do it.
         what: The thing it cannot do, in plain words.
+        suggestion: What to do instead, when there is something. `None`
+            when the answer really is just "not here".
     """
 
-    def __init__(self, *, platform: str, what: str) -> None:
+    def __init__(
+        self,
+        *,
+        platform: str,
+        what: str,
+        suggestion: str | None = None,
+    ) -> None:
         """Build a message naming both the network and the missing feature.
 
         Args:
             platform: The network that cannot do it.
-            what: The thing it cannot do.
+            what: The thing it cannot do. Keep it to a phrase that finishes
+                "pinterest does not support ..." - anything longer belongs
+                in `suggestion`, or the first sentence runs on for a
+                paragraph and nobody reads the end of it.
+            suggestion: What to do instead, written as whole sentences. It
+                is added after the first one.
         """
-        super().__init__(f"{platform} does not support {what}.", platform=platform)
+        message = f"{platform} does not support {what}."
+        if suggestion is not None:
+            message = f"{message} {suggestion}"
+        super().__init__(message, platform=platform)
         self.what = what
+        self.suggestion = suggestion
 
 
 class NetworkError(SocialChimpError):

@@ -19,6 +19,19 @@ worker has usually finished, and there is nothing left to do.
 database is the same disaster one step later. The new token is written
 through `Storage.save_connection` before it is handed back, always.
 
+## When the refresh token itself runs out
+
+On most networks it does not, and there is nothing to think about. Pinterest
+is the exception: its refresh token lasts sixty days, nothing renews it, and
+an account nobody has posted from since the summer needs the person to sign
+in again. Where a network says so, the date is on
+`Token.refresh_token_expires_at`, and a renewal past it is turned away here
+with a message that says which of the two tokens ran out - rather than being
+sent to the network to come back as an `invalid_grant` that could mean
+either. To warn somebody in advance, ask
+`connection.token.refresh_token_expires_within(seconds)` while the account
+still works.
+
 ## Running more than one process
 
 The lock this uses by default is an `asyncio.Lock`, which only holds inside
@@ -187,8 +200,9 @@ class TokenManager:
         Raises:
             ConfigError: If no connection is stored under that id.
             TokenExpiredError: If the token needed renewing and could not be,
-                because there is no refresh token or the network refused the
-                one we have. The person has to sign in again.
+                because there is no refresh token, because the refresh token
+                has itself run out, or because the network refused the one
+                we have. The person has to sign in again.
         """
         connection = await self._load(connection_id)
         if not self._running_out(connection):
@@ -269,8 +283,9 @@ class TokenManager:
             The same connection carrying its new token.
 
         Raises:
-            TokenExpiredError: If there is no refresh token, or the network
-                refused the one we have.
+            TokenExpiredError: If there is no refresh token, if the refresh
+                token has itself run out, or if the network refused the one
+                we have.
         """
         if connection.token.refresh_token is None:
             message = (
@@ -279,6 +294,26 @@ class TokenManager:
                 f"token to renew it with. The person has to sign in again."
             )
             raise TokenExpiredError(message)
+
+        # Asking anyway would come back as invalid_grant, and the message
+        # for that has to guess between "expired" and "revoked". Here we
+        # already know which, so we say which, and spend no request on it.
+        #
+        # The date is asked for separately because a network that never told
+        # us one cannot have run out as far as we know, so the two always
+        # answer together.
+        ran_out = connection.token.refresh_token_expires_at
+        if ran_out is not None and connection.token.refresh_token_is_expired:
+            message = (
+                f"The refresh token for {connection.platform} connection "
+                f"{connection.id!r} ran out on {ran_out.isoformat()}, so "
+                f"there is nothing left to renew the access token with. A "
+                f"refresh token cannot itself be renewed, so the person has "
+                f"to sign in again. To warn somebody before this happens, "
+                f"ask token.refresh_token_expires_within(seconds) while the "
+                f"account is still working."
+            )
+            raise TokenExpiredError(message, platform=connection.platform)
 
         try:
             token = await self._get_new_token(connection)

@@ -218,6 +218,44 @@ class TestWhenARefreshFails:
 
         assert refresh.calls == 0
 
+    async def test_a_refresh_token_that_has_run_out_says_so_by_name(self) -> None:
+        # Asking the network would only get back invalid_grant, and the
+        # message for that guesses between "expired" and "revoked". Here we
+        # know which, so we say which - and spend no request finding out.
+        refresh = FakeRefresh()
+        expired = Token(
+            access_token=OLD_ACCESS,
+            refresh_token=OLD_REFRESH,
+            expires_at=datetime.now(UTC) + ALMOST_OUT,
+            refresh_token_expires_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        storage = await storage_holding(a_connection(expired))
+        tokens = TokenManager(storage, refresh)
+
+        with pytest.raises(TokenExpiredError) as caught:
+            await tokens.valid_token("conn-1")
+
+        said = str(caught.value)
+        assert "refresh token" in said
+        assert "sign in again" in said
+        assert refresh.calls == 0
+
+    async def test_a_refresh_token_with_time_left_is_used_as_normal(self) -> None:
+        refresh = FakeRefresh()
+        fine = Token(
+            access_token=OLD_ACCESS,
+            refresh_token=OLD_REFRESH,
+            expires_at=datetime.now(UTC) + ALMOST_OUT,
+            refresh_token_expires_at=datetime.now(UTC) + timedelta(days=30),
+        )
+        storage = await storage_holding(a_connection(fine))
+        tokens = TokenManager(storage, refresh)
+
+        renewed = await tokens.valid_token("conn-1")
+
+        assert renewed.token.access_token == NEW_ACCESS
+        assert refresh.calls == 1
+
     async def test_a_temporary_failure_is_passed_on_untouched(self) -> None:
         # A timeout or a 500 says nothing about the token. Turning it into
         # "sign in again" would disconnect accounts that are perfectly fine.

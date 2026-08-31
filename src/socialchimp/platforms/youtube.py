@@ -151,13 +151,18 @@ from socialchimp.errors import (
     InvalidPostError,
     NotAllowedError,
     NotFoundError,
-    NotSupportedError,
     PlatformError,
     RateLimitError,
     TokenExpiredError,
 )
 from socialchimp.events import Update
-from socialchimp.features import Feature, Limits, TextCount, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_option_names,
+    check_post,
+)
 from socialchimp.http import HttpClient, error_from_response, read_body
 from socialchimp.models import (
     Connection,
@@ -679,6 +684,15 @@ def _how_big(video: Media) -> int:
     return total
 
 
+# What `check_post` adds to its own "this network has no text-only post"
+# message here. The API not having community posts in it is the thing
+# everybody argues back with, so it is worth saying before they go looking.
+WORDS_ALONE_ADVICE: Final = (
+    "Media.from_file('clip.mp4') will do it. Community posts are words, but "
+    "they are not in YouTube's API at all."
+)
+
+
 def _the_video(post: Post) -> Media:
     """Find the one video a YouTube post is made of.
 
@@ -687,23 +701,11 @@ def _the_video(post: Post) -> Media:
 
     Returns:
         The video to upload.
-
-    Raises:
-        NotSupportedError: If there is no video. This is not a gap in
-            socialchimp - YouTube has no text-only post to fall back to.
     """
     # By the time this runs, `check_post` has already turned away pictures -
-    # YouTube takes none - and any post carrying more than one video. So
-    # what is left is either exactly one video or nothing at all.
-    if post.media:
-        return post.media[0]
-
-    what = (
-        "text-only posts. Everything on YouTube is a video, so attach one "
-        "with Media.from_file('clip.mp4'). Community posts are text, but "
-        "they are not in YouTube's API at all"
-    )
-    raise NotSupportedError(platform=PLATFORM_NAME, what=what)
+    # YouTube takes none - any post carrying more than one video, and a post
+    # with nothing attached at all. So what is left is exactly one video.
+    return post.media[0]
 
 
 def _checked_title(options: RawData, allowed: int | None) -> str:
@@ -847,22 +849,19 @@ def _checked_options(options: RawData) -> None:
         InvalidPostError: If a setting is not one of ours. A typo costs no
             request and no part of the day's quota.
     """
-    for key in options:
-        if key == "publish_at":
-            message = (
-                "YouTube can schedule, and socialchimp carries the time "
-                "on Post.publish_at rather than in options, so that every "
-                "network is asked the same way. Use "
-                "Post(publish_at=when, ...) instead."
-            )
-            raise InvalidPostError(message, platform=PLATFORM_NAME)
+    # Checked ahead of the shared name check, because "YouTube does not
+    # know publish_at" would be a lie - it can schedule, it just wants the
+    # time on the post rather than in here.
+    if "publish_at" in options:
+        message = (
+            "YouTube can schedule, and socialchimp carries the time "
+            "on Post.publish_at rather than in options, so that every "
+            "network is asked the same way. Use "
+            "Post(publish_at=when, ...) instead."
+        )
+        raise InvalidPostError(message, platform=PLATFORM_NAME)
 
-        if key not in POST_OPTIONS:
-            message = (
-                f"YouTube does not know the post option {key!r}. It accepts: "
-                f"{', '.join(POST_OPTIONS)}."
-            )
-            raise InvalidPostError(message, platform=PLATFORM_NAME)
+    check_option_names(options, platform=PLATFORM_NAME, allowed=POST_OPTIONS)
 
 
 def _metadata_for(post: Post, limits: Limits) -> tuple[RawData, bool | None]:
@@ -1454,10 +1453,17 @@ class YouTubePlatform:
         """
         # The order here matters. The shared checks go first so that a post
         # over a limit is refused as an InvalidPostError, whatever else is
-        # wrong with it; the missing video comes next, because it is the
-        # more fundamental problem than a missing title.
+        # wrong with it; the missing video is part of those now, and comes
+        # before the missing title, because it is the more fundamental
+        # problem of the two.
         limits = await self.limits(connection)
-        check_post(post, platform=PLATFORM_NAME, features=self.features, limits=limits)
+        check_post(
+            post,
+            platform=PLATFORM_NAME,
+            features=self.features,
+            limits=limits,
+            words_alone_advice=WORDS_ALONE_ADVICE,
+        )
         video = _the_video(post)
         metadata, notify = _metadata_for(post, limits)
         total = _how_big(video)

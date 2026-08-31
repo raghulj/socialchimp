@@ -109,15 +109,39 @@ class Token:
         expires_at: When the access token stops working. `None` means it does
             not expire on its own (Mastodon, Discord and Telegram work this
             way).
+        refresh_token_expires_at: When the refresh token itself stops
+            working. `None` on the networks that never expire theirs, which
+            is most of them. Pinterest's lasts sixty days, and renewing an
+            access token does not extend it - so an account nobody has
+            posted from since the summer needs signing in again, and
+            without this an app cannot know until the day it breaks.
     """
 
     access_token: str = field(repr=False)
     refresh_token: str | None = field(default=None, repr=False)
     expires_at: datetime | None = None
+    refresh_token_expires_at: datetime | None = None
 
     def __post_init__(self) -> None:
-        """Check the expiry has a timezone."""
+        """Check both expiries have a timezone."""
         require_timezone(self.expires_at, "expires_at")
+        require_timezone(self.refresh_token_expires_at, "refresh_token_expires_at")
+
+    @staticmethod
+    def _runs_out_within(when: datetime | None, seconds: float) -> bool:
+        """Say whether a moment is inside the next `seconds`.
+
+        Args:
+            when: The moment, or `None` for something that never happens.
+            seconds: How far ahead to look.
+
+        Returns:
+            True if that moment is inside the window. Always False for
+            `None`, because "we were never told" is not "it has run out".
+        """
+        if when is None:
+            return False
+        return datetime.now(UTC).timestamp() + seconds >= when.timestamp()
 
     def expires_within(self, seconds: float) -> bool:
         """Say whether this token runs out inside the next `seconds`.
@@ -131,15 +155,38 @@ class Token:
             True if the token expires within that window. Always False for a
             token that does not expire.
         """
-        if self.expires_at is None:
-            return False
-        deadline = datetime.now(UTC).timestamp() + seconds
-        return deadline >= self.expires_at.timestamp()
+        return self._runs_out_within(self.expires_at, seconds)
 
     @property
     def is_expired(self) -> bool:
         """Whether this token has already run out."""
         return self.expires_within(seconds=0)
+
+    def refresh_token_expires_within(self, seconds: float) -> bool:
+        """Say whether the refresh token runs out inside the next `seconds`.
+
+        Nothing socialchimp does can renew a refresh token, so this is not a
+        warning to act on in code - it is a warning to show a person, far
+        enough ahead that they can connect their account again before
+        anything stops working. A week is a reasonable window.
+
+        Args:
+            seconds: How far ahead to look.
+
+        Returns:
+            True if the refresh token expires within that window. Always
+            False where the network never told us, which is most of them.
+        """
+        return self._runs_out_within(self.refresh_token_expires_at, seconds)
+
+    @property
+    def refresh_token_is_expired(self) -> bool:
+        """Whether the refresh token has already run out.
+
+        True here means the person has to sign in again. There is nothing
+        left to renew with.
+        """
+        return self.refresh_token_expires_within(seconds=0)
 
 
 @dataclass(frozen=True, slots=True)

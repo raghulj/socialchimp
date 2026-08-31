@@ -543,6 +543,42 @@ class TestRateLimitHeaders:
 
         assert rate_limit_from_headers(headers) == RateLimit(remaining=7)
 
+    def test_x_writes_the_names_with_one_more_hyphen(self) -> None:
+        # X spells these `x-rate-limit-*` where everybody else spells them
+        # `x-ratelimit-*`. Missing that hyphen means never knowing how much
+        # of X's allowance is left, and nothing anywhere says so.
+        headers = httpx.Headers(
+            {
+                "x-rate-limit-limit": "300",
+                "x-rate-limit-remaining": "299",
+                "x-rate-limit-reset": str(int(NOW.timestamp())),
+            }
+        )
+
+        assert rate_limit_from_headers(headers) == RateLimit(
+            limit=300, remaining=299, resets_at=NOW
+        )
+
+    def test_a_header_listing_every_window_reads_the_first_number(self) -> None:
+        # Pinterest lists every window it counts in one header. The bare
+        # number in front is the one that applies right now.
+        headers = httpx.Headers(
+            {
+                "x-ratelimit-limit": "100, 100;w=1, 1000;w=60",
+                "x-ratelimit-remaining": "99, 99;w=1, 999;w=60",
+            }
+        )
+
+        assert rate_limit_from_headers(headers) == RateLimit(limit=100, remaining=99)
+
+    def test_a_reset_listing_every_window_reads_the_first_number(self) -> None:
+        headers = httpx.Headers({"x-ratelimit-reset": "60, 3600;w=60"})
+
+        limit = rate_limit_from_headers(headers, now=NOW)
+
+        assert limit is not None
+        assert limit.resets_at == NOW + timedelta(seconds=60)
+
     def test_a_reset_given_as_a_unix_time(self) -> None:
         headers = httpx.Headers({"X-RateLimit-Reset": str(int(NOW.timestamp()))})
 

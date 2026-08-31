@@ -1165,7 +1165,7 @@ class TestWhatAPostMustCarry:
             await platform.publish(account, Post(text="Just some words"))
 
         said = str(refused.value)
-        assert "text-only" in said
+        assert "words on their own" in said
         assert "Community posts" in said
 
     async def test_a_post_with_no_title_is_refused(
