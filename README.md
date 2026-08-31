@@ -94,6 +94,7 @@ is yours.
   support yet
 - [Plan](docs/PLAN.md) - what is built and what is coming
 - [Changelog](CHANGELOG.md) - what changed, and what it means for you
+- [Releasing](docs/releasing.md) - how a release goes out
 - [Examples](examples/) - runnable programs
 
 ## Contributing

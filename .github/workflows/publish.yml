@@ -1,0 +1,80 @@
+name: Publish
+
+# Publishes to PyPI when you publish a GitHub release.
+#
+# There is no API token anywhere. PyPI is told to trust this one workflow, in
+# this one repository, and GitHub proves who it is at the moment it uploads.
+# Nothing to store, nothing to leak, nothing to rotate.
+#
+# To set it up, add a publisher at https://pypi.org/manage/account/publishing/
+# with these exact values:
+#
+#     PyPI project name   socialchimp
+#     Owner               raghulj
+#     Repository name     socialchimp
+#     Workflow name       publish.yml
+#     Environment name    pypi
+#
+# See docs/releasing.md for the whole procedure.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  # Publishing a broken release cannot be undone: PyPI never lets a version
+  # be replaced. So everything is checked again here, rather than trusting
+  # that the commit was green when it was tagged.
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --all-extras --dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+
+      # Check the built files are actually uploadable before we try, so a
+      # bad description or a missing field fails here rather than half way
+      # through claiming the version number.
+      - run: uvx twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/socialchimp
+    permissions:
+      # Lets GitHub prove to PyPI that this workflow is what it says it is.
+      # This is what replaces the API token.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
