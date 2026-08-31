@@ -1,0 +1,40 @@
+name: Support another network
+description: A social network socialchimp does not handle yet.
+labels: ["network"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **You do not have to wait for us.** Publish your own package and
+        socialchimp will find it - nothing needs merging here for your
+        network to work. See
+        [adding a platform](https://raghulj.github.io/socialchimp/adding-a-platform/).
+
+        Open this if you would like it built in, so we can agree where it
+        fits before anybody writes it.
+
+  - type: input
+    id: network
+    attributes:
+      label: Which network
+    validations:
+      required: true
+
+  - type: input
+    id: docs
+    attributes:
+      label: Link to its API documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: What is awkward about it
+      description: >
+        The useful part. How do people sign in - a redirect, a pasted token,
+        an app password? Does it pause to ask which account? Can it schedule?
+        Does it push updates or would we have to check on a timer? Anything
+        that will surprise whoever writes it.
+    validations:
+      required: true

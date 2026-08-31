@@ -1,0 +1,83 @@
+name: Something is broken
+description: Something does not work the way the documentation says it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. The more precisely you can say what
+        happened, the faster it gets fixed.
+
+  - type: dropdown
+    id: network
+    attributes:
+      label: Which network
+      description: Pick "None" if it is not about one network in particular.
+      options:
+        - None / the library itself
+        - Mastodon
+        - Bluesky
+        - Facebook Pages
+        - Instagram
+        - YouTube
+        - TikTok
+        - X
+        - Pinterest
+        - Threads
+        - One I wrote myself
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: socialchimp version
+      description: "`python -c \"import socialchimp; print(socialchimp.__version__)\"`"
+      placeholder: "0.3.1"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: >
+        What you did, what you expected, and what you got instead. A short
+        piece of code that shows it is worth more than a description of one.
+      placeholder: |
+        ```python
+        result = await sc.account(connection_id).post(Post(text="hello"))
+        ```
+        I expected the post to appear. Instead it raised:
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: The full error, if there was one
+      description: All of it, not just the last line. It is automatically formatted.
+      render: text
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before you send this
+      options:
+        - label: >
+            I checked what this network can do at
+            https://raghulj.github.io/socialchimp/platforms/ - some of these
+            are limits of the network rather than of socialchimp.
+        - label: >
+            If it is Facebook, Instagram, Threads, YouTube, TikTok, X or
+            Pinterest, my app is past whatever review or approval that
+            network requires.
