@@ -93,6 +93,16 @@ dev = [
     "pre-commit>=4.0",
 ]
 
+# The documentation site. Kept out of `dev` so `uv sync --all-extras --dev`
+# does not pull a static site generator into every contributor's environment
+# - only `uv sync --group docs` (or `--group docs` on a single command) does.
+# See mkdocs.yml and .github/workflows/docs.yml.
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+]
+
 [tool.hatch.version]
 path = "src/socialchimp/__init__.py"
 

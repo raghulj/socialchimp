@@ -54,7 +54,6 @@ from socialchimp import (
 )
 from socialchimp.contrib.flask import blueprint, run
 from socialchimp.errors import NotSupportedError, RateLimitError, SocialChimpError
-from socialchimp.platforms.youtube import YouTubePlatform
 
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:5000")
 
@@ -65,13 +64,8 @@ GOOGLE_APP = AppCredentials(
     client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
 )
 
-# Built here rather than reached for through `sc.platform_for("youtube")`,
-# which would hand it back typed as the `Platform` protocol - and that has no
-# `check_state`, because most networks have nothing to check.
-youtube = YouTubePlatform()
-
 storage = InMemoryStorage()
-sc = SocialChimp(storage=storage, platforms={"youtube": youtube})
+sc = SocialChimp(storage=storage)
 
 app = Flask(__name__)
 app.register_blueprint(
@@ -80,7 +74,7 @@ app.register_blueprint(
         redirect_uri=f"{PUBLIC_URL}/social/callback/{{platform}}",
         # YouTube pushes nothing socialchimp uses, so there is no webhook
         # secret and no setup token here. Comments are read on a timer
-        # instead, through the platform's `fetch_updates`.
+        # instead, through `account.fetch_updates`.
     ),
     url_prefix="/social",
 )
@@ -154,10 +148,9 @@ def how_is_it_going(connection_id: str, video_id: str) -> dict[str, str | None]:
     One unit of the daily quota, against an upload's 1,600 - so this is
     cheap enough to put on a timer, unlike the upload itself.
     """
-    # `check_state` wants a connection rather than an account handle, and
-    # this is the call that renews the token before handing one over.
-    connection = run(sc.fresh_connection(connection_id))
-    result = run(youtube.check_state(connection, video_id))
+    # The token is renewed first, the same as every other call on an
+    # account, so this is safe to leave on a timer.
+    result = run(sc.account(connection_id).check_state(video_id))
     return {"state": result.state.name, "url": result.url}
 
 
@@ -171,7 +164,7 @@ def what_youtube_cannot_do(connection_id: str) -> dict[str, object]:
     words. Nothing is sent to YouTube here: the refusal happens before the
     first request, which is also why it costs no quota.
     """
-    features = youtube.features
+    features = sc.platform_for("youtube").features
     refusal: str | None = None
     try:
         run(sc.account(connection_id).post(Post(text="Just some words")))

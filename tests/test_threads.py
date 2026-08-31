@@ -34,8 +34,10 @@ from socialchimp import (
 from socialchimp.features import TextCount
 from socialchimp.http import Retries
 from socialchimp.platform import (
+    CanAnswerSetupCheck,
     CanCheckSignature,
     CanDeletePosts,
+    CanReadPushedUpdates,
     CanResumeLogin,
     Finished,
     LoginRequest,
@@ -1602,6 +1604,15 @@ class TestCheckingASignature:
         with pytest.raises(SignatureError, match="X-Hub-Signature-256"):
             platform.check_signature(b"{}", {}, secret=SIGNING_KEY)
 
+    def test_a_typed_caller_can_reach_the_setup_check_and_the_updates(
+        self,
+        platform: ThreadsPlatform,
+    ) -> None:
+        # SocialChimp.answer_setup_check and SocialChimp.read_updates
+        # both look for these before they will hand anything on.
+        assert isinstance(platform, CanAnswerSetupCheck)
+        assert isinstance(platform, CanReadPushedUpdates)
+
     def test_it_answers_the_one_off_setup_check(
         self,
         platform: ThreadsPlatform,
@@ -1653,7 +1664,20 @@ class TestReadingWhatThreadsPushed:
         assert update.platform == "threads"
         assert update.connection_id == f"threads:{USER_ID}"
         assert update.created_at == datetime(2026, 8, 31, 10, 33, 16, tzinfo=UTC)
-        assert update.raw["values"]["value"]["text"] == "Looks lovely"
+        assert update.raw["text"] == "Looks lovely"
+
+    def test_the_message_it_arrived_in_is_kept_beside_the_change(
+        self,
+        platform: ThreadsPlatform,
+    ) -> None:
+        # Threads names the account and the subscription out on the message
+        # rather than on the change, so the message is kept alongside.
+        body = pushed("replies", {"id": "8901234", "text": "Looks lovely"})
+
+        update = platform.read_update(body, {})
+
+        assert update.envelope["target_id"] == USER_ID
+        assert update.envelope["subscription_id"] == "234567"
 
     def test_a_mention_arrives_as_a_mention(self, platform: ThreadsPlatform) -> None:
         body = pushed(
@@ -1693,7 +1717,7 @@ class TestReadingWhatThreadsPushed:
         update = platform.read_update(body, {})
 
         assert update.kind is UpdateKind.POST_DELETED
-        assert update.raw["values"]["value"]["id"] == POST_ID
+        assert update.raw["id"] == POST_ID
 
     def test_which_post_was_removed_is_on_the_update(
         self,
@@ -1706,7 +1730,7 @@ class TestReadingWhatThreadsPushed:
             {"id": POST_ID, "deleted_at": "2026-08-31T10:33:16+0000"},
         )
 
-        removed = platform.read_update(body, {}).raw["values"]["value"]
+        removed = platform.read_update(body, {}).raw
 
         assert removed["deleted_at"] == "2026-08-31T10:33:16+0000"
 

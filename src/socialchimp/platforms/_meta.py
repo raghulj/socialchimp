@@ -1292,15 +1292,18 @@ class Change:
         account_id: Which account it happened on. The page id for Facebook.
         when: When Meta says it happened. Always has a timezone.
         topic: What Meta calls this kind of change, such as `"feed"`.
-        value: What actually happened, in Meta's own words.
-        raw: The whole untouched entry, for anything we did not model.
+        value: What actually happened, in Meta's own words. This is the part
+            an app wants, and it is what ends up on `Update.raw`.
+        envelope: The whole untouched entry this came in. The account id and
+            the time live out there rather than on the change, so it is kept
+            - alongside the change rather than in place of it.
     """
 
     account_id: str
     when: datetime
     topic: str
     value: RawData
-    raw: RawData = field(default_factory=dict, repr=False)
+    envelope: RawData = field(default_factory=dict, repr=False)
 
 
 def _when_in(entry: RawData) -> datetime:
@@ -1381,7 +1384,7 @@ def changes_in(body: bytes, *, platform: str) -> list[Change]:
                     when=when,
                     topic=str(change.get("field", "")),
                     value=value if isinstance(value, dict) else {},
-                    raw=entry,
+                    envelope=entry,
                 )
             )
     return found

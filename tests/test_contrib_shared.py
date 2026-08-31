@@ -17,6 +17,7 @@ from socialchimp.contrib.shared import (
     Routes,
     read_form,
     status_for,
+    updates_in,
 )
 from socialchimp.errors import (
     AuthError,
@@ -32,6 +33,7 @@ from socialchimp.errors import (
     SocialChimpError,
     TokenExpiredError,
 )
+from socialchimp.events import Update, UpdateKind
 from socialchimp.features import Feature
 from socialchimp.models import AppCredentials, Connection, Token
 from socialchimp.platform import (
@@ -624,3 +626,60 @@ def test_importing_socialchimp_imports_no_framework() -> None:
         check=True,
     )
     assert done.stdout.strip() == "[]"
+
+
+class _SendsSeveral:
+    """A network that puts several changes in one message, the way Meta does."""
+
+    def check_signature(
+        self, body: bytes, headers: Mapping[str, str], *, secret: str
+    ) -> None:
+        """Accept anything; the signature is not what this is testing."""
+
+    def read_update(self, body: bytes, headers: Mapping[str, str]) -> Update:
+        """Never called, because read_updates exists."""
+        raise AssertionError("read_updates should have been used instead")
+
+    def read_updates(self, body: bytes) -> list[Update]:
+        """Return three, the way one Meta message can carry three changes."""
+        return [_an_update(f"u{number}") for number in (1, 2, 3)]
+
+
+class _SendsOne:
+    """A network that sends one thing per message, and has no read_updates.
+
+    This is also what a platform written before read_updates existed looks
+    like, which is who the fallback is for.
+    """
+
+    def check_signature(
+        self, body: bytes, headers: Mapping[str, str], *, secret: str
+    ) -> None:
+        """Accept anything."""
+
+    def read_update(self, body: bytes, headers: Mapping[str, str]) -> Update:
+        """Return the one thing this message carries."""
+        return _an_update("only-one")
+
+
+def _an_update(update_id: str) -> Update:
+    return Update(
+        id=update_id,
+        kind=UpdateKind.COMMENT_CREATED,
+        platform="somewhere",
+        connection_id="conn-1",
+        created_at=datetime.now(UTC),
+    )
+
+
+class TestReadingEverythingAMessageCarries:
+    def test_every_change_is_read_not_just_the_first(self) -> None:
+        # Reading only the first quietly lost the rest, and nothing said so.
+        found = updates_in(_SendsSeveral(), b"{}", {})
+
+        assert [update.id for update in found] == ["u1", "u2", "u3"]
+
+    def test_a_network_without_read_updates_still_works(self) -> None:
+        found = updates_in(_SendsOne(), b"{}", {})
+
+        assert [update.id for update in found] == ["only-one"]

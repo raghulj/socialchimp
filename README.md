@@ -10,6 +10,10 @@
 
 One simple way to connect your app to social networks.
 
+**Read this as a website:** **[raghulj.github.io/socialchimp](https://raghulj.github.io/socialchimp/)**
+— the tutorial, the reference and everything below, searchable and easier to
+read than markdown files in a repository.
+
 > **Status: 0.1.0, the first release.** All nine networks below work. The way
 > platforms are written is now settled - see
 > [the promise about changes](docs/adding-a-platform.md#what-we-promise-about-changes)

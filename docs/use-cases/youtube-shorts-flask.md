@@ -173,20 +173,14 @@ people on to its own Shorts player when the video qualifies.
 
 ## The code
 
-### The client, and a typed handle on the platform
+### The client
 
 ```python
 from socialchimp import InMemoryStorage, SocialChimp
-from socialchimp.platforms.youtube import YouTubePlatform
 
-youtube = YouTubePlatform()
 storage = InMemoryStorage()  # your five methods go here in production
-sc = SocialChimp(storage=storage, platforms={"youtube": youtube})
+sc = SocialChimp(storage=storage)
 ```
-
-Built by hand rather than reached for through `sc.platform_for("youtube")`,
-which hands it back typed as the `Platform` protocol - and that has no
-`check_state`, because most networks have nothing to check.
 
 `InMemoryStorage` forgets everything on restart. There is a real storage
 class, five methods over sqlite,
@@ -320,15 +314,11 @@ minutes or, for a long video, hours. So:
 ```python
 @app.get("/shorts/<connection_id>/<video_id>")
 def how_is_it_going(connection_id: str, video_id: str) -> dict[str, str | None]:
-    connection = run(sc.fresh_connection(connection_id))
-    result = run(youtube.check_state(connection, video_id))
+    result = run(sc.account(connection_id).check_state(video_id))
     return {"state": result.state.name, "url": result.url}
 ```
 
-`check_state` is YouTube's own method rather than part of the `Platform`
-protocol, so it takes a `Connection` rather than an `Account` handle.
-`sc.fresh_connection(id)` is the public call that reads the connection and
-renews its token first.
+The token is renewed first, the same as every other call on an `Account`.
 
 It costs **one unit** of the daily quota, against an upload's 1,600 - so it
 is cheap enough to put on a timer, unlike the upload.
@@ -379,16 +369,14 @@ Google Cloud console, and it is reviewed by a person.
 
 YouTube has WebSub and it announces new uploads on a channel - not comments,
 not likes, nothing else. Comments are what apps actually want, so
-`Feature.PUSH_UPDATES` is off and socialchimp reads them on a timer instead,
-through the platform's `fetch_updates`:
+`Feature.PUSH_UPDATES` is off and socialchimp reads them on a timer instead:
 
 ```python
 from socialchimp import Dispatcher, Poller, UpdateKind
 
 
 async def check_for_comments() -> Sequence[Update]:
-    connection = await sc.fresh_connection(connection_id)
-    return await youtube.fetch_updates(connection, since=marker)
+    return await sc.account(connection_id).fetch_updates(since=marker)
 
 
 poller = Poller(

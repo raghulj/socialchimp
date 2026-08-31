@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -22,10 +22,14 @@ from socialchimp import (
     PlatformError,
     Post,
     PostResult,
+    PostState,
     RawData,
+    SignatureError,
     Storage,
     Token,
     TokenManager,
+    Update,
+    UpdateKind,
 )
 from socialchimp.client import Account, PostError, PostJob, SocialChimp
 from socialchimp.http import HttpClient
@@ -132,6 +136,19 @@ async def storage_holding(*connections: Connection) -> InMemoryStorage:
     for connection in connections:
         await storage.save_connection(connection)
     return storage
+
+
+PUSH_SECRET = "app-secret"
+
+
+def an_update(connection_id: str = "conn-1") -> Update:
+    return Update(
+        id=f"u-{connection_id}",
+        kind=UpdateKind.COMMENT_CREATED,
+        platform="pusher",
+        connection_id=connection_id,
+        created_at=datetime.now(UTC),
+    )
 
 
 def made(name: str) -> FakePlatform:
@@ -256,6 +273,83 @@ class LyingAppMaker(FakePlatform):
 
     name = "lying-appmaker"
     features = FakePlatform.features | Feature.CREATE_APP
+
+
+class CheckingPlatform(FakePlatform):
+    """A platform still working after it accepts a post, the way YouTube is."""
+
+    name = "checker"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.checked: list[tuple[Connection, str]] = []
+
+    async def check_state(self, connection: Connection, post_id: str) -> PostResult:
+        self.checked.append((connection, post_id))
+        return PostResult(id=post_id, state=PostState.PROCESSING)
+
+
+class PollingPlatform(FakePlatform):
+    """A platform that has to be asked what happened, the way YouTube is."""
+
+    name = "asker"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked_from: list[datetime | None] = []
+
+    async def fetch_updates(
+        self,
+        connection: Connection,
+        since: datetime | None,
+    ) -> Sequence[Update]:
+        self.asked_from.append(since)
+        return [an_update(connection.id)]
+
+
+class PushingPlatform(FakePlatform):
+    """A platform that sends us requests, the way every Meta network does."""
+
+    name = "pusher"
+    features = FakePlatform.features | Feature.PUSH_UPDATES
+
+    def check_signature(
+        self,
+        body: bytes,
+        headers: Mapping[str, str],
+        *,
+        secret: str,
+    ) -> None:
+        if secret != PUSH_SECRET:
+            raise SignatureError("The signature does not match the body.")
+
+    def read_update(self, body: bytes, headers: Mapping[str, str]) -> Update:
+        return an_update("conn-1")
+
+    def read_updates(self, body: bytes) -> list[Update]:
+        return [an_update("conn-1"), an_update("conn-2")]
+
+    def answer_setup_check(
+        self,
+        params: Mapping[str, str],
+        *,
+        verify_token: str,
+    ) -> str:
+        if params.get("hub.verify_token") != verify_token:
+            raise SignatureError("The token in this setup check is not ours.")
+        return params["hub.challenge"]
+
+
+def made_checker() -> CheckingPlatform:
+    platform = made("checker")
+    assert isinstance(platform, CheckingPlatform)
+    return platform
+
+
+def made_asker() -> PollingPlatform:
+    platform = made("asker")
+    assert isinstance(platform, PollingPlatform)
+    return platform
 
 
 class ChoosyPlatform(FakePlatform):
@@ -390,6 +484,9 @@ FAKES: dict[str, type[FakePlatform]] = {
     "appmaker": AppMakerPlatform,
     "lying-appmaker": LyingAppMaker,
     "choosy": ChoosyPlatform,
+    "checker": CheckingPlatform,
+    "asker": PollingPlatform,
+    "pusher": PushingPlatform,
     "fixed": FixedAddressPlatform,
     "per-server": PerServerPlatform,
     "app-password": AppPasswordPlatform,
@@ -785,6 +882,146 @@ class TestWorkingWithOneAccount:
 
         assert connection.account_name == "someone"
         assert connection.token.access_token == NEW_ACCESS
+
+
+class TestAskingHowAPostIsGettingOn:
+    async def test_an_account_can_ask_how_its_post_is_getting_on(self) -> None:
+        storage = await storage_holding(a_connection(platform="checker"))
+        sc = SocialChimp(storage)
+
+        result = await sc.account("conn-1").check_state("post-9")
+
+        assert result.state is PostState.PROCESSING
+        assert made_checker().checked[0][1] == "post-9"
+
+    async def test_asking_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="checker"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").check_state("post-9")
+
+        asked, _ = made_checker().checked[0]
+        assert asked.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_finishes_while_we_wait_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").check_state("post-9")
+
+        assert "fake" in str(refused.value)
+        assert "publish" in str(refused.value)
+
+
+class TestAskingWhatHasHappened:
+    async def test_an_account_can_be_asked_what_has_happened(self) -> None:
+        storage = await storage_holding(a_connection(platform="asker"))
+        sc = SocialChimp(storage)
+
+        found = await sc.account("conn-1").fetch_updates()
+
+        assert [update.connection_id for update in found] == ["conn-1"]
+        assert made_asker().asked_from == [None]
+
+    async def test_a_marker_is_passed_straight_on(self) -> None:
+        storage = await storage_holding(a_connection(platform="asker"))
+        sc = SocialChimp(storage)
+        marker = datetime.now(UTC) - timedelta(hours=1)
+
+        await sc.account("conn-1").fetch_updates(since=marker)
+
+        assert made_asker().asked_from == [marker]
+
+    async def test_asking_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="asker"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").fetch_updates()
+
+        assert made("asker").refreshed[0].id == "conn-1"
+
+    async def test_a_network_that_cannot_be_asked_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").fetch_updates()
+
+        assert "fake" in str(refused.value)
+
+
+class TestRequestsANetworkSendsUs:
+    def test_the_setup_check_is_answered_without_building_the_platform(
+        self,
+    ) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        challenge = sc.answer_setup_check(
+            "pusher",
+            {
+                "hub.mode": "subscribe",
+                "hub.verify_token": "chosen-by-me",
+                "hub.challenge": "1158201444",
+            },
+            verify_token="chosen-by-me",
+        )
+
+        assert challenge == "1158201444"
+
+    def test_a_setup_check_with_the_wrong_token_is_refused(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(SignatureError):
+            sc.answer_setup_check(
+                "pusher",
+                {"hub.verify_token": "somebody-elses", "hub.challenge": "9"},
+                verify_token="chosen-by-me",
+            )
+
+    def test_a_network_that_asks_nothing_first_says_so(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(NotSupportedError) as refused:
+            sc.answer_setup_check("fake", {}, verify_token="chosen-by-me")
+
+        assert "fake" in str(refused.value)
+
+    def test_a_signature_is_checked_without_building_the_platform(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        sc.check_signature("pusher", b"{}", {}, secret=PUSH_SECRET)
+
+    def test_a_signature_signed_with_the_wrong_secret_is_refused(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(SignatureError):
+            sc.check_signature("pusher", b"{}", {}, secret="not-ours")
+
+    def test_a_network_that_never_sends_us_anything_says_so(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(NotSupportedError) as refused:
+            sc.check_signature("fake", b"{}", {}, secret=PUSH_SECRET)
+
+        assert "fake" in str(refused.value)
+
+    def test_every_update_in_one_message_comes_back(self) -> None:
+        # Meta batches when it is busy, which is exactly when you least want
+        # to drop the rest.
+        sc = SocialChimp(InMemoryStorage())
+
+        found = sc.read_updates("pusher", b"{}")
+
+        assert [update.connection_id for update in found] == ["conn-1", "conn-2"]
+
+    def test_a_network_whose_messages_we_cannot_unpack_says_so(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(NotSupportedError) as refused:
+            sc.read_updates("fake", b"{}")
+
+        assert "fake" in str(refused.value)
 
 
 class TestGoingDirect:

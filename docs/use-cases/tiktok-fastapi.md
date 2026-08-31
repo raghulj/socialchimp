@@ -98,26 +98,29 @@ message naming the portal.
 
 ## The code
 
-### The client, and a typed handle on the platform
+### The client
 
 ```python
 from socialchimp import SocialChimp
-from socialchimp.platforms.tiktok import TikTokPlatform
 
-tiktok = TikTokPlatform()
-sc = SocialChimp(storage=storage, platforms={"tiktok": tiktok})
+sc = SocialChimp(storage=storage)
 ```
 
-Building the platform yourself and passing it in does two things. It keeps
-the real type - `sc.platform_for("tiktok")` hands it back as the `Platform`
-protocol, which has no `check_state`, because most networks have nothing to
-check. And it is where a platform that needs settings of its own goes:
+Build the platform yourself and pass it in only where it needs settings of
+its own, which for TikTok it often does:
 
 ```python
-tiktok = TikTokPlatform(
-    chunk_bytes=10 * 1024**2,  # 5 MB to 64 MB; default is 10 MB
-    timeout=300.0,  # a piece of video takes far longer than a request
-    pkce=False,  # TikTok wants PKCE from mobile apps, not servers
+from socialchimp.platforms.tiktok import TikTokPlatform
+
+sc = SocialChimp(
+    storage=storage,
+    platforms={
+        "tiktok": TikTokPlatform(
+            chunk_bytes=10 * 1024**2,  # 5 MB to 64 MB; default is 10 MB
+            timeout=300.0,  # a piece of video takes far longer than a request
+            pkce=False,  # TikTok wants PKCE from mobile apps, not servers
+        )
+    },
 )
 ```
 
@@ -330,15 +333,13 @@ elif result.state is PostState.PROCESSING:
 ```python
 @app.get("/uploads/{connection_id}/{publish_id}")
 async def how_is_it_going(connection_id: str, publish_id: str) -> dict[str, str | None]:
-    connection = await sc.fresh_connection(connection_id)
-    result = await tiktok.check_state(connection, publish_id)
+    result = await sc.account(connection_id).check_state(publish_id)
     return {"state": result.state.name, "url": result.url}
 ```
 
-`check_state` is TikTok's own method rather than part of the `Platform`
-protocol, so it takes a `Connection` rather than an `Account` handle.
-`sc.fresh_connection(id)` is the public call that reads the connection and
-renews its token first - the same one `account.post` uses.
+The token is renewed first, the same as every other call on an `Account`, so
+this is safe to leave on a timer. A network that finishes before it answers
+has no `check_state` at all, and asking one raises `NotSupportedError`.
 
 One account may ask **30 times a minute**. `DONE` fills in `result.url`, once
 TikTok has a public address for the video; before that there is none, because

@@ -246,8 +246,8 @@ async def main() -> None:
     dispatcher.on(UpdateKind.COMMENT_CREATED, someone_commented)
 
     # Passing the platform in by name is how a test swaps a fake for the
-    # real thing - and how you keep a typed handle on a platform when you
-    # need one of its own methods, such as `check_signature` below.
+    # real thing. Everything the app below calls is on `sc` and on
+    # `sc.account(...)`, so nothing else has to know it is a fake.
     async with SocialChimp(storage=storage, platforms={"facebook": facebook}) as sc:
         # Meta will not register an app for you. On a real app these two
         # values come out of the developer portal by hand, once.
@@ -340,8 +340,11 @@ async def main() -> None:
         headers = facebook.sign(body)
 
         print("\nA webhook arrives:")
-        facebook.check_signature(body, headers, secret=APP_SECRET)
-        await dispatcher.deliver(facebook.read_update(body, headers))
+        sc.check_signature("facebook", body, headers, secret=APP_SECRET)
+        # read_updates, not read_update: a busy moment is exactly when you
+        # least want to drop the rest of a message.
+        for update in sc.read_updates("facebook", body):
+            await dispatcher.deliver(update)
 
 
 if __name__ == "__main__":

@@ -149,10 +149,17 @@ class Update:
             whose account this is without another lookup.
         created_at: When it happened, according to the network. Always has a
             timezone.
-        raw: The network's untouched message, for anything we did not model.
+        raw: The one thing that happened, in the network's own untouched
+            words, for anything we did not model. A handler reads this
+            straight - it is this update's own change and nothing else.
         kind_name: The word the network used. The same as `kind`'s own value
             for anything we recognise; for `UNKNOWN` this is where the
             network's original word is kept.
+        envelope: The message this arrived in, where the network wraps
+            things up. Meta puts several changes in one message and names
+            the page and the time out there rather than on each change, so
+            that is what this holds. Empty for a network that sends one
+            thing on its own, and for an update found by asking.
     """
 
     id: str
@@ -162,6 +169,7 @@ class Update:
     created_at: datetime
     raw: RawData = field(default_factory=dict, repr=False)
     kind_name: str = ""
+    envelope: RawData = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         """Check the time has a timezone and fill in the missing word.
@@ -185,6 +193,7 @@ class Update:
         connection_id: str,
         created_at: datetime,
         raw: RawData | None = None,
+        envelope: RawData | None = None,
     ) -> Update:
         """Build an update from a word a network gave us.
 
@@ -198,7 +207,11 @@ class Update:
             platform: Which network it happened on.
             connection_id: Which of your connections it concerns.
             created_at: When it happened. Must have a timezone.
-            raw: The network's untouched message.
+            raw: The one thing that happened, untouched. Pass the change
+                itself, not the message it came in - a handler should not
+                have to hunt through a list for its own change.
+            envelope: The message it arrived in, where the network wraps
+                things up and puts the account and the time out there.
 
         Returns:
             The update, ready to deliver.
@@ -211,6 +224,7 @@ class Update:
             created_at=created_at,
             raw=raw if raw is not None else {},
             kind_name=kind_name,
+            envelope=envelope if envelope is not None else {},
         )
 
 

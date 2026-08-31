@@ -751,27 +751,31 @@ sc = SocialChimp(
 - it reads nothing until you actually do something, so holding one for a
 connection that does not exist yet is fine.
 
-### One typing wrinkle worth knowing
+### The things only some networks can do
 
-`sc.platform_for("tiktok")` hands the platform back typed as the `Platform`
-protocol, which has only the seven methods every network has. TikTok's
-`check_state` and Facebook's `read_updates` are not among them, so mypy will
-not let you call them on that.
+A few networks do more than the seven things every platform provides. Those
+are here too, so nothing sends you off to build a platform by hand.
 
-Build the platform yourself and pass it in, and you keep the real type:
+Anything about one account is on `Account`, where you already are:
 
 ```python
-from socialchimp.platforms.tiktok import TikTokPlatform
-
-tiktok = TikTokPlatform()
-sc = SocialChimp(storage=storage, platforms={"tiktok": tiktok})
-
-connection = await sc.fresh_connection(connection_id)
-result = await tiktok.check_state(connection, publish_id)  # checks out
+result = await account.check_state(post_id)  # YouTube, TikTok
+found = await account.fetch_updates(since=marker)  # networks with no push
 ```
 
-`fresh_connection` is the call that reads the connection and renews its token
-first, which is what these platform methods want handed to them.
+Anything that happens before you know whose account it is takes the network's
+name instead, the way `start_login` does - a request Meta pushes to you names
+a page, not a connection:
+
+```python
+challenge = sc.answer_setup_check("facebook", params, verify_token=TOKEN)
+sc.check_signature("facebook", body, headers, secret=APP_SECRET)
+for update in sc.read_updates("facebook", body):
+    await dispatcher.deliver(update)
+```
+
+Each one raises `NotSupportedError`, naming the network, where it cannot -
+the same as scheduling on Bluesky.
 
 ---
 

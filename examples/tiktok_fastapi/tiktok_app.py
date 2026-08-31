@@ -71,17 +71,15 @@ TIKTOK_APP = AppCredentials(
 
 
 # ---------------------------------------------------------------------------
-# The client, and a typed handle on the platform.
+# The client.
 #
-# `sc.platform_for("tiktok")` would give the same object, typed as the
-# `Platform` protocol - which has no `check_state`, because most networks
-# have nothing to check. Building it here and passing it in keeps the real
-# type, so `check_state` below type-checks.
+# The platform is built here and passed in only because this one takes
+# settings of its own in production - the chunk size and a longer timeout.
+# Everything an app calls is on `sc` and on `sc.account(...)`.
 # ---------------------------------------------------------------------------
 
-tiktok = TikTokPlatform()
 storage = InMemoryStorage()
-sc = SocialChimp(storage=storage, platforms={"tiktok": tiktok})
+sc = SocialChimp(storage=storage, platforms={"tiktok": TikTokPlatform()})
 
 # TikTok delivers at least once and keeps retrying for 72 hours, so the same
 # message arriving twice is normal rather than a fault. A memory of what has
@@ -202,10 +200,9 @@ async def how_is_it_going(connection_id: str, publish_id: str) -> dict[str, str 
     concerned: the video is in somebody's drafts, and it changes when they
     open the app and not before.
     """
-    # `check_state` wants a connection rather than an account handle, and
-    # this is the call that renews the token first.
-    connection = await sc.fresh_connection(connection_id)
-    result = await tiktok.check_state(connection, publish_id)
+    # The token is renewed first, the same as every other call on an
+    # account, so this is safe to leave on a timer.
+    result = await sc.account(connection_id).check_state(publish_id)
     return {
         "state": result.state.name,
         "url": result.url,

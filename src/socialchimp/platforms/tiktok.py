@@ -1945,6 +1945,26 @@ class TikTokPlatform:
             now=self._now(),
         )
 
+    def read_updates(self, body: bytes) -> list[Update]:
+        """Turn a checked message into every update it carries.
+
+        One message from TikTok carries one event, unlike Facebook and
+        Instagram, which batch several into one. This still hands back a
+        list, so that an app written against one network works against all
+        of them - and so `SocialChimp.read_updates` reaches every network
+        that pushes.
+
+        Args:
+            body: The request body, untouched. Check its signature first.
+
+        Returns:
+            What happened, as a list of one.
+
+        Raises:
+            PlatformError: If the body is not one of TikTok's messages.
+        """
+        return [self.read_update(body, {})]
+
     def read_update(
         self,
         body: bytes,

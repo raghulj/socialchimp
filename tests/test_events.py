@@ -110,6 +110,26 @@ class TestUpdate:
     def test_a_kind_built_by_hand_names_itself(self) -> None:
         assert an_update().kind_name == "comment_created"
 
+    def test_the_message_an_update_arrived_in_is_kept_beside_it(self) -> None:
+        # `raw` is the one thing that happened. Meta wraps several of them in
+        # one message and names the page and the time out there, so that goes
+        # alongside rather than on top.
+        update = Update.from_network(
+            update_id="u1",
+            kind_name="comment_created",
+            platform="facebook",
+            connection_id="facebook:42",
+            created_at=MONDAY,
+            raw={"item": "comment", "comment_id": "9"},
+            envelope={"id": "42", "time": 1767614400, "changes": [{}, {}]},
+        )
+
+        assert update.raw == {"item": "comment", "comment_id": "9"}
+        assert update.envelope["id"] == "42"
+
+    def test_a_network_that_wraps_nothing_leaves_the_envelope_empty(self) -> None:
+        assert an_update().envelope == {}
+
 
 class TestVerifyHmacSha256:
     def test_a_signature_made_with_the_right_secret_is_accepted(self) -> None:

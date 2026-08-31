@@ -260,14 +260,8 @@ from functools import cache
 
 from socialchimp import SocialChimp
 from socialchimp.contrib.django import orm_storage
-from socialchimp.platforms.facebook import FacebookPlatform
 
 from .storage import Storage
-
-# Built here rather than reached for through `client().platform_for(...)`,
-# which hands it back typed as the Platform protocol - and that has no
-# `read_updates`, which the webhook below wants.
-facebook = FacebookPlatform()
 
 
 @cache
@@ -277,10 +271,7 @@ def client() -> SocialChimp:
     Cached because the locks that stop two workers renewing the same token
     at once live on it, so a new one per request protects nothing.
     """
-    return SocialChimp(
-        storage=orm_storage(Storage()),
-        platforms={"facebook": facebook},
-    )
+    return SocialChimp(storage=orm_storage(Storage()))
 ```
 
 **Why `orm_storage` and not `sync_storage`.** Both take the same five
@@ -295,8 +286,7 @@ thread the request arrived on.
 
 `socialchimp.contrib.django.get_client()` builds the same thing from
 `settings.SOCIALCHIMP = {"SYNC_STORAGE": "shop.storage.Storage"}`, and is
-shorter. We build it by hand here only because the webhook wants a typed
-handle on the Facebook platform.
+shorter. It is written out here only so you can see what it does.
 
 ### Connecting a Page: three requests, not two
 
@@ -500,7 +490,7 @@ from socialchimp import Dispatcher, InMemorySeenUpdates, Update, UpdateKind
 from socialchimp.errors import SignatureError
 
 from .models import Announcement
-from .social import facebook
+from .social import client
 
 dispatcher = Dispatcher(seen=InMemorySeenUpdates())
 
@@ -510,17 +500,12 @@ async def someone_commented(update: Update) -> None:
     # update.connection_id is "facebook:<page id>", which is exactly the
     # primary key your SocialAccount row was saved under. No lookup table.
     #
-    # `raw` is Meta's whole entry for the Page, not this one change - so the
-    # comment itself is under changes[]. Read it defensively: this is
-    # somebody else's JSON.
-    for change in update.raw.get("changes", []):
-        value = change.get("value", {})
-        if value.get("item") != "comment":
-            continue
-        print(
-            f"comment on {update.connection_id} "
-            f"post {value.get('post_id')}: {value.get('message')}"
-        )
+    # `raw` is this one comment, in Facebook's own words. The Page entry it
+    # arrived in is on `update.envelope` if you want the rest of it.
+    print(
+        f"comment on {update.connection_id} "
+        f"post {update.raw.get('post_id')}: {update.raw.get('message')}"
+    )
 
 
 dispatcher.on(UpdateKind.COMMENT_CREATED, someone_commented)
@@ -531,7 +516,8 @@ def facebook_webhook(request):
     """Answer Meta's setup check, then receive its updates."""
     if request.method == "GET":
         try:
-            challenge = facebook.answer_setup_check(
+            challenge = client().answer_setup_check(
+                "facebook",
                 request.GET.dict(),
                 # The value you invented and typed into Meta's webhook
                 # form. Not the app secret.
@@ -548,7 +534,8 @@ def facebook_webhook(request):
         # parsing the JSON and building it again changes the spacing and the
         # key order. That is the single most common reason a correct
         # signature appears to fail.
-        facebook.check_signature(
+        client().check_signature(
+            "facebook",
             request.body,
             dict(request.headers.items()),
             # The app secret from Settings > Basic.
@@ -561,7 +548,7 @@ def facebook_webhook(request):
 
     # read_updates, not read_update. Facebook batches when it is busy, and
     # being busy is exactly when you least want to drop the rest.
-    for update in facebook.read_updates(request.body):
+    for update in client().read_updates("facebook", request.body):
         async_to_sync(dispatcher.deliver)(update)
 
     return JsonResponse({"ok": True})

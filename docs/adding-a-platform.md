@@ -57,10 +57,12 @@ class MyPlatform:
 ```
 
 Anything else is optional, and you say you can do it by having the method:
-`create_app`, `delete_post`, `resume_login`, `fetch_updates`,
-`check_signature`. There is no stubbing things out - a network that cannot
-delete posts simply has no `delete_post`, and socialchimp asks before
-calling.
+`create_app`, `delete_post`, `resume_login`, `check_state`, `fetch_updates`,
+`check_signature`, `read_updates`, `answer_setup_check`. There is no stubbing
+things out - a network that cannot delete posts simply has no `delete_post`,
+and socialchimp asks before calling. Each one has a `Can...` protocol in
+`socialchimp.platform` saying its exact shape, and a call on `Account` or
+`SocialChimp` that finds it and refuses plainly when it is not there.
 
 ## Rules that matter more than they look
 

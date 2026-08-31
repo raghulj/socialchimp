@@ -901,7 +901,12 @@ def _update_from(change: Change) -> Update:
         # Instagram puts no time on the change itself, only on the batch it
         # arrived in, so that is the closest we have to when it happened.
         created_at=change.when,
-        raw=change.raw,
+        # The change itself, so a handler reads `update.raw["text"]` rather
+        # than walking the entry looking for its own change again. The entry
+        # goes alongside, because the account id and the time are only out
+        # there.
+        raw=change.value,
+        envelope=change.envelope,
     )
 
 

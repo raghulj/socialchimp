@@ -14,7 +14,11 @@ Three things are worth knowing before you read on.
 
 **Nothing is hidden.** `account.direct` sends whatever request you like to
 the same network as the same account. Tokens, retries and rate limits still
-apply; only the request is yours.
+apply; only the request is yours. The things only some networks can do are
+here rather than behind the platform: `account.check_state` and
+`account.fetch_updates` for one account, and `answer_setup_check`,
+`check_signature` and `read_updates` on the client for the requests a network
+pushes to you, which arrive before you know whose account they are about.
 
 **Nothing is guessed.** Where a network cannot do something - Bluesky cannot
 schedule, most networks cannot register an app for you - you get a
@@ -43,8 +47,13 @@ from socialchimp.features import Feature, check_post
 from socialchimp.http import HttpClient
 from socialchimp.models import PostResult
 from socialchimp.platform import (
+    CanAnswerSetupCheck,
+    CanCheckSignature,
+    CanCheckState,
     CanCreateApp,
     CanDeletePosts,
+    CanReadPushedUpdates,
+    CanReadUpdates,
     CanResumeLogin,
     Finished,
     LoginRequest,
@@ -54,10 +63,12 @@ from socialchimp.tokens import MakeLock, TokenManager
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from datetime import datetime
     from types import TracebackType
 
     import httpx
 
+    from socialchimp.events import Update
     from socialchimp.features import Limits
     from socialchimp.models import AppCredentials, Connection, Post, RawData, Token
     from socialchimp.platform import LoginStep, Platform
@@ -515,6 +526,83 @@ class Account:
         return await _publish(
             self._client.platform_for(connection.platform), connection, post
         )
+
+    async def check_state(self, post_id: str) -> PostResult:
+        """Ask the network how far it has got with a post.
+
+        Some networks keep working after they accept an upload. YouTube
+        encodes a video for minutes, sometimes hours; TikTok can put one in
+        somebody's drafts instead of publishing it. Both answer `post()`
+        before they are finished, so a result that came back `PROCESSING`
+        is not the end of the story.
+
+        The token is renewed first, the same as every other call here, so
+        this is safe to put on a timer.
+
+        Args:
+            post_id: The network's identifier for the post, which is what
+                `post()` handed back.
+
+        Returns:
+            Where the post has got to now, in the same shape `post()` gave.
+
+        Raises:
+            NotSupportedError: If this network finishes before it answers,
+                so there is nothing to ask about.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanCheckState):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="being asked how a post is getting on",
+                suggestion=(
+                    "It finishes while we wait, so what publish gave you is "
+                    "the final answer. YouTube and TikTok are the two that "
+                    "keep working afterwards."
+                ),
+            )
+        return await platform.check_state(connection, post_id)
+
+    async def fetch_updates(
+        self,
+        since: datetime | None = None,
+    ) -> Sequence[Update]:
+        """Ask the network what has happened on this account since a moment.
+
+        For networks that never tell us anything themselves. Hand this to
+        `socialchimp.events.Poller` and it runs on a timer, works out what
+        is new, and delivers the same `Update` objects a pushing network
+        would have produced.
+
+        The token is renewed first, so a poller left running for weeks does
+        not quietly stop.
+
+        Args:
+            since: Only return things newer than this. `None` on the first
+                call, when there is no marker saved yet - the network
+                answers with a recent page rather than the whole history.
+
+        Returns:
+            What has happened, oldest first.
+
+        Raises:
+            NotSupportedError: If this network cannot be asked. Where it
+                pushes instead, receive its requests with
+                `SocialChimp.check_signature` and `SocialChimp.read_updates`.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanReadUpdates):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="being asked what has happened since",
+                suggestion=(
+                    "Where a network pushes instead, take its requests with "
+                    "SocialChimp.check_signature and SocialChimp.read_updates."
+                ),
+            )
+        return await platform.fetch_updates(connection, since)
 
     async def delete_post(self, post_id: str) -> None:
         """Take a post back down again.
@@ -1063,6 +1151,143 @@ class SocialChimp:
         if isinstance(step, Finished):
             await self.storage.save_connection(step.connection)
         return step
+
+    def answer_setup_check(
+        self,
+        platform: str,
+        params: Mapping[str, str],
+        *,
+        verify_token: str,
+    ) -> str:
+        """Answer the one-off question a network asks before it pushes.
+
+        Meta does this on Facebook, Instagram and Threads: point it at a URL
+        of yours and it does a GET to it first, carrying a token you chose
+        and a challenge to echo back. Get it wrong and Meta says the URL
+        could not be verified, without saying why.
+
+        Nobody has connected an account by this point, so this takes the
+        network's name rather than going through `Account` - the same as
+        `start_login` does, and for the same reason. It is a plain function
+        rather than `async` because nothing is sent anywhere, so a
+        synchronous view can call it without a bridge.
+
+        Args:
+            platform: Which network, for example `"facebook"`.
+            params: The query values from that GET, such as Django's
+                `request.GET` or FastAPI's `request.query_params`.
+            verify_token: The token you typed into that network's own form.
+                Not your app secret - that one is for `check_signature`.
+
+        Returns:
+            The challenge. Send it back as the whole body, with a 200 and a
+            content type of `text/plain`.
+
+        Raises:
+            NotSupportedError: If this network asks nothing before it starts
+                sending.
+            SignatureError: If this is not a setup check, or the token is
+                wrong. Answer 403 and send nothing back.
+        """
+        answerer = self.platform_for(platform)
+        if not isinstance(answerer, CanAnswerSetupCheck):
+            raise NotSupportedError(
+                platform=answerer.name,
+                what="a setup check before it will push anything",
+                suggestion=(
+                    "It starts sending as soon as you point it at a URL, so "
+                    "there is nothing to answer. Meta's three networks are "
+                    "the ones that ask."
+                ),
+            )
+        return answerer.answer_setup_check(params, verify_token=verify_token)
+
+    def check_signature(
+        self,
+        platform: str,
+        body: bytes,
+        headers: Mapping[str, str],
+        *,
+        secret: str,
+    ) -> None:
+        """Check a request a network pushed to us really came from it.
+
+        The body must be the **raw bytes** of the request, exactly as they
+        arrived. A signature is over those exact bytes, so a framework that
+        parsed the JSON and built it again has already broken it - the
+        spacing and the key order will not match. Read the body, check it
+        here, and let `read_updates` parse it afterwards. This is the single
+        most common reason a correct signature appears to fail.
+
+        This takes the network's name because the request arrives before we
+        know whose account it concerns; `read_updates` is what tells you
+        that.
+
+        Args:
+            platform: Which network, for example `"facebook"`.
+            body: The request body, untouched.
+            headers: The request headers. Case does not matter.
+            secret: The secret you share with that network. Meta calls this
+                the app secret, and it is not the verify token.
+
+        Raises:
+            NotSupportedError: If this network never sends us anything.
+            SignatureError: If the request cannot be trusted. Answer 401 and
+                do nothing else with it - and say nothing about which check
+                failed, because that only helps whoever is guessing.
+        """
+        pusher = self.platform_for(platform)
+        if not isinstance(pusher, CanCheckSignature):
+            raise NotSupportedError(
+                platform=pusher.name,
+                what="pushing requests to a URL of yours",
+                suggestion=(
+                    "Ask it on a timer instead, with Account.fetch_updates "
+                    "and socialchimp.events.Poller."
+                ),
+            )
+        pusher.check_signature(body, headers, secret=secret)
+
+    def read_updates(self, platform: str, body: bytes) -> list[Update]:
+        """Turn a checked request into every update it carries.
+
+        Call this after `check_signature` has passed, never before.
+
+        All of them, not the first: Meta batches changes into one message
+        when it is busy, which is exactly when you least want to drop the
+        rest. Each update carries its own change on `raw`, so a handler
+        reads that straight rather than hunting through the message for the
+        change it is about.
+
+        Args:
+            platform: Which network, for example `"facebook"`.
+            body: The request body, untouched.
+
+        Returns:
+            What happened, in the order the network listed it. Empty when
+            the message carried nothing we can act on, which is not an
+            error - networks send shapes we have no interest in. Each
+            update names the connection it concerns.
+
+        Raises:
+            NotSupportedError: If this network never sends us anything, or
+                its platform file was written before `read_updates` existed.
+            PlatformError: If the body is not one of that network's
+                messages.
+        """
+        reader = self.platform_for(platform)
+        if not isinstance(reader, CanReadPushedUpdates):
+            raise NotSupportedError(
+                platform=reader.name,
+                what="reading every update out of one pushed request",
+                suggestion=(
+                    "Either it never sends us anything, or its platform file "
+                    "has no read_updates(body) method yet. A platform written "
+                    "against socialchimp 0.1 may only have read_update, which "
+                    "hands back the first change and drops the rest."
+                ),
+            )
+        return reader.read_updates(body)
 
     async def post_to_many(
         self,
