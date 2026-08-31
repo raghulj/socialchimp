@@ -66,6 +66,17 @@ so a library that counts letters puts the note in the wrong place and the
 link quietly stops working. That is the single most common Bluesky bug, and
 `facets_for` exists so it is written once.
 
+## Two limits on how long a post can be
+
+Bluesky allows **300 letters and 3,000 bytes**, and a post has to be inside
+both. Letters means letters as a person counts them: a family emoji is one
+letter, seven characters and 25 bytes. So a post can be well under 300 and
+still be too big, and a post of 700 characters can be perfectly fine.
+
+Both are declared on `limits()`, and socialchimp counts both the same way
+Bluesky does before anything is sent. `count_graphemes` does the counting if
+you want to show somebody how much room they have left.
+
 ## What a post can carry
 
 `Post.options` accepts one setting:
@@ -90,8 +101,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import unicodedata
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
@@ -105,7 +114,13 @@ from socialchimp.errors import (
     TokenExpiredError,
 )
 from socialchimp.events import Update
-from socialchimp.features import Feature, Limits, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_post,
+    count_graphemes,
+)
 from socialchimp.http import HttpClient, error_from_response, read_body
 from socialchimp.models import (
     Connection,
@@ -125,6 +140,11 @@ if TYPE_CHECKING:
     from socialchimp.http import Retries
 
 __all__ = ["BlueskyPlatform", "bluesky_errors", "count_graphemes", "facets_for"]
+
+# Counting letters the way a person does is not a Bluesky idea - Bluesky is
+# only where most people meet it first - so it lives in `features` with the
+# rest of the shared checking. It is handed out from here as well, because
+# this is where somebody goes looking for it.
 
 PLATFORM_NAME: Final = "bluesky"
 
@@ -149,6 +169,16 @@ MAX_TEXT_BYTES: Final = 3000
 
 MAX_IMAGES: Final = 4
 """Pictures allowed on one post."""
+
+MAX_IMAGE_BYTES: Final = 1_000_000
+"""Biggest picture worth sending.
+
+Bluesky is in the middle of raising this to two million, and which one you
+get depends on the server the account is on. A picture resized to fit this
+number works on either, which is why the smaller one is what we report. A
+picture the server will not take comes back as an `InvalidPostError` saying
+to shrink it.
+"""
 
 MAX_LANGUAGES: Final = 3
 """Language codes allowed on one post."""
@@ -216,23 +246,6 @@ _JWT_PIECES: Final = 3
 # renewing a token that had hours left costs one request, while trusting one
 # that had seconds left costs a failed post.
 _ASSUMED_LIFETIME_SECONDS: Final = 60.0
-
-# Marks that hang off the letter before them - accents, the character that
-# turns a symbol into an emoji, the ring drawn around a keycap.
-_MARKS: Final = frozenset({"Mn", "Mc", "Me"})
-
-# Joins two pictures into one, as in a family emoji. Written as an escape
-# because the character itself is invisible: a literal one here looks like
-# an empty string, and gets "tidied up" by the next person who reads it.
-_JOINER: Final = "\u200d"
-
-# The five skin tones. They are symbols rather than marks, so they have to be
-# named here to be counted as part of the emoji they follow.
-_SKIN_TONES: Final = frozenset(chr(point) for point in range(0x1F3FB, 0x1F400))
-
-# Flags are written as two of these letters together.
-_FIRST_FLAG_LETTER: Final = "\U0001f1e6"
-_LAST_FLAG_LETTER: Final = "\U0001f1ff"
 
 # Both patterns are run against the **bytes** of the text, not its letters,
 # so the offsets they report are already the byte offsets Bluesky wants and
@@ -338,100 +351,6 @@ def _moment(text: str) -> datetime | None:
     # might not, and a time with no timezone compares wrongly against every
     # other time we hold.
     return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
-
-
-def _attaches_to_the_letter_before(character: str) -> bool:
-    """Say whether this is part of the letter in front of it.
-
-    Args:
-        character: The character to judge.
-
-    Returns:
-        True for accents, for the mark that turns a symbol into an emoji,
-        and for the five skin tones - none of which a person would call a
-        letter of their own.
-    """
-    return unicodedata.category(character) in _MARKS or character in _SKIN_TONES
-
-
-def count_graphemes(text: str) -> int:
-    """Count what a person would call the letters in some text.
-
-    Bluesky's limit of 300 is counted this way, not in characters. A family
-    emoji is seven characters and one letter; a flag is two and one; an
-    accented letter can be either. Counting characters instead refuses posts
-    Bluesky would have taken.
-
-    This is an approximation, and worth being honest about where it sits.
-    Python has no grapheme splitter of its own and we add no dependencies,
-    so this handles accents and other marks, skin tones, joined emoji and
-    flags - which is what people actually type. It over-counts a few writing
-    systems where a syllable is built from several characters, and the cost
-    of that is refusing a post that would have been fine. If you need it
-    exact, count with a library of your own and check before you post.
-
-    Args:
-        text: The words to count.
-
-    Returns:
-        How many letters a person would say that is.
-    """
-    count = 0
-    joined_to_the_last = False
-    half_a_flag = False
-
-    for character in text:
-        if character == _JOINER:
-            joined_to_the_last = True
-            continue
-
-        if _attaches_to_the_letter_before(character):
-            continue
-
-        if joined_to_the_last:
-            joined_to_the_last = False
-            continue
-
-        if _FIRST_FLAG_LETTER <= character <= _LAST_FLAG_LETTER:
-            # Flags come in pairs, and the pair is one letter.
-            half_a_flag = not half_a_flag
-            if not half_a_flag:
-                continue
-            count += 1
-            continue
-
-        half_a_flag = False
-        count += 1
-
-    return count
-
-
-def _check_length(text: str) -> None:
-    """Check a post against both of Bluesky's limits before sending it.
-
-    Args:
-        text: The words about to be posted.
-
-    Raises:
-        InvalidPostError: If the post is too long either way.
-    """
-    letters = count_graphemes(text)
-    if letters > MAX_GRAPHEMES:
-        message = (
-            f"This post is {letters} letters but bluesky allows at most "
-            f"{MAX_GRAPHEMES}."
-        )
-        raise InvalidPostError(message)
-
-    written = len(text.encode())
-    if written > MAX_TEXT_BYTES:
-        message = (
-            f"This post is {MAX_GRAPHEMES} letters or fewer, but takes "
-            f"{written} bytes to write out, and bluesky allows at most "
-            f"{MAX_TEXT_BYTES}. Emoji take four bytes each and accented "
-            f"letters two, so a short post can still be over."
-        )
-        raise InvalidPostError(message)
 
 
 def _seconds_in(access_jwt: str) -> float | None:
@@ -928,8 +847,9 @@ class BlueskyPlatform:
         part of what a Bluesky post *is* and are the same everywhere. This
         stays `async` because every platform's `limits` is.
 
-        The 300 is counted in letters as a person would count them, not in
-        characters - see `count_graphemes`.
+        Both text limits are real and a post has to be inside both: 300
+        letters as a person would count them, and 3,000 bytes once written
+        out. `check_post` counts both, the same way Bluesky will.
 
         Args:
             connection: The account to ask about. Not used here.
@@ -937,7 +857,13 @@ class BlueskyPlatform:
         Returns:
             What Bluesky allows right now.
         """
-        return Limits(max_text_length=MAX_GRAPHEMES, max_images=MAX_IMAGES)
+        return Limits(
+            max_text_length=MAX_GRAPHEMES,
+            max_text_bytes=MAX_TEXT_BYTES,
+            text_counted_in=TextCount.GRAPHEMES,
+            max_images=MAX_IMAGES,
+            max_image_bytes=MAX_IMAGE_BYTES,
+        )
 
     async def start_login(self, request: LoginRequest) -> AskForDetails:
         """Say what to ask a person for.
@@ -1098,18 +1024,12 @@ class BlueskyPlatform:
         # request and no part of the account's allowance.
         langs = _checked_langs(post.options)
 
-        # Bluesky counts letters as a person would and bytes as a machine
-        # does, and refuses a post that is over either. `check_post` counts
-        # characters, which is neither, so the length is checked here and
-        # taken out of what it is given - otherwise a post of family emoji
-        # would be refused for a limit Bluesky does not have.
-        _check_length(post.text)
         allowed = await self.limits(connection)
         check_post(
             post,
             platform=PLATFORM_NAME,
             features=self.features,
-            limits=replace(allowed, max_text_length=None),
+            limits=allowed,
         )
 
         record: dict[str, Any] = {

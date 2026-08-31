@@ -29,6 +29,7 @@ from socialchimp import (
     Token,
     UpdateKind,
 )
+from socialchimp.features import TextCount
 from socialchimp.http import Retries
 from socialchimp.platform import (
     CanCreateApp,
@@ -53,7 +54,10 @@ ONCE = Retries(attempts=1)
 BIG_INSTANCE: dict[str, Any] = {
     "configuration": {
         "statuses": {"max_characters": 5000, "max_media_attachments": 6},
-        "media_attachments": {"video_size_limit": 103809024},
+        "media_attachments": {
+            "image_size_limit": 16777216,
+            "video_size_limit": 103809024,
+        },
     }
 }
 
@@ -588,7 +592,11 @@ class TestLimits:
         assert found.max_text_length == 5000
         assert found.max_images == 6
         assert found.max_videos == 1
+        assert found.max_image_bytes == 16777216
         assert found.max_video_bytes == 103809024
+        # Mastodon really does count characters, so a post of 5,000 family
+        # emoji is 35,000 characters and too long for this server.
+        assert found.text_counted_in is TextCount.CHARACTERS
 
     async def test_it_uses_mastodons_own_defaults_when_a_server_says_nothing(
         self,
@@ -601,6 +609,7 @@ class TestLimits:
 
         assert found.max_text_length == 500
         assert found.max_images == 4
+        assert found.max_image_bytes is None
         assert found.max_video_bytes is None
 
     async def test_it_ignores_numbers_that_are_not_numbers(

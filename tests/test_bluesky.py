@@ -27,6 +27,8 @@ from socialchimp import (
     TokenExpiredError,
     UpdateKind,
 )
+from socialchimp.features import TextCount
+from socialchimp.features import count_graphemes as shared_count_graphemes
 from socialchimp.http import Retries
 from socialchimp.platform import (
     AskForDetails,
@@ -84,6 +86,9 @@ def jwt_expiring_at(when: datetime) -> str:
 IN_TWO_HOURS = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 ACCESS = jwt_expiring_at(IN_TWO_HOURS)
 REFRESH = "refresh-token-one"
+
+# A family emoji: seven characters, one letter, 25 bytes written out.
+FAMILY = "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466"
 
 
 def a_session(
@@ -242,8 +247,14 @@ class TestWhatItSaysItCanDo:
         platform: BlueskyPlatform,
         account: Connection,
     ) -> None:
+        # Both text limits are real and a post has to be inside both, and
+        # the 300 is letters as a person counts them - not characters.
         assert await platform.limits(account) == Limits(
-            max_text_length=300, max_images=4
+            max_text_length=300,
+            max_text_bytes=3000,
+            text_counted_in=TextCount.GRAPHEMES,
+            max_images=4,
+            max_image_bytes=1_000_000,
         )
 
 
@@ -974,9 +985,7 @@ class TestWhatBlueskyWillNotTake:
     ) -> None:
         # Seven code points each, one letter each as far as Bluesky is
         # concerned. Counting characters would refuse a post it accepts.
-        record = await publish_text(
-            platform, account, "\U0001f468\u200d\U0001f469\u200d\U0001f467" * 100
-        )
+        record = await publish_text(platform, account, FAMILY * 100)
         assert count_graphemes(record["text"]) == 100
 
     async def test_a_post_that_is_short_but_heavy_is_refused(
@@ -985,7 +994,7 @@ class TestWhatBlueskyWillNotTake:
         account: Connection,
     ) -> None:
         # 250 letters, but well over 3,000 bytes once written out.
-        heavy = "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466" * 250
+        heavy = FAMILY * 250
 
         with (
             respx.mock(assert_all_called=False) as network,
@@ -1010,26 +1019,12 @@ class TestWhatBlueskyWillNotTake:
 
 
 class TestCountingLetters:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            ("", 0),
-            ("hello", 5),
-            ("é", 1),
-            ("\U0001f1ec\U0001f1e7", 1),
-            ("\U0001f1ec\U0001f1e7\U0001f1eb\U0001f1f7", 2),
-            ("\U0001f1ec\U0001f1e7a", 2),
-            ("\U0001f44d\U0001f3fd", 1),
-            ("#️⃣", 1),
-            ("\U0001f468\u200d\U0001f469\u200d\U0001f467", 1),
-        ],
-    )
-    def test_it_counts_what_a_person_would_call_a_letter(
-        self,
-        text: str,
-        expected: int,
-    ) -> None:
-        assert count_graphemes(text) == expected
+    def test_it_hands_out_the_shared_way_of_counting_letters(self) -> None:
+        # The counting itself lives in features.py, because every network
+        # that counts this way needs it. It is handed out from here too,
+        # since Bluesky is where people meet the problem first.
+        assert count_graphemes is shared_count_graphemes
+        assert count_graphemes(FAMILY) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1312,6 +1307,7 @@ class TestBlueskyBehavesLikeTheOthers(PlatformChecks):
             {
                 "GET /xrpc/app.bsky.notification.listNotifications": {
                     "notifications": [A_NOTIFICATION]
-                }
+                },
+                "POST /xrpc/com.atproto.repo.createRecord": CREATED,
             }
         )

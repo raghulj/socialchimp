@@ -91,7 +91,7 @@ from socialchimp.errors import (
     PlatformError,
 )
 from socialchimp.events import Update
-from socialchimp.features import Feature, Limits, check_post
+from socialchimp.features import Feature, Limits, TextCount, check_post
 from socialchimp.http import HttpClient, error_from_response, read_body
 from socialchimp.models import (
     AppCredentials,
@@ -452,7 +452,13 @@ def _limits_from_instance(reply: RawData) -> Limits:
 
     return Limits(
         max_text_length=_number(statuses, "max_characters", DEFAULT_MAX_CHARACTERS),
+        # Mastodon is one of the few networks that really does mean
+        # characters when it says characters, so this is said out loud
+        # rather than left to the default. A family emoji costs seven of a
+        # server's 500 here, where on Bluesky it costs one of 300.
+        text_counted_in=TextCount.CHARACTERS,
         max_images=_number(statuses, "max_media_attachments", DEFAULT_MAX_MEDIA),
+        max_image_bytes=_number(attachments, "image_size_limit", None),
         max_videos=MAX_VIDEOS_PER_POST,
         max_video_bytes=_number(attachments, "video_size_limit", None),
     )

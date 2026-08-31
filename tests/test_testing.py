@@ -23,6 +23,7 @@ from socialchimp import (
     UpdateKind,
 )
 from socialchimp.errors import ConfigError, NotFoundError
+from socialchimp.features import TextCount
 from socialchimp.http import HttpClient
 from socialchimp.models import RawData
 from socialchimp.platform import (
@@ -197,6 +198,48 @@ class ZeroLimits(Methods):
     name = "zerolimits"
     features = Feature.POST_TEXT
     limits_reply: ClassVar[object] = Limits(max_text_length=100, max_images=0)
+
+
+# One thumbs-up with a skin tone on it: one letter, two characters.
+A_BIG_LETTER = "\U0001f44d\U0001f3fd"
+
+
+class CountsCharactersButSaysLetters(Methods):
+    """Says it counts letters, then counts characters like everyone else."""
+
+    name = "saysletters"
+    features = Feature.POST_TEXT
+    limits_reply: ClassVar[object] = Limits(
+        max_text_length=300,
+        max_text_bytes=3000,
+        text_counted_in=TextCount.GRAPHEMES,
+    )
+
+    async def publish(self, connection: Connection, post: Post) -> PostResult:
+        if len(post.text) > 300:
+            raise InvalidPostError("too long, sorry")
+        return PostResult(id="1")
+
+
+class SaysNothingRealAboutCounting(Methods):
+    """Puts a word where a TextCount belongs."""
+
+    name = "notatextcount"
+    features = Feature.POST_TEXT
+
+    limits_reply: ClassVar[object] = Limits(
+        max_text_length=300,
+        text_counted_in=cast(TextCount, "letters"),
+    )
+
+
+class RefusesWithTheWrongError(Methods):
+    """Refuses a post that is too long, but not as an InvalidPostError."""
+
+    name = "wrongerror"
+    features = Feature.POST_TEXT
+    limits_reply: ClassVar[object] = Limits(max_text_length=10)
+    publish_error = NotFoundError("no idea what you mean")
 
 
 class Scheduler(Methods):
@@ -421,7 +464,7 @@ class TestTheKitItself:
         assert not PlatformChecks.__name__.startswith("Test")
 
     def test_there_is_a_check_for_each_thing_we_promised(self) -> None:
-        assert len(every_check()) == 12
+        assert len(every_check()) == 13
 
     async def test_a_good_fake_platform_passes_every_check(self) -> None:
         for name in every_check():
@@ -644,6 +687,82 @@ class TestTheLimitsCheck:
         message = await skip_from(checks_for(FakePlatform()), self.name)
 
         assert "make_connection" in message
+
+
+class TestTheCountingCheck:
+    name = "test_it_counts_text_the_way_it_says_it_does"
+
+    async def test_counting_characters_while_claiming_letters_is_refused(
+        self,
+    ) -> None:
+        # The bug this whole check exists for: 300 letters is 600 characters
+        # once somebody uses emoji, and a platform counting characters
+        # refuses a post the network would have taken.
+        checks = checks_for(
+            CountsCharactersButSaysLetters(),
+            connection=a_connection(),
+            transport=RecordingTransport(),
+        )
+
+        message = await failure_from(checks, self.name)
+
+        assert "letters" in message
+        assert "300" in message
+
+    async def test_letting_through_a_post_over_its_own_count_is_refused(
+        self,
+    ) -> None:
+        inner = RecordingTransport({"POST /posts": {"id": "1"}})
+
+        class Checks(PlatformChecks):
+            def make_platform(self) -> Platform:
+                return cast(Platform, SendsThenRefuses(self.transport))
+
+            def make_connection(self) -> Connection | None:
+                return a_connection()
+
+            def make_transport(self) -> httpx.AsyncBaseTransport | None:
+                return inner
+
+        message = await failure_from(Checks(), self.name)
+
+        assert "sent" in message
+
+    async def test_refusing_with_the_wrong_error_is_refused(self) -> None:
+        checks = checks_for(
+            RefusesWithTheWrongError(),
+            connection=a_connection(),
+            transport=RecordingTransport(),
+        )
+
+        message = await failure_from(checks, self.name)
+
+        assert "InvalidPostError" in message
+        assert "NotFoundError" in message
+
+    async def test_something_that_is_not_a_way_of_counting_is_refused(
+        self,
+    ) -> None:
+        checks = checks_for(
+            SaysNothingRealAboutCounting(),
+            connection=a_connection(),
+            transport=RecordingTransport(),
+        )
+
+        message = await failure_from(checks, self.name)
+
+        assert "TextCount" in message
+
+    async def test_it_skips_when_no_length_limit_is_declared(self) -> None:
+        checks = checks_for(
+            Bare(),
+            connection=a_connection(),
+            transport=RecordingTransport(),
+        )
+
+        message = await skip_from(checks, self.name)
+
+        assert "max_text_length" in message
 
 
 class TestTheNoRequestCheck:

@@ -43,7 +43,14 @@ from socialchimp.events import (
     verify_hmac_sha256,
     verify_shared_secret,
 )
-from socialchimp.features import Feature, Limits, check_post
+from socialchimp.features import (
+    Feature,
+    Limits,
+    TextCount,
+    check_post,
+    count_graphemes,
+    measure_text,
+)
 from socialchimp.models import (
     AppCredentials,
     Connection,
@@ -94,6 +101,7 @@ __all__ = [
     "SocialChimp",
     "SocialChimpError",
     "Storage",
+    "TextCount",
     "Token",
     "TokenExpiredError",
     "TokenManager",
@@ -104,6 +112,8 @@ __all__ = [
     "available_platforms",
     "check_not_too_old",
     "check_post",
+    "count_graphemes",
+    "measure_text",
     "poll",
     "register_platform",
     "require_timezone",

@@ -58,7 +58,7 @@ from socialchimp.errors import (
     SocialChimpError,
 )
 from socialchimp.events import Update, verify_hmac_sha256
-from socialchimp.features import Feature, Limits, check_post
+from socialchimp.features import Feature, Limits, TextCount, check_post, measure_text
 from socialchimp.http import HttpClient
 from socialchimp.models import (
     AppCredentials,
@@ -109,6 +109,34 @@ _A_REDIRECT: Final = "https://app.example/callback"
 
 # A platform that cannot post anything is not a platform anyone can use.
 _WAYS_TO_POST: Final = Feature.POST_TEXT | Feature.POST_IMAGE | Feature.POST_VIDEO
+
+# The one thing on `Limits` that is not a number. It says how the length is
+# counted, not how much of anything is allowed.
+_NOT_A_NUMBER: Final = frozenset({"text_counted_in"})
+
+# One thumbs-up with a skin tone on it. One letter to a person, two
+# characters to Python, four units to a network counting the way Java does,
+# eight bytes written out - so a post made of these is a different length
+# under every way of counting, which is exactly what we want to test with.
+_A_BIG_LETTER: Final = "\U0001f44d\U0001f3fd"
+
+
+def _copies_that_fit(limits: Limits, allowed: int) -> int:
+    """Work out how many big letters a post can hold and still be allowed.
+
+    Args:
+        limits: What the network allows.
+        allowed: Its `max_text_length`, already known not to be `None`.
+
+    Returns:
+        How many copies of `_A_BIG_LETTER` fit inside every limit declared -
+        and never fewer than one, because an empty post is not a post.
+    """
+    copies = allowed // measure_text(_A_BIG_LETTER, limits.text_counted_in)
+    if limits.max_text_bytes is not None:
+        copies = min(copies, limits.max_text_bytes // len(_A_BIG_LETTER.encode()))
+    return max(copies, 1)
+
 
 # What an entry point name may look like: lowercase, no spaces, nothing that
 # would have to be quoted in a `pyproject.toml` or typed carefully in a shell.
@@ -1216,6 +1244,8 @@ class PlatformChecks:
             )
 
         for shape in fields(Limits):
+            if shape.name in _NOT_A_NUMBER:
+                continue
             value: object = getattr(limits, shape.name)
             if value is None:
                 continue
@@ -1255,6 +1285,90 @@ class PlatformChecks:
                 f"this - so a mistake costs nothing against the rate limit "
                 f"and the message says what is wrong instead of the network "
                 f"answering with a number."
+            )
+
+    async def test_it_counts_text_the_way_it_says_it_does(self) -> None:
+        """Text is counted the way this platform's `Limits` says it is.
+
+        Hardly any network's "300" means characters. Bluesky counts letters
+        as a person would, Threads counts bytes, TikTok counts an emoji as
+        two. A platform that says which and then counts characters anyway
+        refuses posts the network would have taken, or sends posts it will
+        not - both quietly, and both only once somebody uses an emoji.
+        """
+        connection = self.connection_or_skip()
+        sent = self.requests_or_skip()
+        platform = self.platform
+        limits = await platform.limits(connection)
+
+        counted: object = limits.text_counted_in
+        if not isinstance(counted, TextCount):
+            pytest.fail(
+                f"limits().text_counted_in is {counted!r}, which is not a "
+                f"TextCount. Say how this network counts the length of a "
+                f"post - TextCount.CHARACTERS, GRAPHEMES, UTF8_BYTES or "
+                f"UTF16_UNITS - or leave it out, which means characters."
+            )
+
+        allowed = limits.max_text_length
+        if allowed is None:
+            pytest.skip(
+                f"{platform.name} declares no max_text_length, so there is "
+                f"nothing here to count."
+            )
+
+        # A post as long as this network allows, written in a letter that
+        # takes more than one of everything else.
+        fits = _A_BIG_LETTER * _copies_that_fit(limits, allowed)
+        before = len(sent)
+        try:
+            await platform.publish(connection, Post(text=fits))
+        except InvalidPostError:
+            if len(sent) == before:
+                pytest.fail(
+                    f"{platform.name} says its limit of {allowed} is counted "
+                    f"in {counted.in_words}, then refused a post of "
+                    f"{measure_text(fits, counted)} {counted.in_words} "
+                    f"without asking the network at all. It is counting "
+                    f"something else - `socialchimp.features.measure_text` "
+                    f"counts whichever way your Limits says."
+                )
+        except SocialChimpError:
+            # The network itself said no. Not our business here: the post
+            # got past the length check, which is all this half asked.
+            pass
+
+        # And one more than it allows. For every way of counting but
+        # characters this is *fewer* characters than the limit, so a
+        # platform using Python's own len sends it and is refused.
+        each = measure_text(_A_BIG_LETTER, counted)
+        too_long = _A_BIG_LETTER * (allowed // each + 1)
+        before = len(sent)
+        refused: Exception | None = None
+        try:
+            await platform.publish(connection, Post(text=too_long))
+        except SocialChimpError as problem:
+            refused = problem
+
+        if len(sent) != before:
+            pytest.fail(
+                f"{platform.name} sent a post of "
+                f"{measure_text(too_long, counted)} {counted.in_words} to "
+                f"the network, having said it allows {allowed}. Check the "
+                f"post first - `socialchimp.features.check_post` counts "
+                f"whichever way your Limits says - so a mistake costs "
+                f"nothing against the rate limit and the message says what "
+                f"is wrong."
+            )
+
+        if not isinstance(refused, InvalidPostError):
+            answered = type(refused).__name__ if refused is not None else "nothing"
+            pytest.fail(
+                f"{platform.name} answered a post of "
+                f"{measure_text(too_long, counted)} {counted.in_words}, over "
+                f"its own limit of {allowed}, with {answered}. A post that "
+                f"breaks a declared limit is an InvalidPostError, which is "
+                f"the one an app can catch and explain to a person."
             )
 
     async def test_scheduling_is_refused_when_it_cannot_schedule(self) -> None:
