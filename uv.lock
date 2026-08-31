@@ -1041,7 +1041,6 @@ wheels = [
 
 [[package]]
 name = "socialchimp"
-version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -1081,7 +1080,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.3" },
 ]
-provides-extras = ["testing", "mastodon", "bluesky", "facebook", "instagram", "pinterest", "threads", "tiktok", "x", "youtube", "django", "fastapi", "flask"]
+provides-extras = ["bluesky", "django", "facebook", "fastapi", "flask", "instagram", "mastodon", "pinterest", "testing", "threads", "tiktok", "x", "youtube"]
 
 [package.metadata.requires-dev]
 dev = [

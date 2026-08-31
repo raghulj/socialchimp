@@ -181,6 +181,39 @@ day the account breaks. Fill it in where the network tells you, never guess
 it, and `TokenManager` will then say plainly which of the two tokens ran out
 instead of sending a doomed renewal to find out.
 
+## What we promise about changes
+
+The way a platform is written settled at 0.1.0, and it is now something you
+can build against.
+
+Writing the first nine networks changed it four times, and each change came
+from a real network showing a gap: signing in had nowhere to carry a secret
+between its two halves; platforms were reaching into storage for credentials
+they should have been handed; direct access was guessing where a network
+lives; and there was no sign-in step for networks with no page to send
+anyone to. That was the right way to find those things, and the wrong thing
+to keep doing once other people's platforms exist.
+
+From here:
+
+- **Adding something is a minor release.** A new `Feature`, a new
+  `UpdateKind`, a new optional `Can...` extra, a new field on `Limits` with a
+  default. Your platform keeps working and does not need touching.
+- **Changing or removing something is a major release**, and comes with a
+  note saying what to do about it.
+- **Anything named with a leading underscore is ours**, including
+  `platforms/_meta.py`. It can change in any release.
+
+Pin the contract in your own package the way a database driver pins its
+library:
+
+```toml
+dependencies = ["socialchimp>=0.1,<0.2"]
+```
+
+Run `PlatformChecks` in your own tests and a change that affects you shows up
+as a failing test with a message, rather than as somebody's post not arriving.
+
 ## Checking it behaves
 
 Subclass `PlatformChecks` and you inherit a battery of checks:

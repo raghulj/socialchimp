@@ -1,13 +1,21 @@
 # socialchimp
 
+[![CI](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml/badge.svg)](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/socialchimp?color=0b7285)](https://pypi.org/project/socialchimp/)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://pypi.org/project/socialchimp/)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](CONTRIBUTING.md)
+[![Types](https://img.shields.io/badge/types-mypy%20strict-blue)](pyproject.toml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Licence](https://img.shields.io/badge/licence-MIT-black)](LICENSE)
+
 One simple way to connect your app to social networks.
 
-> **Status: early.** Being built in the open. **Mastodon and Bluesky work
-> today**; the rest are on their way. See [docs/PLAN.md](docs/PLAN.md) for
-> what is done and what is next.
->
-> The way platforms are written is still settling, so if you write your own
-> platform now, expect it to need small changes for a release or two.
+> **Status: 0.1.0, the first release.** All nine networks below work. The way
+> platforms are written is now settled - see
+> [the promise about changes](docs/adding-a-platform.md#what-we-promise-about-changes)
+> before you write your own.
+
+**Mastodon · Bluesky · Facebook Pages · Instagram · YouTube · TikTok · X · Pinterest · Threads**
 
 ---
 
@@ -85,6 +93,7 @@ is yours.
 - [Adding a platform](docs/adding-a-platform.md) - a network we do not
   support yet
 - [Plan](docs/PLAN.md) - what is built and what is coming
+- [Changelog](CHANGELOG.md) - what changed, and what it means for you
 - [Examples](examples/) - runnable programs
 
 ## Contributing

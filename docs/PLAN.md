@@ -3,7 +3,7 @@
 This is the living plan for socialchimp. It changes as we learn things.
 Every finished item links to the pull request or commit that did it.
 
-Last updated: 2026-08-31
+Last updated: 2026-08-31 (0.1.0 released)
 
 ---
 
@@ -174,9 +174,14 @@ The full `uv run pytest` is the one that has to pass before pushing.
 
 ---
 
-## Open questions
+## Decided
 
-- **The name.** `socialchimp` is free on PyPI, but a social media tool called
-  SocialChimp existed before (2018, now looks closed). Worth a trademark
-  search before the first PyPI release. Renaming the GitHub repo is cheap;
-  renaming after people install it is not.
+- **The name is `socialchimp`**, on PyPI and here. Settled at 0.1.0.
+- **The way platforms are written is settled** as of 0.1.0. See
+  [the promise about changes](adding-a-platform.md#what-we-promise-about-changes).
+
+## Next
+
+- Discord, Telegram, LinkedIn, Reddit, Tumblr
+- Reading posts back and their numbers, on the networks that allow it
+- Video on Bluesky, and resumable video upload on Facebook

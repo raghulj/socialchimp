@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "socialchimp"
-version = "0.0.1"
+dynamic = ["version"]
 description = "One simple way to connect your app to social networks."
 readme = "README.md"
 license = "MIT"
@@ -92,6 +92,9 @@ dev = [
     "ruff>=0.8",
     "pre-commit>=4.0",
 ]
+
+[tool.hatch.version]
+path = "src/socialchimp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/socialchimp"]
