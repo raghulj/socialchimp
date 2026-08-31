@@ -548,6 +548,10 @@ def facebook_webhook(request):
 
     # read_updates, not read_update. Facebook batches when it is busy, and
     # being busy is exactly when you least want to drop the rest.
+    #
+    # A handler that fails raises out of here, so Django answers 500 and Meta
+    # sends the update again. That is what you want: the dispatcher did not
+    # write it down as handled either, so the retry is a real second chance.
     for update in client().read_updates("facebook", request.body):
         async_to_sync(dispatcher.deliver)(update)
 

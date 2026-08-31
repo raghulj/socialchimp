@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Sign in to {{ network.label }}{% endblock %}
+{% block heading %}Sign in to {{ network.label }}{% endblock %}
+{% block body %}
+
+{# This network has no sign-in page to send anybody to, so socialchimp
+   answered `start_login` with a list of fields instead of a link. Show one
+   box per field, in the order given, and hide the ones marked secret.
+   Nothing on this page leaves your app until the form is posted. #}
+
+<p>
+  There is nowhere to send you: {{ network.label }} has no approval page.
+  It uses an app password, which is not your real password and can be
+  revoked on its own.
+</p>
+
+{% if help_url %}
+  <p><a href="{{ help_url }}">Where to get one</a></p>
+{% endif %}
+
+<form method="post" action="{{ url_for('signin.details', platform=platform) }}">
+  {% for field in fields %}
+    <label>
+      {{ field.label }}
+      <input type="{{ 'password' if field.secret else 'text' }}"
+             name="{{ field.name }}"
+             autocomplete="off"
+             required>
+    </label>
+    {% if field.help_text %}
+      <p class="quiet">{{ field.help_text }}</p>
+    {% endif %}
+  {% endfor %}
+  <button type="submit">Connect</button>
+</form>
+
+<p class="quiet">
+  Nothing typed here is written to a log. An app password is as good as a
+  password for everything the API can do.
+</p>
+
+{% endblock %}

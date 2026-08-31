@@ -35,6 +35,7 @@ from socialchimp.models import MediaKind, RawData
 from socialchimp.platform import (
     AccountChoice,
     AskForDetails,
+    CanAnswerSetupCheck,
     CanCheckState,
     CanReadPushedUpdates,
     CanResumeLogin,
@@ -512,6 +513,28 @@ class WantsCredentialsFirst(Methods):
         raise ConfigError("this login request carries no app credentials")
 
 
+class NeedsNoAppButWantsOneAnyway(Methods):
+    """Claims there is no app to register, then refuses without one."""
+
+    name = "needsnoapp"
+    features = Feature.NEEDS_NO_APP | Feature.POST_TEXT
+
+    async def start_login(self, request: LoginRequest) -> LoginStep:
+        if request.app is None:
+            raise ConfigError("no app credentials are stored for needsnoapp")
+        return SendToNetwork(url="https://x.example/authorize", state="s")
+
+
+class NeedsNoApp(Methods):
+    """Signs somebody in with nothing saved first, the way Bluesky does."""
+
+    name = "reallyneedsnoapp"
+    features = Feature.NEEDS_NO_APP | Feature.POST_TEXT
+
+    async def start_login(self, request: LoginRequest) -> LoginStep:
+        return AskForDetails(fields=(LoginField(name="handle", label="Your handle"),))
+
+
 class SendsThenRefuses(Methods):
     """Asks the network first, then works out the post was never allowed."""
 
@@ -561,14 +584,18 @@ class TestTheKitItself:
         # one. Rename it and every subclass silently stops being checked.
         assert not PlatformChecks.__name__.startswith("Test")
 
-    # The one check a platform that can post text has nothing to answer,
-    # so the fake skipping it is the right answer rather than a gap.
-    NOT_FOR_A_TEXT_PLATFORM = frozenset(
-        {"test_a_text_only_post_is_refused_when_it_cannot_post_text"}
+    # The checks the fake has nothing to answer: it posts text, and it has
+    # an app to register like every network but Bluesky. Skipping those two
+    # is the right answer rather than a gap.
+    NOTHING_TO_ANSWER = frozenset(
+        {
+            "test_a_text_only_post_is_refused_when_it_cannot_post_text",
+            "test_a_platform_with_no_app_starts_a_login_without_one",
+        }
     )
 
     def test_there_is_a_check_for_each_thing_we_promised(self) -> None:
-        assert len(every_check()) == 16
+        assert len(every_check()) == 17
 
     async def test_a_good_fake_platform_passes_every_check(self) -> None:
         for name in every_check():
@@ -576,7 +603,7 @@ class TestTheKitItself:
             try:
                 await getattr(checks, name)()
             except pytest.skip.Exception as skipped:
-                if name not in self.NOT_FOR_A_TEXT_PLATFORM:
+                if name not in self.NOTHING_TO_ANSWER:
                     pytest.fail(f"{name} skipped instead of running: {skipped}")
 
     def test_a_subclass_must_say_how_to_build_its_platform(self) -> None:
@@ -768,6 +795,26 @@ class TestTheLoginFormCheck:
         message = await skip_from(checks_for(WantsCredentialsFirst()), self.name)
 
         assert "credentials" in message
+
+
+class TestTheNoAppCheck:
+    name = "test_a_platform_with_no_app_starts_a_login_without_one"
+
+    async def test_claiming_no_app_and_then_asking_for_one_is_refused(self) -> None:
+        message = await failure_from(
+            checks_for(NeedsNoAppButWantsOneAnyway()), self.name
+        )
+
+        assert "NEEDS_NO_APP" in message
+        assert "ConfigError" in message
+
+    async def test_a_platform_that_really_needs_none_passes(self) -> None:
+        await getattr(checks_for(NeedsNoApp()), self.name)()
+
+    async def test_it_skips_a_platform_that_has_an_app_like_every_other(self) -> None:
+        message = await skip_from(checks_for(FakePlatform()), self.name)
+
+        assert "NEEDS_NO_APP" in message
 
 
 class TestTheLimitsCheck:
@@ -1204,6 +1251,76 @@ class TestRecordingStorage:
         assert await storage.get_connection("conn-1") is not None
 
 
+class TestNamingAFakeConnection:
+    def test_a_connection_is_named_after_the_network_and_the_account(self) -> None:
+        # Every real platform names them this way, and apps are told to
+        # match webhooks on the id.
+        assert FakePlatform().connection().id == "fake:42"
+        assert FakePlatform().connection(account_id="7").id == "fake:7"
+
+    def test_two_fake_networks_do_not_collide(self) -> None:
+        # An app testing across nine fakes used to get nine rows with the
+        # same primary key.
+        first = FakePlatform(name="one").connection()
+        second = FakePlatform(name="two").connection()
+
+        assert {first.id, second.id} == {"one:42", "two:42"}
+
+    def test_an_id_you_pass_is_still_the_one_used(self) -> None:
+        given = FakePlatform().connection(connection_id="mine")
+
+        assert given.id == "mine"
+
+
+class TestAFakeSetupCheck:
+    def test_a_fake_answers_the_handshake_the_way_meta_asks_it(self) -> None:
+        platform = FakePlatform()
+
+        answer = platform.answer_setup_check(
+            {
+                "hub.mode": "subscribe",
+                "hub.verify_token": "chosen-by-me",
+                "hub.challenge": "1158201444",
+            },
+            verify_token="chosen-by-me",
+        )
+
+        assert isinstance(platform, CanAnswerSetupCheck)
+        assert answer == "1158201444"
+
+    def test_the_wrong_token_is_refused(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(SignatureError):
+            platform.answer_setup_check(
+                {
+                    "hub.mode": "subscribe",
+                    "hub.verify_token": "somebody-elses",
+                    "hub.challenge": "9",
+                },
+                verify_token="chosen-by-me",
+            )
+
+    def test_a_fake_told_not_to_answer_has_no_answer_at_all(self) -> None:
+        # The same trick as accounts and states: a fake standing in for a
+        # network that asks nothing first must not claim it can.
+        quiet = FakePlatform(answers_setup_checks=False)
+
+        assert not isinstance(quiet, CanAnswerSetupCheck)
+
+    def test_a_subclass_that_wrote_its_own_keeps_it(self) -> None:
+        class AlwaysAgrees(FakePlatform):
+            def answer_setup_check(
+                self,
+                params: Mapping[str, str],
+                *,
+                verify_token: str,
+            ) -> str:
+                return "always"
+
+        assert AlwaysAgrees().answer_setup_check({}, verify_token="x") == "always"
+
+
 class TestFakePlatform:
     def test_a_pushed_request_can_be_read_the_way_facebook_is_read(self) -> None:
         # SocialChimp.read_updates looks for read_updates, so a fake standing
@@ -1213,7 +1330,7 @@ class TestFakePlatform:
             {
                 "id": "u9",
                 "kind": "comment_created",
-                "connection_id": "fake-connection",
+                "connection_id": "fake:42",
                 "at": datetime.now(UTC).isoformat(),
             }
         ).encode()
@@ -1244,7 +1361,7 @@ class TestFakePlatform:
         # many times a test asks.
         assert second.state is PostState.DONE
         assert third.state is PostState.DONE
-        assert platform.state_asked == [("fake-connection", "post-1")] * 3
+        assert platform.state_asked == [("fake:42", "post-1")] * 3
 
     async def test_a_subclass_that_wrote_its_own_check_state_keeps_it(self) -> None:
         class SaysItFailed(FakePlatform):
@@ -1265,7 +1382,7 @@ class TestFakePlatform:
         result = await platform.publish(platform.connection(), Post(text="hi"))
 
         assert result.id == "1"
-        assert platform.published == [("fake-connection", Post(text="hi"))]
+        assert platform.published == [("fake:42", Post(text="hi"))]
 
     async def test_it_really_sends_a_request_when_given_a_transport(self) -> None:
         transport = RecordingTransport({"POST /posts": {"id": "abc"}})
@@ -1440,7 +1557,7 @@ class TestFakePlatform:
 
         assert token.refresh_token != "fake-refresh"
         assert token.expires_at is not None
-        assert platform.refreshed == ["fake-connection"]
+        assert platform.refreshed == ["fake:42"]
         assert platform.refreshed_with == [None]
 
     async def test_it_writes_down_the_credentials_a_renewal_was_given(

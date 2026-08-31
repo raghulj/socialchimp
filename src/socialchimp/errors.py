@@ -5,6 +5,9 @@ into the errors below, so your code catches one thing instead of learning
 nine different error formats.
 
 Catch `SocialChimpError` to catch everything socialchimp raises.
+
+Two of them - `ConfigError` and `InvalidPostError` - are a `ValueError` as
+well. There is a comment above each saying why.
 """
 
 from __future__ import annotations
@@ -59,11 +62,31 @@ class SocialChimpError(Exception):
         self.raw: dict[str, Any] = raw if raw is not None else {}
 
 
-class ConfigError(SocialChimpError):
+# Both of the classes below are a `ValueError` as well as a
+# `SocialChimpError`, which is unusual enough to say why.
+#
+# They are the two raised for a value handed to socialchimp rather than for
+# anything a network said: an empty post, a datetime with no timezone, a file
+# ending nobody recognises. Until 0.3.0 `socialchimp.models` refused all of
+# those with a bare `ValueError`, so an app that had done as it was told and
+# caught `SocialChimpError` crashed anyway - and an app that had noticed and
+# caught `ValueError` instead was relying on documented behaviour in a
+# published library. Being both keeps that code working and makes the promise
+# at the top of this file true for the first time.
+#
+# Nothing else here is a `ValueError`, because nothing else here is about a
+# value somebody passed in. A network saying no is not a bad argument.
+
+
+class ConfigError(SocialChimpError, ValueError):
     """Something is set up wrong on your side.
 
-    Missing credentials, an unknown platform name, a storage class that does
-    not do what it promised. These are bugs to fix, not conditions to retry.
+    Missing credentials, an unknown platform name, a datetime with no
+    timezone, a storage class that does not do what it promised. These are
+    bugs to fix, not conditions to retry.
+
+    Also a `ValueError`, because it is raised for a value your code handed
+    us. See the comment above.
     """
 
 
@@ -123,12 +146,19 @@ class RateLimitError(SocialChimpError):
         self.retry_after = retry_after
 
 
-class InvalidPostError(SocialChimpError):
+class InvalidPostError(SocialChimpError, ValueError):
     """The post breaks a rule of the network it was going to.
 
     Text too long, too many pictures, a missing setting that network needs.
     socialchimp raises this before sending where it can, so you get a clear
     message instead of the network's error code.
+
+    Also raised for a post no network would take - one with neither text nor
+    media - and for a picture or video that cannot be read, such as one that
+    is only a web address on a network that will not fetch it.
+
+    Also a `ValueError`, because it is raised for a value your code handed
+    us. See the comment above `ConfigError`.
     """
 
 

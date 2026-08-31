@@ -83,6 +83,18 @@ carries them - one at a time or a dozen, always the same way. Facebook will
 also fetch a picture or a video from a web address, so `Media.from_url` works
 here where it does not on Mastodon or Bluesky.
 
+## A video is not live when publish returns
+
+Words and pictures are on the page the moment `publish` answers. A video is
+not: Facebook takes the bytes, answers with an id, and carries on encoding,
+which is why a video comes back as `PostState.PROCESSING`. Ask `check_state`
+with that id and Facebook says whether it is `ready`, still `processing`, or
+one it gave up on.
+
+The whole file is read into memory first, unlike YouTube, TikTok and X, which
+send a video in pieces. That is the reason for the limit below, and for
+`biggest_video_bytes` on the constructor.
+
 ## What Facebook cannot do here
 
 - **No replies yet.** `Feature.REPLY` is off. A reply on Facebook is a
@@ -105,6 +117,7 @@ from socialchimp.errors import (
     AuthError,
     InvalidPostError,
     NotSupportedError,
+    PlatformError,
     TokenExpiredError,
 )
 from socialchimp.events import Update
@@ -208,6 +221,10 @@ Above this Facebook wants the file in pieces, over an upload it keeps open
 across several requests. That is a job in itself rather than another branch,
 so a bigger video is refused here with a message saying what to do. When it
 is written it belongs beside `_publish_video`.
+
+Until then the whole file is read into memory before it is sent, so this
+number is also how much memory one video costs your own server. Lower it
+with `biggest_video_bytes` if that is more than you have.
 """
 
 SOONEST_SCHEDULE_SECONDS: Final = 10 * 60
@@ -215,6 +232,16 @@ SOONEST_SCHEDULE_SECONDS: Final = 10 * 60
 
 LATEST_SCHEDULE_SECONDS: Final = 75 * 24 * 60 * 60
 """Facebook will not schedule anything more than 75 days ahead."""
+
+# What Facebook calls the state of a video, and what we call it. Facebook
+# has three words for it and no more - see the VideoStatus node in the Graph
+# API reference. Anything else, including a word Meta adds next year, means
+# ask again rather than assume the video is live.
+_OUR_STATE_FOR: Final = {
+    "ready": PostState.DONE,
+    "processing": PostState.PROCESSING,
+    "error": PostState.FAILED,
+}
 
 # What Facebook calls a change on a page, and what we call it. Anything
 # missing from here is passed through as Facebook's own words and lands as
@@ -459,6 +486,8 @@ class FacebookPlatform:
             almost nothing else can, and it really does push updates. There
             is no app to register anywhere in Meta, and a reply is a comment
             rather than a post, so `CREATE_APP` and `REPLY` are missing.
+            A video is still encoding when `publish` answers, so this also
+            has `check_state`.
     """
 
     name: str = PLATFORM_NAME
@@ -895,7 +924,8 @@ class FacebookPlatform:
             What Facebook said about the new post. A scheduled post comes
             back as `PostState.SCHEDULED`; a video comes back as
             `PostState.PROCESSING`, because Facebook is still encoding it
-            when it answers.
+            when it answers - ask `check_state` with the id to find out how
+            that ended.
 
         Raises:
             ConfigError: If the connection names no page.
@@ -1106,6 +1136,60 @@ class FacebookPlatform:
             raw=reply,
         )
 
+    async def check_state(self, connection: Connection, post_id: str) -> PostResult:
+        """Ask Facebook how far it has got with a video.
+
+        A video comes back from `publish` as `PostState.PROCESSING`, because
+        Facebook is still encoding it when it answers. This is how that gets
+        resolved: one cheap read of the video's `status`, as often as you
+        like, until it says `DONE` or `FAILED`.
+
+        Only a video needs this. Words and pictures are live the moment
+        `publish` returns, and a scheduled post is a plan Facebook is
+        holding rather than something it is working on.
+
+        Args:
+            connection: The page the video is on.
+            post_id: Facebook's id for the video, as `publish` handed it
+                back.
+
+        Returns:
+            Where the video has got to. `PROCESSING` while Facebook is still
+            encoding it, `DONE` once it is live, and `FAILED` if Facebook
+            gave up on it. The address is the same one `publish` gave, so a
+            result from either can be treated the same way.
+
+        Raises:
+            ConfigError: If the connection names no page.
+            NotFoundError: If there is no such video on this page.
+            PlatformError: If Facebook answers without saying anything about
+                the state, which is what happens when the id is not a
+                video's.
+            SocialChimpError: If Facebook refuses the question.
+        """
+        page_id = where_to_post(
+            connection,
+            key="page_id",
+            what="Facebook page",
+            platform=PLATFORM_NAME,
+        )
+
+        async with self._graph(connection.token.access_token) as graph:
+            reply = await graph.json("GET", f"/{post_id}", params={"fields": "status"})
+            self._note(graph)
+
+        said = reply.get("status")
+        if not isinstance(said, dict):
+            raise _nothing_said_about(post_id, reply)
+
+        reported = str(said.get("video_status"))
+        return PostResult(
+            id=post_id,
+            url=f"https://www.facebook.com/{page_id}/videos/{post_id}",
+            state=_OUR_STATE_FOR.get(reported, PostState.PROCESSING),
+            raw=reply,
+        )
+
     async def delete_post(self, connection: Connection, post_id: str) -> None:
         """Remove a post.
 
@@ -1238,6 +1322,26 @@ def _add_timing(form: dict[str, Any], when: int | None) -> None:
     # ignored, and the post goes out immediately.
     form["published"] = "false"
     form["scheduled_publish_time"] = str(when)
+
+
+def _nothing_said_about(post_id: str, reply: RawData) -> PlatformError:
+    """Build the error for a reply that says nothing about a video's state.
+
+    Args:
+        post_id: The id we asked about.
+        reply: What Facebook answered, kept on the error.
+
+    Returns:
+        The error to raise, saying what `check_state` is for.
+    """
+    message = (
+        f"Facebook said nothing about how far it has got with {post_id!r}. "
+        f"check_state is for the video ids publish handed back as "
+        f"PROCESSING; a post of words or pictures is already live when "
+        f"publish answers, and a scheduled one goes out on its own. The "
+        f"whole reply is on this error."
+    )
+    return PlatformError(message, platform=PLATFORM_NAME, raw=reply)
 
 
 def _video_too_big(size: int, allowed: int) -> NotSupportedError:

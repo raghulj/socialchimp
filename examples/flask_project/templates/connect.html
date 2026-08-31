@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Connect an account{% endblock %}
+{% block heading %}Connect an account{% endblock %}
+{% block body %}
+
+<p>
+  Seven of these nine need an app you created by hand in a developer portal,
+  and five of those are reviewed by a human before they work for anybody but
+  you. That review is measured in weeks. Mastodon and Bluesky are the two you
+  can be posting from this afternoon.
+</p>
+
+<table>
+  <tr>
+    <th>Network</th><th>Signing in</th><th>Your app</th><th></th>
+  </tr>
+  {% for network in networks %}
+    <tr>
+      <td>
+        <strong>{{ network.label }}</strong><br>
+        <span class="quiet">{{ network.bites }}</span>
+      </td>
+      <td>
+        {{ network.sign_in }}
+        {% if network.asks_which_account %}
+          <br><span class="quiet">then asks which one</span>
+        {% endif %}
+      </td>
+      <td class="quiet">
+        {{ network.register_app }}
+        {% if network.reviewed %}<br>reviewed before it works{% endif %}
+      </td>
+      <td>
+        {% if network.sign_in == register_first %}
+          {# Mastodon. Every server is separate, so the app is registered on
+             whichever one this person names - once, and then never again
+             for that server. #}
+          <form method="get"
+                action="{{ url_for('signin.start', platform=network.name) }}">
+            <input type="text" name="host" placeholder="mastodon.social" required>
+            <button type="submit">Connect</button>
+          </form>
+        {% elif network.name in ready %}
+          <a href="{{ url_for('signin.start', platform=network.name) }}">Connect</a>
+        {% else %}
+          <span class="quiet">
+            Set <code>{{ network.id_var }}</code> and
+            <code>{{ network.secret_var }}</code> first.
+          </span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+</table>
+
+{% endblock %}

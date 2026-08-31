@@ -312,7 +312,7 @@ def test_the_callback_connects_the_account(
         factory.get("/cb/fake", {"state": "mine", "code": "c"}),
     )
     assert answer.status_code == 200
-    assert json.loads(answer.content)["connection_id"] == "fake-connection"
+    assert json.loads(answer.content)["connection_id"] == "fake:42"
 
 
 def test_the_callback_takes_a_posted_form_too(
@@ -374,15 +374,17 @@ def test_choosing_an_account_finishes_the_sign_in(
     assert json.loads(answer.content)["step"] == "connected"
 
 
-def test_our_errors_become_sensible_statuses(
+def test_a_set_up_mistake_is_not_dressed_up_as_an_answer(
     seen: list[Update],
     factory: Factory,
 ) -> None:
+    # No app credentials stored is a mistake in the app, not something this
+    # request did, so it comes out as an error Django reports rather than a
+    # tidy 500 that reads like the network's fault.
     routes = build(FakePlatform(), seen, storage=RecordingStorage())
 
-    answer = call(routes, "socialchimp-connect", factory.get("/c/fake"))
-    assert answer.status_code == 500
-    assert "No app credentials" in json.loads(answer.content)["error"]
+    with pytest.raises(ConfigError, match="No app credentials"):
+        call(routes, "socialchimp-connect", factory.get("/c/fake"))
 
 
 # --------------------------------------------------------------------------

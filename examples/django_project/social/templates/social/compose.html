@@ -1,0 +1,145 @@
+{% extends "social/base.html" %}
+{% block title %}Write a post{% endblock %}
+
+{% block body %}
+<h1>Write a post</h1>
+
+{% if not connections %}
+  <p>Connect an account first.</p>
+{% else %}
+<form method="post">
+  {% csrf_token %}
+
+  <fieldset>
+    <legend>Where it goes</legend>
+    <p class="note">
+      Tick as many as you like. Posting to several accounts is this app's own
+      loop, one account at a time - there is no <code>post_to_many</code>,
+      because only an app knows whether one network refusing should stop the
+      rest. This one carries on and shows every refusal.
+    </p>
+    {% for connection in connections %}
+      <label>
+        <input type="checkbox" name="connections" value="{{ connection.id }}">
+        {{ connection.account_name }} <span class="note">({{ connection.platform }})</span>
+      </label>
+    {% endfor %}
+  </fieldset>
+
+  <fieldset>
+    <legend>The post</legend>
+    <label>
+      Words
+      <textarea name="text" rows="4"></textarea>
+      <span class="note">
+        The caption on TikTok and Instagram, the description on YouTube and
+        Pinterest, the post everywhere else. YouTube, Instagram, TikTok and
+        Pinterest have no text-only post at all and will refuse one.
+      </span>
+    </label>
+
+    <label>
+      A web address for the picture or video
+      <input type="url" name="media_url" placeholder="https://example.com/shop.jpg">
+      <span class="note">
+        Instagram and Threads have no upload of any kind - they come and
+        fetch the file themselves, so this is the only thing that works for
+        those two. Pinterest will fetch one as well.
+      </span>
+    </label>
+
+    <label>
+      Or a file on this machine
+      <input type="text" name="media_path" placeholder="/path/to/clip.mp4">
+      <span class="note">
+        YouTube and TikTok take video and nothing else, and both want the
+        bytes sent to them rather than a link.
+      </span>
+    </label>
+
+    <label>
+      What the picture shows
+      <input type="text" name="alt_text">
+      <span class="note">
+        Read out to somebody using a screen reader, and worth setting. It
+        goes on the picture everywhere except Pinterest, which hangs one
+        description off the whole pin.
+      </span>
+    </label>
+
+    <label>
+      A link to go with it
+      <input type="url" name="link" placeholder="https://example.com/news">
+      <span class="note">Facebook's <code>link</code> option, and a pin's destination.</span>
+    </label>
+
+    <label>
+      Publish at
+      <input type="datetime-local" name="publish_at">
+      <span class="note">
+        Only Mastodon, Facebook and YouTube can schedule. The other six
+        refuse by name rather than posting it now - which is the point of
+        asking them.
+      </span>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>YouTube</legend>
+    <label>
+      Title
+      <input type="text" name="youtube_title">
+      <span class="note">Required. The words above become the description; this is separate.</span>
+    </label>
+    <label>
+      Made for children
+      <select name="made_for_kids">
+        <option value="">not answered</option>
+        <option value="false">no</option>
+        <option value="true">yes</option>
+      </select>
+      <span class="note">
+        Google requires an answer on every upload and socialchimp will not
+        guess one. Leave it unanswered to see the refusal.
+      </span>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Pinterest</legend>
+    <label>
+      Board id
+      <input type="text" name="pinterest_board_id">
+      <span class="note">
+        Required. There is no such thing as a pin without a board, and
+        socialchimp will not choose one for you.
+      </span>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>TikTok</legend>
+    <label>
+      Send it to
+      <select name="tiktok_send_to">
+        <option value="drafts">their drafts - they finish it in the app</option>
+        <option value="profile">their profile - straight up</option>
+      </select>
+      <span class="note">
+        Drafts is the default because it needs only the easier permission and
+        because nothing reaches anybody's profile without a person tapping a
+        button. A draft carries no caption, so a drafts post with words in it
+        is refused rather than losing them quietly.
+      </span>
+    </label>
+  </fieldset>
+
+  <button type="submit">Post</button>
+</form>
+{% endif %}
+
+{% if attempts %}
+  <h2>What this app has tried</h2>
+  {% include "social/attempts.html" %}
+{% endif %}
+{% endblock %}

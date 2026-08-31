@@ -15,7 +15,7 @@ them:
 See https://github.com/raghulj/socialchimp for documentation.
 """
 
-from socialchimp.client import Account, PostError, PostJob, SocialChimp
+from socialchimp.client import Account, SocialChimp
 from socialchimp.errors import (
     AuthError,
     ConfigError,
@@ -75,7 +75,7 @@ from socialchimp.storage import (
 )
 from socialchimp.tokens import TokenManager
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Account",
@@ -98,8 +98,6 @@ __all__ = [
     "PlatformError",
     "Poller",
     "Post",
-    "PostError",
-    "PostJob",
     "PostResult",
     "PostState",
     "RateLimitError",

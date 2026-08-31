@@ -6,6 +6,10 @@ impossible.
 
 Anything holding a secret hides it from `repr()`. These objects end up in log
 lines and tracebacks, and a token printed once is a token leaked forever.
+
+Everything here refuses with a `SocialChimpError`, the same as a platform
+does, so an app catches one thing wherever the problem came from. Each of
+those is a `ValueError` as well - see the comment in `socialchimp.errors`.
 """
 
 from __future__ import annotations
@@ -16,6 +20,11 @@ from datetime import UTC, datetime
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
+
+# Safe in this direction only: `socialchimp.errors` imports nothing from
+# here, and nothing from anywhere else in socialchimp. Keep it that way -
+# an import back the other way makes the pair impossible to load.
+from socialchimp.errors import ConfigError, InvalidPostError
 
 __all__ = [
     "AppCredentials",
@@ -51,14 +60,19 @@ def require_timezone(value: datetime | None, name: str) -> None:
         name: Field name, used in the error message.
 
     Raises:
-        ValueError: If `value` has no timezone attached.
+        ConfigError: If `value` has no timezone attached. A `ConfigError`
+            rather than an `InvalidPostError` because this is a mistake in
+            the calling code and not a post a network would refuse - and
+            because the same mistake is checked here on a token's expiry, an
+            update's timestamp and a signed request's time, where "post"
+            means nothing at all.
     """
     if value is not None and value.tzinfo is None:
         message = (
             f"{name} needs a timezone. "
             f"Use datetime.now(UTC) or add tzinfo=UTC to the value."
         )
-        raise ValueError(message)
+        raise ConfigError(message)
 
 
 class MediaKind(Enum):
@@ -304,8 +318,8 @@ class Media:
             The kind of media.
 
         Raises:
-            ValueError: If the ending is not one we recognise and no kind
-                was given.
+            InvalidPostError: If the ending is not one we recognise and no
+                kind was given.
         """
         if given is not None:
             return given
@@ -320,7 +334,7 @@ class Media:
             f"Cannot tell whether {name!r} is a picture or a video. "
             f"Pass kind=MediaKind.IMAGE or kind=MediaKind.VIDEO to say which."
         )
-        raise ValueError(message)
+        raise InvalidPostError(message)
 
     @classmethod
     def from_file(
@@ -443,7 +457,7 @@ class Media:
             The bytes read.
 
         Raises:
-            ValueError: If this media is only a web address.
+            InvalidPostError: If this media is only a web address.
         """
         if self.content is not None:
             return self.content[start : start + length]
@@ -456,7 +470,7 @@ class Media:
             f"This media is a url ({self.url!r}), so there are no bytes to "
             f"read yet. Download it first, or let the platform fetch it."
         )
-        raise ValueError(message)
+        raise InvalidPostError(message)
 
     def read(self) -> bytes:
         """Return the file's bytes.
@@ -465,8 +479,8 @@ class Media:
             The content, read from disk if it is not already in memory.
 
         Raises:
-            ValueError: If this media is only a URL. Download it first, or
-                use a network that fetches URLs itself.
+            InvalidPostError: If this media is only a URL. Download it
+                first, or use a network that fetches URLs itself.
         """
         if self.content is not None:
             return self.content
@@ -477,7 +491,7 @@ class Media:
             f"This media is a url ({self.url!r}), so there are no bytes to "
             f"read yet. Download it first, or let the platform fetch it."
         )
-        raise ValueError(message)
+        raise InvalidPostError(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,11 +523,12 @@ class Post:
         """Check the post has something in it and a valid publish time.
 
         Raises:
-            ValueError: If the post is empty.
+            InvalidPostError: If the post is empty.
+            ConfigError: If `publish_at` has no timezone.
         """
         if not self.text and not self.media:
             message = "A post needs text or media. This one has neither."
-            raise ValueError(message)
+            raise InvalidPostError(message)
         require_timezone(self.publish_at, "publish_at")
 
 

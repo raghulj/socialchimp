@@ -30,7 +30,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        # --group docs as well, because mypy checks docs/hooks.py and it
+        # imports mkdocs. Without it the type check fails on CI while
+        # passing on any machine that has built the site.
+        run: uv sync --all-extras --dev --group docs
 
       - name: Lint
         run: uv run ruff check .

@@ -333,8 +333,8 @@ thread rule applied, which is why Django gets its own name for it.
 
 ### Errors
 
-Whatever a network or your settings does wrong, these routes answer rather
-than raise:
+Anything a network said no to, and anything wrong with the request itself,
+these routes answer rather than raise:
 
 | Error                                  | Status |
 |----------------------------------------|--------|
@@ -344,7 +344,47 @@ than raise:
 | `InvalidPostError`, `NotSupportedError`| 400    |
 | `RateLimitError`                       | 429, with `Retry-After` when the network said |
 | `NetworkError`, `PlatformError`        | 502    |
-| `ConfigError`, anything else           | 500    |
 
 A failed setup check answers 403, because that is what Meta's own flow expects
 there.
+
+Two things are raised instead of answered, because both are yours to deal
+with and neither is the caller's fault:
+
+- **`ConfigError`.** A secret that was never stored, an app that was never
+  registered with a network. It would be the same mistake on every request,
+  so answering a tidy 500 only buries it in a log where nobody is looking.
+  Raised, it stops you in development and reaches whatever you use to watch
+  production. Some of these are caught earlier still: `Routes` refuses to be
+  built with webhook secrets and no `deliver`, because that set-up would
+  check a real update and then throw it away.
+- **Whatever `deliver` raised.** With `Dispatcher.deliver` that is an
+  `ExceptionGroup` holding every handler that failed. The route answers
+  nothing, so your framework's own 500 goes back and the network sends the
+  update again - which is what you want, because the dispatcher did not
+  write it down as handled either. See
+  [handlers that fail](#handlers-that-fail).
+
+### Handlers that fail
+
+`Dispatcher.deliver` runs every handler even if an earlier one raised, so one
+broken handler never costs you the others. If any of them raised, it then
+does two things: it does **not** remember the update as handled, and it
+raises an `ExceptionGroup` of the failures.
+
+That is what makes a retry work. The network sends the update again, the
+`seen` check does not skip it this time, and the handlers that failed get
+another go. Handlers that already succeeded run again too, so keep them safe
+to repeat - which is true of any at-least-once delivery, with or without
+this.
+
+If you would rather one particular handler never stopped the request, catch
+inside that handler and decide there:
+
+```python
+async def someone_commented(update: Update) -> None:
+    try:
+        await reply_to(update)
+    except SomethingIExpect:
+        logger.warning("could not reply to %s, moving on", update.id)
+```

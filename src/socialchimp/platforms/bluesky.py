@@ -91,7 +91,9 @@ accepted.
 - **No scheduling.** `Feature.SCHEDULE` is missing, so a post with
   `publish_at` is refused rather than published now.
 - **No app to register.** There is nothing to create, so there is no
-  `create_app`.
+  `create_app`, and `Feature.NEEDS_NO_APP` is on: socialchimp asks storage
+  for no credentials before a sign-in, and the platform is handed
+  `LoginRequest.app` as `None`.
 - **No video here yet.** Bluesky takes video, but through a separate service
   with a token of its own. `Feature.POST_VIDEO` is off until that is written.
 """
@@ -749,16 +751,18 @@ class BlueskyPlatform:
 
     Attributes:
         name: `"bluesky"`.
-        features: What Bluesky can do here. There is no app to register and
-            no way to ask for a post later, so `CREATE_APP` and `SCHEDULE`
-            are missing. Video is missing too - Bluesky takes it, through a
-            separate service we have not written yet.
+        features: What Bluesky can do here. There is no app to register
+            and no way to ask for a post later, so `NEEDS_NO_APP` is on and
+            `CREATE_APP` and `SCHEDULE` are missing - `start_login` works
+            with nothing saved. Video is missing too - Bluesky takes it,
+            through a separate service we have not written yet.
     """
 
     name: str = PLATFORM_NAME
 
     features: Feature = (
-        Feature.POST_TEXT
+        Feature.NEEDS_NO_APP
+        | Feature.POST_TEXT
         | Feature.POST_IMAGE
         | Feature.REPLY
         | Feature.DELETE_POST

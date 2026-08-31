@@ -1,0 +1,39 @@
+{# Plain HTML. No build step, no CSS framework, nothing to install. #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}socialchimp sample{% endblock %}</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 52rem; padding: 0 1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #ddd; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+    label { display: block; margin: .6rem 0; }
+    input[type=text], input[type=url], input[type=password], textarea, select { width: 100%; padding: .35rem; }
+    fieldset { margin: 1rem 0; }
+    .note { color: #555; font-size: .9rem; }
+    .error { border-left: 4px solid #c00; padding-left: .6rem; }
+    .ok { border-left: 4px solid #070; padding-left: .6rem; }
+    nav a { margin-right: 1rem; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{% url 'social:connections' %}">Connections</a>
+    <a href="{% url 'social:compose' %}">Write a post</a>
+  </nav>
+
+  {% if messages %}
+    <ul>
+      {% for message in messages %}
+        {# Every refusal socialchimp raises is already one sentence written
+           for a person to read, so it is shown exactly as it came. #}
+        <li class="{% if message.tags == 'error' %}error{% else %}ok{% endif %}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% block body %}{% endblock %}
+</body>
+</html>

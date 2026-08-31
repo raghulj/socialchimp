@@ -110,6 +110,7 @@ validation:
 
 nav:
   - Home: index.md
+  - For a coding assistant: assistant.md
   - Tutorial: tutorial.md
   - Getting started: getting-started.md
   - Use cases:
@@ -117,6 +118,7 @@ nav:
       - Video to TikTok: use-cases/tiktok-fastapi.md
       - YouTube Shorts: use-cases/youtube-shorts-flask.md
   - Networks: platforms.md
+  - Capability matrix: networks.md
   - Frameworks: frameworks.md
   - API reference:
       - Overview: api/index.md

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from socialchimp.client import SocialChimp
 from socialchimp.contrib.fastapi import router
+from socialchimp.errors import ConfigError
 from socialchimp.events import Dispatcher, UpdateKind
 from socialchimp.models import AppCredentials
 from socialchimp.platform import AccountChoice
@@ -122,7 +123,7 @@ def test_the_callback_connects_the_account(client: TestClient) -> None:
     answer = client.get("/social/callback/fake", params={"state": "mine", "code": "c"})
     assert answer.status_code == 200
     assert answer.json()["step"] == "connected"
-    assert answer.json()["connection_id"] == "fake-connection"
+    assert answer.json()["connection_id"] == "fake:42"
 
 
 def test_the_callback_takes_a_posted_form_too(client: TestClient) -> None:
@@ -165,15 +166,17 @@ def test_choosing_an_account_finishes_the_sign_in(seen: list[Update]) -> None:
     assert answer.json()["step"] == "connected"
 
 
-def test_our_errors_become_sensible_statuses(seen: list[Update]) -> None:
+def test_a_set_up_mistake_is_not_dressed_up_as_an_answer() -> None:
+    # No app credentials stored is a mistake in the app, not something this
+    # request did, so it comes out as an error FastAPI reports rather than a
+    # tidy 500 that reads like the network's fault.
     sc = SocialChimp(storage=RecordingStorage(), platforms={"fake": FakePlatform()})
     app = FastAPI()
     app.include_router(router(sc, redirect_uri=REDIRECT))
     client = TestClient(app)
 
-    answer = client.get("/connect/fake", follow_redirects=False)
-    assert answer.status_code == 500
-    assert "No app credentials" in answer.json()["error"]
+    with pytest.raises(ConfigError, match="No app credentials"):
+        client.get("/connect/fake", follow_redirects=False)
 
 
 def test_a_callback_with_no_sign_in_waiting_is_refused(client: TestClient) -> None:

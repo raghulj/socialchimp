@@ -8,7 +8,7 @@ Most apps only ever need the first two pages.
 
 | Page | What is in it |
 |---|---|
-| [Client](client.md) | `SocialChimp`, `Account`, sending your own request, posting to many accounts, keeping tokens working |
+| [Client](client.md) | `SocialChimp`, `Account`, sending your own request, keeping tokens working |
 | [Data](models.md) | `Post`, `Media`, `Connection`, `Token`, `PostResult`, `PostState` - the objects that pass between your app and socialchimp |
 | [Storage](storage.md) | The five methods your app writes, `Storage` and `SyncStorage`, and `InMemoryStorage` for trying things out |
 | [Features and limits](features.md) | `Feature`, `Limits`, and the checks that catch a bad post before it costs a request |

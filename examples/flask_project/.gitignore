@@ -1,0 +1,2 @@
+# The sqlite file this app makes on first run, wherever you point it.
+*.sqlite3

@@ -21,14 +21,12 @@ for why this exists.
 
 ::: socialchimp.client.Direct
 
-## Posting to several accounts at once
+## Posting to more than one account
 
-`SocialChimp.post_to_many` gives every account its own result, so one account
-failing never hides the rest.
-
-::: socialchimp.client.PostJob
-
-::: socialchimp.client.PostError
+There is nothing here for it, on purpose. `Account.post` posts as one account
+and raises if that account fails; looping over your accounts, and deciding
+what one failure means for the rest, is your app's job. See
+[the tutorial](../tutorial.md#posting-to-several-accounts-is-your-loop).
 
 ## Keeping tokens working
 

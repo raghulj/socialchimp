@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Connections{% endblock %}
+{% block heading %}Connected accounts{% endblock %}
+{% block body %}
+
+{% if not connections %}
+  <p>Nothing is connected yet.
+     <a href="{{ url_for('signin.index') }}">Connect an account</a>.</p>
+{% else %}
+  <table>
+    <tr>
+      <th>Account</th><th>Network</th><th>Connection id</th>
+      <th>Token</th><th></th>
+    </tr>
+    {% for connection in connections %}
+      {% set network = networks.get(connection.platform) %}
+      <tr>
+        <td>{{ connection.account_name }}</td>
+        <td>
+          {{ network.label if network else connection.platform }}
+          {% if connection.host %}<br><span class="quiet">{{ connection.host }}</span>{% endif %}
+        </td>
+        {# The id is the platform's, named after the account rather than
+           after a row of ours. That is what makes a webhook naming a Page
+           line up with a connection without a lookup table. #}
+        <td><code>{{ connection.id }}</code></td>
+        <td class="quiet">
+          {% if connection.token.expires_at %}
+            expires {{ connection.token.expires_at.strftime('%Y-%m-%d %H:%M') }}
+            <br>renewed for you before every call
+          {% else %}
+            never expires
+          {% endif %}
+          {% if connection.token.refresh_token_expires_at %}
+            {# Pinterest's refresh token lasts 60 days and renewing the
+               access token does not extend it, so an account nobody has
+               posted from since the summer needs signing in again. This is
+               the date to put a "reconnect" prompt in front of. #}
+            <br>reconnect before
+            {{ connection.token.refresh_token_expires_at.strftime('%Y-%m-%d') }}
+          {% endif %}
+        </td>
+        <td>
+          <a href="{{ url_for('connections.limits', connection_id=connection.id) }}">limits</a>
+          <form method="post"
+                action="{{ url_for('connections.disconnect', connection_id=connection.id) }}">
+            <button type="submit">Forget</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+{% endif %}
+
+<h2>What has happened</h2>
+{% if not activity %}
+  <p class="quiet">Nothing yet.</p>
+{% else %}
+  <table>
+    <tr><th>When</th><th>What</th><th>Account</th><th>Detail</th></tr>
+    {% for happening in activity %}
+      <tr>
+        <td class="quiet">{{ happening.at[:19] }}</td>
+        <td>{{ happening.what }}</td>
+        <td><code>{{ happening.connection_id }}</code></td>
+        <td>
+          {{ happening.detail }}
+          {% if happening.link %}
+            <br><a href="{{ happening.link }}">{{ happening.link }}</a>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+  <p class="quiet">
+    Refusals are rows here rather than messages that scrolled past.
+    socialchimp raises; writing it down is this app's decision.
+  </p>
+{% endif %}
+
+{% endblock %}

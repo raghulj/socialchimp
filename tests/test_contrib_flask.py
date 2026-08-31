@@ -11,6 +11,7 @@ from flask import Flask
 from socialchimp.client import SocialChimp
 from socialchimp.contrib.flask import blueprint, run
 from socialchimp.contrib.shared import sync_storage
+from socialchimp.errors import ConfigError
 from socialchimp.events import Dispatcher, UpdateKind
 from socialchimp.models import AppCredentials, Connection, Token
 from socialchimp.platform import AccountChoice
@@ -123,7 +124,7 @@ def test_the_callback_connects_the_account(client: FlaskClient) -> None:
     answer = client.get("/social/callback/fake?state=mine&code=c")
     assert answer.status_code == 200
     assert answer.get_json()["step"] == "connected"
-    assert answer.get_json()["connection_id"] == "fake-connection"
+    assert answer.get_json()["connection_id"] == "fake:42"
 
 
 def test_the_callback_takes_a_posted_form_too(client: FlaskClient) -> None:
@@ -166,14 +167,17 @@ def test_choosing_an_account_finishes_the_sign_in(seen: list[Update]) -> None:
     assert answer.get_json()["step"] == "connected"
 
 
-def test_our_errors_become_sensible_statuses() -> None:
+def test_a_set_up_mistake_is_not_dressed_up_as_an_answer() -> None:
+    # No app credentials stored is a mistake in the app, not something this
+    # request did, so it comes out as an error Flask reports rather than a
+    # tidy 500 that reads like the network's fault.
     sc = SocialChimp(storage=RecordingStorage(), platforms={"fake": FakePlatform()})
     app = Flask("four")
     app.register_blueprint(blueprint(sc, redirect_uri=REDIRECT))
+    app.testing = True
 
-    answer = app.test_client().get("/connect/fake")
-    assert answer.status_code == 500
-    assert "No app credentials" in answer.get_json()["error"]
+    with pytest.raises(ConfigError, match="No app credentials"):
+        app.test_client().get("/connect/fake")
 
 
 def test_a_callback_with_no_sign_in_waiting_is_refused(client: FlaskClient) -> None:
@@ -292,10 +296,10 @@ def test_a_blocking_storage_class_works_here_too(seen: list[Update]) -> None:
     client.get("/connect/fake?state=mine")
     answer = client.get("/callback/fake?state=mine&code=c")
     assert answer.status_code == 200
-    assert plain.connections["fake-connection"].token == Token(
+    assert plain.connections["fake:42"].token == Token(
         access_token="fake-access",
         refresh_token="fake-refresh",
-        expires_at=plain.connections["fake-connection"].token.expires_at,
+        expires_at=plain.connections["fake:42"].token.expires_at,
     )
 
 

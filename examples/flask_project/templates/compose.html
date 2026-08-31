@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% block title %}Write a post{% endblock %}
+{% block heading %}Write a post{% endblock %}
+{% block body %}
+
+{% if outcomes %}
+  <h2>What happened</h2>
+  <table>
+    <tr><th>Account</th><th>Result</th><th>Detail</th></tr>
+    {% for outcome in outcomes %}
+      <tr>
+        <td>
+          {{ outcome.account_name }}<br>
+          <span class="quiet">{{ outcome.platform }}</span>
+        </td>
+        <td>
+          {{ outcome.state }}
+          {% if outcome.error_kind %}
+            <br><span class="quiet">{{ outcome.error_kind }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {{ outcome.detail }}
+          {% if outcome.link %}
+            <br><a href="{{ outcome.link }}">{{ outcome.link }}</a>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+  <p class="quiet">
+    Every one of those is a separate turn of this app's own loop. A network
+    refusing did not stop the ones after it, because this app chose to carry
+    on - see <code>views/posting.py</code>.
+  </p>
+{% endif %}
+
+{% if not connections %}
+  <p>Nothing is connected yet.
+     <a href="{{ url_for('signin.index') }}">Connect an account</a>.</p>
+{% else %}
+
+<form method="post" action="{{ url_for('posting.compose') }}">
+
+  <fieldset>
+    <legend>Post as</legend>
+    {% for connection in connections %}
+      {% set network = networks.get(connection.platform) %}
+      <label>
+        <input type="checkbox" name="connection_id" value="{{ connection.id }}">
+        {{ connection.account_name }}
+        <span class="quiet">
+          — {{ network.label if network else connection.platform }}
+          {% if network %}
+            {% if not network.posts_words_alone %}· needs a file{% endif %}
+            {% if network.wants_media_url %}· a web address, not a file on disk{% endif %}
+            {% if not network.schedules %}· cannot schedule{% endif %}
+          {% endif %}
+        </span>
+      </label>
+    {% endfor %}
+  </fieldset>
+
+  <fieldset>
+    <legend>The post</legend>
+    <label>
+      Words
+      <textarea name="text" rows="4"></textarea>
+    </label>
+    <p class="quiet">
+      This is the caption on Instagram and TikTok, the description on YouTube
+      and Pinterest, and the post itself everywhere else. Bluesky allows 300
+      graphemes <em>and</em> 3,000 bytes and enforces both; Threads counts 500
+      bytes, not characters; TikTok counts the way Java does, so an emoji is
+      two. socialchimp counts each of them the way that network does and
+      refuses an over-long post before spending a request.
+    </p>
+
+    <label>
+      A picture or video already online
+      <input type="url" name="media_url" placeholder="https://example.com/a.jpg">
+    </label>
+    <p class="quiet">
+      Instagram, Threads and Pinterest fetch the file themselves and take
+      nothing else. For the rest socialchimp downloads it and uploads it for
+      them.
+    </p>
+
+    <label>
+      …or a file on this machine
+      <input type="text" name="media_path" placeholder="/tmp/shop.jpg">
+    </label>
+    <p class="quiet">
+      Instagram and Threads refuse this, with an explanation rather than a
+      failed upload. YouTube, TikTok and Pinterest need a file or an address
+      for every post; they have no text-only post at all.
+    </p>
+
+    <label>
+      Publish later
+      <input type="datetime-local" name="publish_at">
+    </label>
+    <p class="quiet">
+      Only Mastodon, Facebook and YouTube can be asked. The other six refuse
+      by name rather than posting it now, which is the whole point of asking.
+      Facebook wants between 10 minutes and 75 days out. Times are read as
+      UTC here.
+    </p>
+  </fieldset>
+
+  <fieldset>
+    <legend>YouTube</legend>
+    <label>
+      Title <span class="quiet">(required — a video with no title is refused)</span>
+      <input type="text" name="title" maxlength="100">
+    </label>
+    <label>
+      <input type="checkbox" name="made_for_kids" value="yes">
+      Made for kids
+    </label>
+    <p class="quiet">
+      Google requires an answer to this on every upload and socialchimp will
+      not guess one. Pinterest uses the same title box above, where the title
+      is separate from the description — that is the part people trip over.
+    </p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Who can see it</legend>
+    <label>
+      YouTube privacy_status / TikTok privacy_level
+      <select name="privacy_status">
+        <option value="">leave it out</option>
+        <option value="private">private (YouTube)</option>
+        <option value="unlisted">unlisted (YouTube)</option>
+        <option value="public">public (YouTube)</option>
+        <option value="SELF_ONLY">SELF_ONLY (TikTok)</option>
+        <option value="PUBLIC_TO_EVERYONE">PUBLIC_TO_EVERYONE (TikTok)</option>
+      </select>
+    </label>
+    <p class="quiet">
+      Left out, YouTube publishes private and TikTok publishes SELF_ONLY, both
+      on purpose: putting somebody's video in front of the world by accident
+      cannot be undone. Until TikTok has audited your app every post is
+      SELF_ONLY whatever you ask for, and it will still answer that it worked.
+    </p>
+
+    <label>
+      Mastodon visibility
+      <select name="visibility">
+        <option value="">leave it out</option>
+        <option value="public">public</option>
+        <option value="unlisted">unlisted</option>
+        <option value="private">private</option>
+        <option value="direct">direct</option>
+      </select>
+    </label>
+
+    <label>
+      X reply_settings
+      <select name="reply_settings">
+        <option value="">leave it out</option>
+        <option value="everyone">everyone</option>
+        <option value="mentionedUsers">mentionedUsers</option>
+        <option value="following">following</option>
+        <option value="subscribers">subscribers</option>
+      </select>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>TikTok</legend>
+    <label>
+      Where it goes
+      <select name="send_to">
+        <option value="drafts">drafts — the person finishes it in the app</option>
+        <option value="profile">profile — straight to their profile</option>
+      </select>
+    </label>
+    <p class="quiet">
+      Drafts is the default because it needs only the <code>video.upload</code>
+      permission and because nothing reaches a profile without a person
+      tapping a button. TikTok's inbox carries no caption, so this app leaves
+      the words off a draft and says so; the alternative is a refusal.
+      A draft comes back <code>WAITING_FOR_PERSON</code> — nothing more will
+      happen on its own, so do not poll it.
+    </p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Pinterest</legend>
+    <label>
+      board_id <span class="quiet">(every pin needs one)</span>
+      <input type="text" name="board_id">
+    </label>
+    <p class="quiet">
+      Pinterest has no feed to post to, and socialchimp never picks a board
+      for you. Name one here, or save <code>board_id</code> on the
+      connection's <code>extra</code> and every pin from that account goes
+      there.
+    </p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Links and languages</legend>
+    <label>
+      Link <span class="quiet">(Facebook's post, Pinterest's pin)</span>
+      <input type="url" name="link">
+    </label>
+    <label>
+      Mastodon language <span class="quiet">(two letters)</span>
+      <input type="text" name="language" maxlength="8">
+    </label>
+    <label>
+      Bluesky langs <span class="quiet">(comma separated)</span>
+      <input type="text" name="langs" placeholder="en,fr">
+    </label>
+  </fieldset>
+
+  <button type="submit">Post it</button>
+</form>
+
+<p class="quiet">
+  Everything above is a real option name, checked against the platform file
+  it belongs to. A name a network has never heard of is refused before
+  anything is sent, with the accepted names in the message.
+</p>
+
+{% endif %}
+{% endblock %}

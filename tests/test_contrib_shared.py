@@ -33,7 +33,7 @@ from socialchimp.errors import (
     SocialChimpError,
     TokenExpiredError,
 )
-from socialchimp.events import Update, UpdateKind
+from socialchimp.events import Dispatcher, Update, UpdateKind
 from socialchimp.features import Feature
 from socialchimp.models import AppCredentials, Connection, Token
 from socialchimp.platform import (
@@ -46,7 +46,7 @@ from socialchimp.testing import FakePlatform, RecordingStorage
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from socialchimp.events import Update
+    from socialchimp.events import DeliverUpdate, Update
     from socialchimp.features import Limits
     from socialchimp.models import Post, PostResult, RawData
     from socialchimp.platform import LoginRequest, LoginStep
@@ -88,6 +88,14 @@ class NeverCarriesOn(FakePlatform):
             options=(AccountChoice(id="7", name="A Page"),),
             resume_token="carry-on",
         )
+
+
+class WillNotStart(FakePlatform):
+    """Cannot begin a sign-in at all. Stands in for a network that is down."""
+
+    async def start_login(self, request: LoginRequest) -> LoginStep:
+        message = "the sign-in page did not answer"
+        raise NetworkError(message, platform="fake")
 
 
 class LyingPusher:
@@ -134,6 +142,7 @@ def make_routes(
     secrets: dict[str, str] | None = None,
     setup_tokens: dict[str, str] | None = None,
     with_deliver: bool = True,
+    deliver: DeliverUpdate | None = None,
     memory: InMemoryLoginMemory | None = None,
 ) -> tuple[Routes, FakePlatform]:
     fake = platform if platform is not None else FakePlatform()
@@ -142,9 +151,11 @@ def make_routes(
         platforms={"fake": fake, "lying-pusher": LyingPusher()},
     )
 
-    async def deliver(update: Update) -> None:
+    async def collect(update: Update) -> None:
         if collected is not None:
             collected.append(update)
+
+    chosen = deliver if deliver is not None else collect
 
     return (
         Routes(
@@ -153,7 +164,7 @@ def make_routes(
             memory=memory,
             secrets=secrets if secrets is not None else {"fake": fake.secret},
             setup_tokens=setup_tokens if setup_tokens is not None else {"fake": "tok"},
-            deliver=deliver if with_deliver else None,
+            deliver=chosen if with_deliver else None,
         ),
         fake,
     )
@@ -357,11 +368,50 @@ async def test_start_asks_for_details_when_there_is_no_sign_in_page() -> None:
 
 
 async def test_start_says_so_when_the_app_is_not_registered_yet() -> None:
+    # A set-up mistake, so it is raised rather than answered. Signing in with
+    # no app credentials stored can never work for anybody.
     sc = SocialChimp(storage=RecordingStorage(), platforms={"fake": FakePlatform()})
     routes = Routes(sc, redirect_uri=REDIRECT)
+    with pytest.raises(ConfigError, match="No app credentials"):
+        await routes.start("fake", {})
+
+
+async def test_start_says_what_the_network_said_when_it_will_not_begin() -> None:
+    # Not our set-up, so it is answered rather than raised.
+    routes, _ = make_routes(WillNotStart())
     reply = await routes.start("fake", {})
-    assert reply.status == 500
-    assert "No app credentials" in str(body_of(reply)["error"])
+    assert reply.status == 502
+    assert "did not answer" in str(body_of(reply)["error"])
+
+
+async def test_the_callback_does_not_hide_a_set_up_mistake() -> None:
+    memory = InMemoryLoginMemory()
+    await memory.keep("mine", {"remember": {}})
+    sc = SocialChimp(storage=RecordingStorage(), platforms={"fake": FakePlatform()})
+    routes = Routes(sc, redirect_uri=REDIRECT, memory=memory)
+
+    with pytest.raises(ConfigError, match="No app credentials"):
+        await routes.finish("fake", {"state": "mine", "code": "c"})
+
+
+async def test_choosing_does_not_hide_a_set_up_mistake() -> None:
+    memory = InMemoryLoginMemory()
+    await memory.keep("mine", {"resume_token": "carry-on"})
+    choosy = FakePlatform(accounts=(AccountChoice(id="7", name="A Page"),))
+    sc = SocialChimp(storage=RecordingStorage(), platforms={"fake": choosy})
+    routes = Routes(sc, redirect_uri=REDIRECT, memory=memory)
+
+    with pytest.raises(ConfigError, match="No app credentials"):
+        await routes.choose("fake", {"state": "mine", "account_id": "7"})
+
+
+async def test_routes_that_only_sign_people_in_need_no_deliver() -> None:
+    # No webhook secrets means no webhooks, so there is nothing to hand on.
+    sc = SocialChimp(
+        storage=RecordingStorage(apps=[APP]), platforms={"fake": FakePlatform()}
+    )
+    routes = Routes(sc, redirect_uri=REDIRECT)
+    assert (await routes.start("fake", {})).status == 302
 
 
 async def test_the_callback_connects_the_account() -> None:
@@ -372,7 +422,7 @@ async def test_the_callback_connects_the_account() -> None:
     assert reply.status == 200
     assert body_of(reply) == {
         "step": "connected",
-        "connection_id": "fake-connection",
+        "connection_id": "fake:42",
         "platform": "fake",
         "account_name": "someone@fake.example",
     }
@@ -515,11 +565,18 @@ async def test_a_tampered_webhook_is_refused() -> None:
     assert collected == []
 
 
-async def test_a_webhook_with_no_secret_configured_says_so() -> None:
-    routes, fake = make_routes(secrets={})
-    reply = await routes.webhook("fake", UPDATE_BODY, fake.sign(UPDATE_BODY))
-    assert reply.status == 500
-    assert "secrets" in str(body_of(reply)["error"])
+async def test_a_webhook_arriving_at_routes_that_receive_none_says_so() -> None:
+    # Routes for signing in and nothing else: no secrets, so no deliver.
+    routes, fake = make_routes(secrets={}, with_deliver=False)
+    with pytest.raises(ConfigError, match="secrets"):
+        await routes.webhook("fake", UPDATE_BODY, fake.sign(UPDATE_BODY))
+
+
+async def test_a_webhook_from_a_network_with_no_secret_of_its_own_says_so() -> None:
+    # Routes that do receive webhooks, but were told nothing about this one.
+    routes, fake = make_routes(secrets={"someone-else": "s"})
+    with pytest.raises(ConfigError, match="secrets"):
+        await routes.webhook("fake", UPDATE_BODY, fake.sign(UPDATE_BODY))
 
 
 async def test_a_webhook_for_a_network_that_never_pushes_is_refused() -> None:
@@ -530,21 +587,38 @@ async def test_a_webhook_for_a_network_that_never_pushes_is_refused() -> None:
 
 async def test_a_webhook_for_an_unknown_network_says_so() -> None:
     routes, _ = make_routes()
-    reply = await routes.webhook("nobody", UPDATE_BODY, {})
-    assert reply.status == 500
+    with pytest.raises(ConfigError, match="nobody"):
+        await routes.webhook("nobody", UPDATE_BODY, {})
 
 
 async def test_a_platform_that_promises_to_push_but_cannot_check_is_a_bug() -> None:
-    routes, _ = make_routes()
-    reply = await routes.webhook("lying-pusher", UPDATE_BODY, {})
-    assert reply.status == 500
-    assert "check_signature" in str(body_of(reply)["error"])
+    routes, _ = make_routes(secrets={"lying-pusher": "s"})
+    with pytest.raises(ConfigError, match="check_signature"):
+        await routes.webhook("lying-pusher", UPDATE_BODY, {})
 
 
-async def test_a_webhook_with_nowhere_to_hand_it_on_is_still_accepted() -> None:
-    routes, fake = make_routes(with_deliver=False)
-    reply = await routes.webhook("fake", UPDATE_BODY, fake.sign(UPDATE_BODY))
-    assert reply.status == 200
+def test_routes_with_a_webhook_secret_and_nowhere_to_hand_updates_on() -> None:
+    # Refused when the routes are built, not once a real update has arrived
+    # and been thrown away. This is knowable at set-up time.
+    with pytest.raises(ConfigError, match="deliver"):
+        make_routes(with_deliver=False)
+
+
+async def test_a_webhook_no_handler_got_through_is_not_answered_200() -> None:
+    # 200 tells the network it was handled and it never sends it again, so a
+    # webhook whose handlers all failed must not answer one. Letting the
+    # group out is a 500, which is how a network is asked to try again.
+    dispatcher = Dispatcher()
+
+    async def explode(update: Update) -> None:
+        message = "the database is down"
+        raise RuntimeError(message)
+
+    dispatcher.on_any(explode)
+    routes, fake = make_routes(deliver=dispatcher.deliver)
+
+    with pytest.raises(ExceptionGroup):
+        await routes.webhook("fake", UPDATE_BODY, fake.sign(UPDATE_BODY))
 
 
 async def test_the_setup_check_answers_with_the_challenge() -> None:
@@ -577,9 +651,8 @@ async def test_the_setup_check_refuses_a_wrong_token_with_403() -> None:
 
 async def test_the_setup_check_needs_a_token_to_check_against() -> None:
     routes, _ = make_routes(setup_tokens={})
-    reply = await routes.setup_check("fake", {"hub.mode": "subscribe"})
-    assert reply.status == 500
-    assert "setup_tokens" in str(body_of(reply)["error"])
+    with pytest.raises(ConfigError, match="setup_tokens"):
+        await routes.setup_check("fake", {"hub.mode": "subscribe"})
 
 
 async def test_the_callback_says_what_the_network_said_when_it_refuses() -> None:

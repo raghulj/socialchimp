@@ -20,6 +20,29 @@ from socialchimp.features import (
     count_graphemes,
     measure_text,
 )
+from socialchimp.platform import Platform
+from socialchimp.platforms.bluesky import BlueskyPlatform
+from socialchimp.platforms.facebook import FacebookPlatform
+from socialchimp.platforms.instagram import InstagramPlatform
+from socialchimp.platforms.mastodon import MastodonPlatform
+from socialchimp.platforms.pinterest import PinterestPlatform
+from socialchimp.platforms.threads import ThreadsPlatform
+from socialchimp.platforms.tiktok import TikTokPlatform
+from socialchimp.platforms.x import XPlatform
+from socialchimp.platforms.youtube import YouTubePlatform
+
+# Every built-in network but Bluesky. Each of these has a developer portal
+# and will not sign anybody in without an id and a secret.
+WITH_A_PORTAL: tuple[type[Platform], ...] = (
+    FacebookPlatform,
+    InstagramPlatform,
+    MastodonPlatform,
+    PinterestPlatform,
+    ThreadsPlatform,
+    TikTokPlatform,
+    XPlatform,
+    YouTubePlatform,
+)
 
 # One thumbs-up with a skin tone on it. One letter to a person, two
 # characters to Python, four bytes written out, two units to a network
@@ -44,6 +67,22 @@ class TestFeature:
 
         assert Feature.POST_TEXT in supported
         assert Feature.POST_VIDEO not in supported
+
+
+class TestWhichNetworksNeedNoApp:
+    """`NEEDS_NO_APP` is a claim about a network, so check it network by network."""
+
+    def test_bluesky_needs_no_app_because_it_has_no_portal(self) -> None:
+        assert Feature.NEEDS_NO_APP in BlueskyPlatform.features
+
+    @pytest.mark.parametrize("platform_class", WITH_A_PORTAL, ids=lambda one: one.name)
+    def test_every_other_network_still_needs_one(
+        self,
+        platform_class: type[Platform],
+    ) -> None:
+        # Mastodon registers the app for you, but there is still an app: it
+        # has a client id and secret, and a sign-in without them fails.
+        assert Feature.NEEDS_NO_APP not in platform_class.features
 
 
 class TestLimits:

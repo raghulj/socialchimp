@@ -1,5 +1,6 @@
 """Tests for the data we pass around."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -7,12 +8,15 @@ import pytest
 
 from socialchimp import (
     AppCredentials,
+    ConfigError,
     Connection,
+    InvalidPostError,
     Media,
     MediaKind,
     Post,
     PostResult,
     PostState,
+    SocialChimpError,
     Token,
 )
 
@@ -49,7 +53,7 @@ class TestToken:
 
     def test_an_expiry_without_a_timezone_is_rejected(self) -> None:
         # A naive datetime silently compares wrong against an aware one.
-        with pytest.raises(ValueError, match="timezone"):
+        with pytest.raises(ConfigError, match="timezone"):
             Token(access_token="abc", expires_at=datetime(2030, 1, 1))  # noqa: DTZ001
 
     def test_a_refresh_token_with_no_expiry_never_runs_out(self) -> None:
@@ -87,7 +91,7 @@ class TestToken:
         assert token.refresh_token_is_expired is True
 
     def test_a_refresh_expiry_without_a_timezone_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="timezone"):
+        with pytest.raises(ConfigError, match="timezone"):
             Token(
                 access_token="abc",
                 refresh_token_expires_at=datetime(2030, 1, 1),  # noqa: DTZ001
@@ -121,7 +125,7 @@ class TestMedia:
     def test_reading_a_url_without_downloading_it_is_refused(self) -> None:
         media = Media.from_url("https://example.com/photo.jpg")
 
-        with pytest.raises(ValueError, match="url"):
+        with pytest.raises(InvalidPostError, match="url"):
             media.read()
 
     def test_the_kind_is_guessed_from_the_file_name(self) -> None:
@@ -131,7 +135,7 @@ class TestMedia:
         assert Media.from_bytes(b"", filename="a.mov").kind is MediaKind.VIDEO
 
     def test_an_unknown_file_type_is_rejected_with_a_helpful_message(self) -> None:
-        with pytest.raises(ValueError, match=r"cat\.xyz") as caught:
+        with pytest.raises(InvalidPostError, match=r"cat\.xyz") as caught:
             Media.from_bytes(b"", filename="cat.xyz")
 
         # The message should say what to do, not just what went wrong.
@@ -158,11 +162,11 @@ class TestPost:
         assert post.options["board_id"] == "123"
 
     def test_a_post_needs_either_text_or_media(self) -> None:
-        with pytest.raises(ValueError, match="text or media"):
+        with pytest.raises(InvalidPostError, match="text or media"):
             Post()
 
     def test_a_publish_time_without_a_timezone_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="timezone"):
+        with pytest.raises(ConfigError, match="timezone"):
             Post(text="hi", publish_at=datetime(2030, 1, 1))  # noqa: DTZ001
 
 
@@ -302,5 +306,65 @@ class TestReadingAFileInPieces:
         assert Media.from_file(video).piece(start=3, length=100) == b"45"
 
     def test_reading_a_piece_of_something_online_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="url"):
+        with pytest.raises(InvalidPostError, match="url"):
             Media.from_url("https://example.com/a.mp4").piece(start=0, length=1)
+
+
+# Everything in this module refuses by raising, and every one of those
+# refusals is written out here. An app is told that catching
+# `SocialChimpError` catches everything socialchimp reports; before 0.3.0
+# these five raised a bare `ValueError` and went straight past it.
+REFUSALS: list[tuple[str, Callable[[], object], type[SocialChimpError]]] = [
+    ("a post with nothing in it", Post, InvalidPostError),
+    (
+        "a publish time with no timezone",
+        lambda: Post(text="hi", publish_at=datetime(2030, 1, 1)),  # noqa: DTZ001
+        ConfigError,
+    ),
+    (
+        "an expiry with no timezone",
+        lambda: Token(access_token="abc", expires_at=datetime(2030, 1, 1)),  # noqa: DTZ001
+        ConfigError,
+    ),
+    (
+        "a file ending nobody recognises",
+        lambda: Media.from_bytes(b"", filename="cat.xyz"),
+        InvalidPostError,
+    ),
+    (
+        "reading something that is only online",
+        lambda: Media.from_url("https://example.com/photo.jpg").read(),
+        InvalidPostError,
+    ),
+    (
+        "a piece of something that is only online",
+        lambda: Media.from_url("https://example.com/a.mp4").piece(start=0, length=1),
+        InvalidPostError,
+    ),
+]
+
+
+class TestEveryRefusalHereCanBeCaught:
+    @pytest.mark.parametrize(("what", "refuse", "expected"), REFUSALS)
+    def test_it_is_a_socialchimp_error(
+        self,
+        what: str,
+        refuse: Callable[[], object],
+        expected: type[SocialChimpError],
+    ) -> None:
+        # The one an app is told to catch. A bare ValueError here walks
+        # past `except SocialChimpError` and crashes the app.
+        with pytest.raises(expected):
+            refuse()
+
+    @pytest.mark.parametrize(("what", "refuse", "expected"), REFUSALS)
+    def test_it_is_still_a_value_error(
+        self,
+        what: str,
+        refuse: Callable[[], object],
+        expected: type[SocialChimpError],
+    ) -> None:
+        # Each of these was a ValueError before 0.3.0, and that is
+        # documented behaviour in a published library, so it stays one.
+        with pytest.raises(ValueError):
+            refuse()

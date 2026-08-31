@@ -141,7 +141,7 @@ show_missing = true
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
-files = ["src", "tests", "examples"]
+files = ["src", "tests", "examples", "docs"]
 strict = true
 warn_unreachable = true
 warn_no_return = true
@@ -169,11 +169,30 @@ enable_error_code = [
 # This is the only place in the project where strictness is turned down, it
 # covers examples rather than shipped code, and everything not coming from
 # Django is still checked.
+#
+# `import-untyped` is off for the same one reason and no other: with no
+# py.typed and no bundled stubs, `from django.db import models` is an import
+# mypy cannot follow, and that is reported at the import itself - so turning
+# the code off here turns it off only in these files. Everything socialchimp
+# hands these examples is typed and stays checked.
+#
+# The names after the first are the Django project in examples/django_project,
+# spelt the way mypy sees it rather than the way the folder is laid out: a
+# Django project is not itself an importable package, so mypy names each file
+# from the nearest directory that has an __init__.py - `social.views`,
+# `socialsite.settings`, and `manage` on its own.
 [[tool.mypy.overrides]]
-module = "examples.facebook_django.*"
+module = [
+    "examples.facebook_django.*",
+    "manage",
+    "social.*",
+    "socialsite.*",
+]
 disallow_any_unimported = false
 disallow_subclassing_any = false
 disallow_untyped_calls = false
+disallow_untyped_decorators = false
+disable_error_code = ["import-untyped"]
 
 [tool.ruff]
 line-length = 88

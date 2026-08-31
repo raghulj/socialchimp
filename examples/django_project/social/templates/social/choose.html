@@ -1,0 +1,26 @@
+{% extends "social/base.html" %}
+{% block title %}Choose an account{% endblock %}
+
+{% block body %}
+<h1>Which {{ network.label }} account should this app post to?</h1>
+
+<p class="note">
+  The person has approved this app; the network now needs to know which
+  account inside it we meant. It asks even when there is only one.
+</p>
+
+<form method="post" action="{% url 'social:choose' network.name %}">
+  {% csrf_token %}
+  {# The resume token is not in this form. It carries the person's own
+     access token on some networks, so it stays in the session - never in a
+     hidden field, a URL or a log. #}
+  {% for option in options %}
+    <label>
+      <input type="radio" name="account_id" value="{{ option.id }}" required>
+      {{ option.name }}
+      {% if option.kind %}<span class="note">{{ option.kind }}</span>{% endif %}
+    </label>
+  {% endfor %}
+  <button type="submit">Connect this one</button>
+</form>
+{% endblock %}

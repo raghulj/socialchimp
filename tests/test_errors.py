@@ -103,3 +103,36 @@ class TestPlatformError:
         assert error.status_code == 400
         assert error.raw["error"]["code"] == 9004
         assert error.platform == "instagram"
+
+
+class TestTheTwoThatAreAlsoValueErrors:
+    """`ConfigError` and `InvalidPostError` are `ValueError` as well.
+
+    Both are raised for a value handed to socialchimp - an empty post, a
+    datetime with no timezone - and both raised a bare `ValueError` before
+    0.3.0. Being both keeps that code working and makes the promise that
+    `SocialChimpError` covers everything true.
+    """
+
+    @pytest.mark.parametrize("error_type", [ConfigError, InvalidPostError])
+    def test_it_is_caught_by_an_app_written_for_socialchimp(
+        self,
+        error_type: type[SocialChimpError],
+    ) -> None:
+        with pytest.raises(SocialChimpError):
+            raise error_type("something went wrong")
+
+    @pytest.mark.parametrize("error_type", [ConfigError, InvalidPostError])
+    def test_it_is_still_caught_by_an_app_written_before_0_3_0(
+        self,
+        error_type: type[SocialChimpError],
+    ) -> None:
+        with pytest.raises(ValueError, match="something went wrong"):
+            raise error_type("something went wrong")
+
+    def test_the_rest_of_them_are_not_value_errors(self) -> None:
+        # Nothing else here is about a value somebody passed in, so nothing
+        # else pretends to be. A network saying no is not a ValueError.
+        assert not issubclass(RateLimitError, ValueError)
+        assert not issubclass(PlatformError, ValueError)
+        assert not issubclass(SocialChimpError, ValueError)
