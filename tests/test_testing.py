@@ -1,6 +1,8 @@
 """Tests for the kit that checks a platform behaves like the others."""
 
 import json
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import ClassVar, cast
@@ -23,6 +25,7 @@ from socialchimp import (
     Update,
     UpdateKind,
 )
+from socialchimp import testing as testing_module
 from socialchimp.errors import (
     AuthError,
     ConfigError,
@@ -1749,3 +1752,72 @@ class TestTheCarryingOnCheck:
 
     async def test_taking_whatever_it_is_given_passes(self) -> None:
         await getattr(checks_for(CarriesOnHoweverItIsAsked()), self.name)()
+
+
+# ---------------------------------------------------------------------------
+# Working without pytest. The fakes are for building an app, not only for
+# testing one, so they must not drag a test framework in with them.
+# ---------------------------------------------------------------------------
+
+
+def test_the_fakes_work_with_no_pytest_installed() -> None:
+    # In a process of its own, because this one has pytest imported and
+    # sys.modules would answer yes whatever socialchimp does. `None` in
+    # sys.modules is what the import machinery treats as not installed.
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            'import sys; sys.modules["pytest"] = None;'
+            "from socialchimp.testing import ("
+            "FakePlatform, RecordingStorage, RecordingTransport, StorageCall);"
+            "print(FakePlatform().name, RecordingStorage().calls, "
+            "RecordingTransport({}).requests, StorageCall.__name__)",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "fake [] [] StorageCall"
+
+
+def test_the_checks_say_what_to_install_when_pytest_is_missing() -> None:
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            'import sys; sys.modules["pytest"] = None\n'
+            "from socialchimp.testing import PlatformChecks\n"
+            "try:\n"
+            "    class TestMine(PlatformChecks): pass\n"
+            "except Exception as problem:\n"
+            "    print(type(problem).__name__, problem)\n",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert "ConfigError" in done.stdout
+    assert 'pip install "socialchimp[testing]"' in done.stdout
+    assert "ModuleNotFoundError" not in done.stdout
+
+
+def test_reaching_for_pytest_without_it_says_what_to_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "pytest", None)
+
+    with pytest.raises(ConfigError) as caught:
+        testing_module._pytest()
+
+    message = str(caught.value)
+    assert 'pip install "socialchimp[testing]"' in message
+    assert "FakePlatform" in message
+
+
+def test_reaching_for_pytest_hands_back_pytest() -> None:
+    assert testing_module._pytest() is pytest

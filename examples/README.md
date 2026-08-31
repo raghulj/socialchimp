@@ -24,11 +24,14 @@ between networks and where people get stuck:
 | Register the app for them | Mastodon | Once per server, no portal, no waiting |
 
 Each project has its own README and a `.env.example` naming every credential
-and where it comes from.
+and where it comes from. Each needs its own framework installed and nothing
+else: `pip install "socialchimp[django]"`, `pip install "socialchimp[flask]"`.
 
 ## Nothing to set up
 
-These need no credentials and no accounts.
+These need no credentials, no accounts and nothing installed but socialchimp
+itself. They run against `socialchimp.testing.FakePlatform`, a network that
+works without a network - ordinary classes that ask for no test framework.
 
 - `post_to_each.py` - several accounts, one refusing, and the app carrying on.
   Posting to more than one network is your loop, on purpose.

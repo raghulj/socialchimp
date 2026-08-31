@@ -273,7 +273,12 @@ class TestTryingAgain:
         self,
         waits: list[float],
     ) -> None:
-        soon = format_datetime(datetime.now(UTC) + timedelta(seconds=20), usegmt=True)
+        # An hour out rather than twenty seconds, on purpose. The header
+        # carries whole seconds, and real time passes between building it and
+        # the wait being worked out, so a twenty second window is only about
+        # ninety-five per cent reliable on a loaded machine - which is a
+        # failing build for no reason. Against an hour, both are noise.
+        soon = format_datetime(datetime.now(UTC) + timedelta(hours=1), usegmt=True)
         with respx.mock(base_url=BASE) as network:
             network.get("/me").mock(
                 side_effect=[
@@ -285,9 +290,9 @@ class TestTryingAgain:
             async with HttpClient(BASE, retries=FAST) as http:
                 await http.get("/me")
 
-        # The header only carries whole seconds, so the wait lands just under
-        # the twenty we asked for.
-        assert 19.0 <= waits[0] <= 20.0
+        # Just under the hour we asked for: the header rounds down to whole
+        # seconds, and a moment passes before the wait is worked out.
+        assert 3590.0 <= waits[0] <= 3600.0
 
     async def test_the_wait_asked_for_is_a_floor_not_a_ceiling(
         self,

@@ -1525,9 +1525,11 @@ they look.
 
 ### Subclassing: the two classes meant for it
 
-Both live in `socialchimp.testing`, behind an extra
-(`pip install "socialchimp[testing]"`), because pytest is not something an
-app should need installed to post a picture.
+Both live in `socialchimp.testing`. `FakePlatform` needs nothing beyond
+socialchimp itself - pytest is not something an app should need installed to
+post a picture, and a fake network is as useful for building an app as for
+testing one. `PlatformChecks` runs on pytest and says so if you subclass it
+without: `pip install "socialchimp[testing]"`.
 
 **`FakePlatform`** is a network that works with no network. Subclass it to
 make it behave like the one you are actually writing against:
