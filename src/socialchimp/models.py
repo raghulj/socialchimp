@@ -77,8 +77,16 @@ class PostState(Enum):
     """
 
     DONE = auto()
+    """The post is live now."""
+
+    SCHEDULED = auto()
+    """The network accepted it and will publish it later."""
+
     PROCESSING = auto()
+    """The network is still working on it, usually a video being encoded."""
+
     FAILED = auto()
+    """The network gave up on it."""
 
 
 @dataclass(frozen=True, slots=True)

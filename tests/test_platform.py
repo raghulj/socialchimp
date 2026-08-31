@@ -9,6 +9,7 @@ from socialchimp import (
     Limits,
     Post,
     PostResult,
+    RawData,
     Token,
 )
 from socialchimp.events import Update, UpdateKind
@@ -43,7 +44,10 @@ class FakePlatform:
         return SendToNetwork(url="https://fake.example/authorize", state="xyz")
 
     async def finish_login(
-        self, request: LoginRequest, callback: Mapping[str, str]
+        self,
+        request: LoginRequest,
+        callback: Mapping[str, str],
+        remember: RawData | None = None,
     ) -> LoginStep:
         return Finished(connection=_a_connection())
 
@@ -168,3 +172,22 @@ class TestUpdateExtras:
         assert isinstance(platform, CanReadUpdates)
         assert isinstance(platform, CanCheckSignature)
         assert Feature.PUSH_UPDATES in platform.features
+
+
+class TestRememberingBetweenTheTwoHalves:
+    def test_a_platform_can_ask_for_something_back(self) -> None:
+        # PKCE needs the secret half again when the person returns. It cannot
+        # be held in memory: the two halves of a sign-in can land on
+        # different web workers, so it travels through the app instead.
+        step = SendToNetwork(
+            url="https://example.com/auth",
+            state="abc",
+            remember={"code_verifier": "the-secret-half"},
+        )
+
+        assert step.remember["code_verifier"] == "the-secret-half"
+
+    def test_platforms_that_need_nothing_back_get_an_empty_note(self) -> None:
+        step = SendToNetwork(url="https://example.com/auth", state="abc")
+
+        assert step.remember == {}

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         Connection,
         Post,
         PostResult,
+        RawData,
         Token,
     )
 
@@ -60,12 +61,16 @@ class LoginRequest:
             for Mastodon, ignored elsewhere.
         state: A value handed back to you at the end, so you can tell which
             of your users came back. One is made for you if you leave it out.
+        app: Your app's credentials for this network. `SocialChimp` fills
+            this in from storage; you only set it yourself if you are
+            calling a platform directly.
     """
 
     redirect_uri: str
     scopes: tuple[str, ...] = ()
     host: str | None = None
     state: str | None = None
+    app: AppCredentials | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,10 +80,19 @@ class SendToNetwork:
     Attributes:
         url: Where to send them. Redirect their browser here.
         state: The value that will come back, for matching up the reply.
+        remember: Something the platform needs again when the person comes
+            back, such as the secret half of a PKCE pair. Keep it with the
+            rest of that person's session and hand it back to `finish_login`.
+
+            It has to travel through your app because the two halves of a
+            sign-in can happen in different processes - the person may be
+            sent away by one web worker and come back to another. Holding it
+            in memory would work on your laptop and fail in production.
     """
 
     url: str
     state: str
+    remember: RawData = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +187,7 @@ class Platform(Protocol):
         self,
         request: LoginRequest,
         callback: Mapping[str, str],
+        remember: RawData | None = None,
     ) -> LoginStep:
         """Carry on after the person comes back from the network.
 
@@ -183,6 +198,7 @@ class Platform(Protocol):
         Args:
             request: The same request used to start the login.
             callback: The query values the network sent back.
+            remember: Whatever `start_login` put in `SendToNetwork.remember`.
 
         Returns:
             Either the finished connection or a question to ask.

@@ -16,6 +16,7 @@ from socialchimp import (
     PostResult,
     Token,
 )
+from socialchimp.models import RawData
 from socialchimp.platform import (
     Finished,
     LoginRequest,
@@ -48,7 +49,10 @@ class FakePlatform:
         return SendToNetwork(url="https://fake.example/authorize", state="xyz")
 
     async def finish_login(
-        self, request: LoginRequest, callback: Mapping[str, str]
+        self,
+        request: LoginRequest,
+        callback: Mapping[str, str],
+        remember: RawData | None = None,
     ) -> LoginStep:
         return Finished(connection=_a_connection())
 

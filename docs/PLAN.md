@@ -70,7 +70,7 @@ We are building these in the order below. The first four are the priority.
 
 | # | Platform | Why it is here | Status |
 |---|----------|----------------|--------|
-| 1 | Mastodon | Only network where we can create the app automatically. No approval needed, so anyone can try the library in five minutes. | In progress |
+| 1 | Mastodon | Only network where we can create the app automatically. No approval needed, so anyone can try the library in five minutes. | **Done** |
 | 2 | Bluesky | No signup portal. Short-lived tokens, so it proves our token refresh works. | Not started |
 | 3 | Facebook Pages | Highest demand. Doing the Meta login work here makes Instagram and Threads much cheaper. | Not started |
 | 4 | Instagram | Posting is two steps: build the post, wait, then publish it. First network that needs the job model. | Not started |
@@ -105,12 +105,15 @@ Everything a platform needs, before any platform exists.
 - [x] Updates, whether pushed to us or found by checking on a timer
 
 ### Step 3 - First platform, end to end
-- [ ] `SocialChimp` - the one object your app uses
-- [ ] Mastodon: create app, sign in, post, read, updates
-- [ ] A test kit other platforms can reuse to check they behave the same
+- [x] `SocialChimp` - the one object your app uses
+- [x] Mastodon: create app, sign in, post, read, updates
+- [x] A test kit other platforms can reuse to check they behave the same
 
 ### Step 4 - The rest of the platforms
-In the order in the table above.
+In the order in the table above. Each one:
+- passes the checks in `socialchimp.testing`
+- adds its own line to the platform table and to `pyproject.toml`
+- gets a page in `docs/platforms/`
 
 ### Step 5 - Framework helpers
 - [ ] Django, FastAPI, Flask: ready-made routes and storage examples
