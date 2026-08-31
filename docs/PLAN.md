@@ -116,7 +116,7 @@ In the order in the table above. Each one:
 - gets a page in `docs/platforms/`
 
 ### Step 5 - Framework helpers
-- [ ] Django, FastAPI, Flask: ready-made routes and storage examples
+- [x] Django, FastAPI, Flask: ready-made routes and storage examples
 
 ### Step 6 - Docs and examples
 - [x] Getting started

@@ -80,6 +80,8 @@ is yours.
 
 - [Getting started](docs/getting-started.md) - from nothing to a post
 - [Networks](docs/platforms.md) - what each one can do, and what it needs
+- [Frameworks](docs/frameworks.md) - ready-made routes for Django,
+  FastAPI and Flask
 - [Adding a platform](docs/adding-a-platform.md) - a network we do not
   support yet
 - [Plan](docs/PLAN.md) - what is built and what is coming

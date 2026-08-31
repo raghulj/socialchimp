@@ -1,0 +1,906 @@
+"""The part of the framework helpers that is the same everywhere.
+
+Nothing here imports Django, FastAPI or Flask, and nothing here knows what a
+request object looks like. Each framework gets a file of its own, and every
+one of those does the same three things: take the request apart into plain
+values, call something here, turn the `Reply` back into that framework's own
+response.
+
+Four pieces live here.
+
+`Routes` is signing in and receiving a webhook, written once. Every one of
+its methods is a wrapper around a `SocialChimp` method your app could call
+itself, so none of this is the only way in - your own URLs, your own login
+checks, or a framework nobody has written a file for are not special cases.
+
+`Reply` is what a route decided to answer: a status, some bytes, a content
+type and any headers. `status_for` is the table that turns one of our errors
+into a status code.
+
+`LoginMemory` is where a half-finished sign-in waits. The two halves of a
+sign-in are two separate requests, and the second one needs what the first
+was handed - so it has to be written down somewhere your app controls.
+
+`sync_storage` lets you write the five storage methods as ordinary blocking
+code. Most apps with a database already have a blocking layer, and there is
+no reason to rewrite it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import math
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from secrets import token_urlsafe
+from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
+from urllib.parse import parse_qsl
+
+from socialchimp.errors import (
+    AuthError,
+    ConfigError,
+    InvalidPostError,
+    NetworkError,
+    NotAllowedError,
+    NotFoundError,
+    NotSupportedError,
+    PlatformError,
+    RateLimitError,
+    SignatureError,
+    SocialChimpError,
+)
+from socialchimp.events import answer_setup_check
+from socialchimp.features import Feature
+from socialchimp.platform import (
+    AskForDetails,
+    CanCheckSignature,
+    ChooseAccount,
+    SendToNetwork,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
+
+    from socialchimp.client import SocialChimp
+    from socialchimp.events import DeliverUpdate
+    from socialchimp.models import AppCredentials, Connection, RawData
+    from socialchimp.platform import LoginStep
+    from socialchimp.storage import Storage
+
+__all__ = [
+    "InMemoryLoginMemory",
+    "LoginMemory",
+    "Reply",
+    "Routes",
+    "RunInThread",
+    "SyncStorage",
+    "in_a_thread",
+    "read_form",
+    "status_for",
+    "sync_storage",
+]
+
+logger = logging.getLogger(__name__)
+
+# How much randomness goes into a state we make up for an app that did not
+# choose one. The state is the key a half-finished sign-in is filed under, so
+# it has to be unguessable, not merely unique.
+_STATE_BYTES = 32
+
+# How many half-finished sign-ins `InMemoryLoginMemory` keeps before it
+# starts forgetting the oldest.
+_DEFAULT_MEMORY_SIZE = 10_000
+
+T = TypeVar("T")
+
+# Our errors and the status code each one deserves, most particular first.
+# `TokenExpiredError` is an `AuthError` and both answer 401, so the order
+# between those two does not matter; the order is written down anyway,
+# because the next error added may not be so forgiving.
+_STATUSES: tuple[tuple[type[SocialChimpError], int], ...] = (
+    (SignatureError, 401),
+    (AuthError, 401),
+    (NotAllowedError, 403),
+    (NotFoundError, 404),
+    (RateLimitError, 429),
+    (InvalidPostError, 400),
+    (NotSupportedError, 400),
+    (NetworkError, 502),
+    (PlatformError, 502),
+    (ConfigError, 500),
+)
+
+
+def status_for(error: SocialChimpError) -> int:
+    """Return the status code that fits one of our errors.
+
+    Args:
+        error: What went wrong.
+
+    Returns:
+        The status to answer with. Anything we have no particular answer for
+        is 500, on the basis that an error we did not plan for is our
+        problem and not the caller's.
+    """
+    for kind, status in _STATUSES:
+        if isinstance(error, kind):
+            return status
+    return 500
+
+
+@dataclass(frozen=True, slots=True)
+class Reply:
+    """What a route decided to answer, before any framework is involved.
+
+    Plain bytes and a status, so the same decision can become a FastAPI
+    `Response`, a Flask one or a Django one without being decided three
+    times.
+
+    Attributes:
+        status: The HTTP status code.
+        body: Exactly what to send, already encoded.
+        content_type: What to say the body is.
+        headers: Anything else to send, such as where to redirect to.
+    """
+
+    status: int
+    body: bytes
+    content_type: str = "application/json"
+    headers: Mapping[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def json(cls, data: Mapping[str, object], *, status: int = 200) -> Reply:
+        """Answer with a JSON object.
+
+        Args:
+            data: What to send.
+            status: The status code.
+
+        Returns:
+            The reply.
+        """
+        return cls(status=status, body=json.dumps(data).encode())
+
+    @classmethod
+    def text(cls, words: str, *, status: int = 200) -> Reply:
+        """Answer with plain text.
+
+        Args:
+            words: What to send.
+            status: The status code.
+
+        Returns:
+            The reply.
+        """
+        return cls(
+            status=status,
+            body=words.encode(),
+            content_type="text/plain; charset=utf-8",
+        )
+
+    @classmethod
+    def redirect(cls, url: str) -> Reply:
+        """Send the person's browser somewhere else.
+
+        Args:
+            url: Where to send them.
+
+        Returns:
+            The reply.
+        """
+        return cls(status=302, body=b"", headers={"Location": url})
+
+    @classmethod
+    def for_error(cls, error: SocialChimpError) -> Reply:
+        """Turn one of our errors into an answer.
+
+        Args:
+            error: What went wrong.
+
+        Returns:
+            The reply, with the status `status_for` chose.
+        """
+        if isinstance(error, SignatureError):
+            # Every one of these is answered the same way, on purpose. Saying
+            # which check failed - missing header, wrong digest, too old -
+            # only helps whoever is guessing. See `errors.SignatureError`.
+            return cls.json({"error": "Refused."}, status=401)
+
+        headers: dict[str, str] = {}
+        if isinstance(error, RateLimitError) and error.retry_after is not None:
+            # Rounded up, because a client that waits the rounded-down number
+            # of seconds arrives a moment early and is refused again.
+            headers["Retry-After"] = str(math.ceil(error.retry_after))
+
+        return cls(
+            status=status_for(error),
+            body=json.dumps({"error": str(error), "platform": error.platform}).encode(),
+            headers=headers,
+        )
+
+
+def read_form(body: bytes) -> dict[str, str]:
+    """Read the values out of a form's body.
+
+    Used instead of each framework's own form parsing, so that all three
+    behave identically and none of them needs an extra package installed to
+    read an ordinary HTML form.
+
+    Args:
+        body: The raw body of a form post.
+
+    Returns:
+        The values, by name.
+    """
+    return dict(parse_qsl(body.decode()))
+
+
+@runtime_checkable
+class LoginMemory(Protocol):
+    """Where a half-finished sign-in waits for the person to come back.
+
+    Signing in is two requests. The first one is handed something the second
+    one needs - the secret half of a PKCE pair, which server the person
+    named, and later the resume token from `ChooseAccount`. socialchimp
+    cannot keep any of that for you: the person can be sent away by one web
+    worker and come back to another, so anything held in one process works
+    on your laptop and fails in production.
+
+    Everything is filed under the sign-in's `state`, which is the one value
+    that makes the round trip through the network.
+
+    Back this with whatever your app already has - a session, a Redis key
+    with a short life, a small table. `InMemoryLoginMemory` is here to try
+    things out with.
+    """
+
+    async def keep(self, state: str, data: RawData) -> None:
+        """Write down what the rest of this sign-in will need.
+
+        Args:
+            state: The sign-in's state, which is the key.
+            data: What to keep. Plain JSON-shaped data.
+        """
+        ...
+
+    async def look_up(self, state: str) -> RawData | None:
+        """Read back what was kept for one sign-in.
+
+        Args:
+            state: The sign-in's state.
+
+        Returns:
+            What was kept, or `None` if there is nothing under that state.
+        """
+        ...
+
+    async def forget(self, state: str) -> None:
+        """Throw away one sign-in's notes. Quiet if there are none.
+
+        Args:
+            state: The sign-in's state.
+        """
+        ...
+
+
+class InMemoryLoginMemory:
+    """A memory that lives in one process and is lost on restart.
+
+    Fine for trying things out and for tests. Not fine in production: two
+    web workers do not share it, so a person sent away by one and returning
+    to another is told their sign-in has expired, and every restart loses
+    every sign-in in flight.
+
+    Use your session, or a Redis key, or a small table instead.
+
+    What is kept is capped, so that abandoned sign-ins cannot fill up the
+    process. Once it is full the oldest are forgotten first.
+    """
+
+    def __init__(self, max_size: int = _DEFAULT_MEMORY_SIZE) -> None:
+        """Start with nothing remembered.
+
+        Args:
+            max_size: How many half-finished sign-ins to hold before
+                forgetting the oldest.
+        """
+        self._max_size = max_size
+        self._kept: OrderedDict[str, RawData] = OrderedDict()
+
+    async def keep(self, state: str, data: RawData) -> None:
+        """Write down what the rest of this sign-in will need.
+
+        Args:
+            state: The sign-in's state, which is the key.
+            data: What to keep.
+        """
+        self._kept[state] = data
+        while len(self._kept) > self._max_size:
+            self._kept.popitem(last=False)
+
+    async def look_up(self, state: str) -> RawData | None:
+        """Read back what was kept for one sign-in.
+
+        Args:
+            state: The sign-in's state.
+
+        Returns:
+            What was kept, or `None`.
+        """
+        return self._kept.get(state)
+
+    async def forget(self, state: str) -> None:
+        """Throw away one sign-in's notes.
+
+        Args:
+            state: The sign-in's state.
+        """
+        self._kept.pop(state, None)
+
+
+@runtime_checkable
+class SyncStorage(Protocol):
+    """`Storage`, written the ordinary blocking way.
+
+    The same five methods, none of them `async`. Most apps with a database
+    already have a layer like this - the Django ORM, a psycopg cursor, a
+    SQLAlchemy session - and there is no reason to rewrite it as async code
+    just to keep socialchimp happy.
+
+    Hand one to `sync_storage` and it becomes a `Storage` the core can use.
+    """
+
+    def get_connection(self, connection_id: str) -> Connection | None:
+        """Look up one connected account.
+
+        Args:
+            connection_id: The id your app gave this connection.
+
+        Returns:
+            The connection, or `None` if there is no such connection.
+        """
+        ...
+
+    def save_connection(self, connection: Connection) -> None:
+        """Write a connection, replacing any earlier one with the same id.
+
+        Args:
+            connection: The connection to write.
+        """
+        ...
+
+    def delete_connection(self, connection_id: str) -> None:
+        """Remove a connection. Quiet if it is already gone.
+
+        Args:
+            connection_id: The id your app gave this connection.
+        """
+        ...
+
+    def get_app(self, platform: str, host: str | None) -> AppCredentials | None:
+        """Look up your app's credentials for one network.
+
+        Args:
+            platform: Which network.
+            host: Which server, or `None`.
+
+        Returns:
+            The credentials, or `None` if none are stored yet.
+        """
+        ...
+
+    def save_app(self, app: AppCredentials) -> None:
+        """Write your app's credentials for one network.
+
+        Args:
+            app: The credentials to write.
+        """
+        ...
+
+
+class RunInThread(Protocol):
+    """Runs one piece of blocking work without blocking the event loop.
+
+    There is more than one right answer to this, which is why it is a
+    setting rather than a decision. `in_a_thread` hands the work to any
+    spare thread, which is what a plain app wants. Django wants it run on
+    the thread the request arrived on, because that is where its database
+    connection lives - see `socialchimp.contrib.django`.
+    """
+
+    async def __call__(self, work: Callable[[], T]) -> T:
+        """Run the work and hand back what it returned.
+
+        Args:
+            work: The blocking call, already given its arguments.
+
+        Returns:
+            Whatever the work returned.
+        """
+        ...
+
+
+async def in_a_thread(work: Callable[[], T]) -> T:
+    """Run blocking work on a spare thread.
+
+    Args:
+        work: The blocking call, already given its arguments.
+
+    Returns:
+        Whatever the work returned.
+    """
+    return await asyncio.to_thread(work)
+
+
+class _StorageInAThread:
+    """A `SyncStorage` dressed up as the `Storage` the core asks for."""
+
+    def __init__(self, inner: SyncStorage, run: RunInThread) -> None:
+        """Wrap one blocking storage class.
+
+        Args:
+            inner: The storage class you wrote.
+            run: How to run one of its methods.
+        """
+        self._inner = inner
+        self._run = run
+
+    async def get_connection(self, connection_id: str) -> Connection | None:
+        """Look up one connected account.
+
+        Args:
+            connection_id: The id your app gave this connection.
+
+        Returns:
+            The connection, or `None`.
+        """
+        return await self._run(lambda: self._inner.get_connection(connection_id))
+
+    async def save_connection(self, connection: Connection) -> None:
+        """Write a connection.
+
+        Args:
+            connection: The connection to write.
+        """
+        await self._run(lambda: self._inner.save_connection(connection))
+
+    async def delete_connection(self, connection_id: str) -> None:
+        """Remove a connection.
+
+        Args:
+            connection_id: The id your app gave this connection.
+        """
+        await self._run(lambda: self._inner.delete_connection(connection_id))
+
+    async def get_app(self, platform: str, host: str | None) -> AppCredentials | None:
+        """Look up your app's credentials for one network.
+
+        Args:
+            platform: Which network.
+            host: Which server, or `None`.
+
+        Returns:
+            The credentials, or `None`.
+        """
+        return await self._run(lambda: self._inner.get_app(platform, host))
+
+    async def save_app(self, app: AppCredentials) -> None:
+        """Write your app's credentials for one network.
+
+        Args:
+            app: The credentials to write.
+        """
+        await self._run(lambda: self._inner.save_app(app))
+
+
+def sync_storage(inner: SyncStorage, *, run: RunInThread | None = None) -> Storage:
+    """Let the core use a storage class you wrote as blocking code.
+
+    Args:
+        inner: Your storage class, with the five methods written the
+            ordinary way.
+        run: How to run one of those methods. Left out, each call goes to a
+            spare thread, which is right for anything but Django - see
+            `socialchimp.contrib.django.orm_storage`.
+
+    Returns:
+        A `Storage` to hand to `SocialChimp`.
+    """
+    return _StorageInAThread(inner, run if run is not None else in_a_thread)
+
+
+class Routes:
+    """Signing in and receiving a webhook, with no framework in sight.
+
+    Each method takes plain values - a network's name, a mapping of query
+    values, the raw bytes of a body - and hands back a `Reply`. A framework
+    file does the taking apart and the putting back together, and nothing
+    else.
+
+    Every method is a wrapper around a `SocialChimp` method you could call
+    yourself, and every one answers rather than raises: an error becomes a
+    `Reply` with a sensible status, so a route never has to catch anything.
+
+    Example:
+        routes = Routes(sc, redirect_uri="https://app.example/cb/{platform}")
+        reply = await routes.start("mastodon", {"host": "mastodon.social"})
+    """
+
+    def __init__(
+        self,
+        sc: SocialChimp,
+        *,
+        redirect_uri: str,
+        memory: LoginMemory | None = None,
+        scopes: Mapping[str, Sequence[str]] | None = None,
+        secrets: Mapping[str, str] | None = None,
+        setup_tokens: Mapping[str, str] | None = None,
+        deliver: DeliverUpdate | None = None,
+    ) -> None:
+        """Say how these routes should behave.
+
+        Args:
+            sc: The client to work through. Keep one for the life of your
+                process - see `SocialChimp`.
+            redirect_uri: Where networks send people back to. `{platform}`
+                in it is replaced by the network's name, so one address
+                covers all of them. It has to match what each network's
+                developer portal has on file.
+            memory: Where a half-finished sign-in waits. Left out, one that
+                lives in this process is used, which is fine to try things
+                out with and wrong in production - see `LoginMemory`.
+            scopes: Permissions to ask each network for, by network name.
+                Anything not named here uses that platform's own defaults.
+            secrets: The secret each network signs its webhooks with, by
+                network name. Meta calls this the app secret.
+            setup_tokens: The token each network's setup check quotes back,
+                by network name. Meta's forms call this the verify token.
+            deliver: Where a webhook's update goes. `Dispatcher.deliver`
+                fits exactly. Left out, updates are checked and dropped,
+                which is only useful while you are getting a URL working.
+        """
+        self._sc = sc
+        self._redirect_uri = redirect_uri
+        self._memory = memory if memory is not None else InMemoryLoginMemory()
+        self._scopes = scopes if scopes is not None else {}
+        self._secrets = secrets if secrets is not None else {}
+        self._setup_tokens = setup_tokens if setup_tokens is not None else {}
+        self._deliver = deliver
+
+    def _redirect_for(self, platform: str) -> str:
+        """Work out where this network should send people back to.
+
+        Args:
+            platform: Which network.
+
+        Returns:
+            The address, with the network's name filled in.
+        """
+        return self._redirect_uri.replace("{platform}", platform)
+
+    def _scopes_for(self, platform: str) -> tuple[str, ...]:
+        """Work out what to ask this network's permission for.
+
+        Args:
+            platform: Which network.
+
+        Returns:
+            The scopes, or an empty tuple to use the platform's defaults.
+        """
+        return tuple(self._scopes.get(platform, ()))
+
+    async def start(self, platform: str, params: Mapping[str, str]) -> Reply:
+        """Begin signing someone in.
+
+        Args:
+            platform: Which network, for example `"mastodon"`.
+            params: The query values. `state` is yours to choose and comes
+                back to you at the end; one is made up if you leave it out.
+                `host` names the server, for networks that have more than
+                one.
+
+        Returns:
+            A redirect to the network for most networks. For a network
+            signed in to with an app password or a bot token, the fields to
+            show a person, as JSON.
+        """
+        try:
+            state = params.get("state") or token_urlsafe(_STATE_BYTES)
+            host = params.get("host")
+            step = await self._sc.start_login(
+                platform,
+                redirect_uri=self._redirect_for(platform),
+                scopes=self._scopes_for(platform),
+                host=host,
+                state=state,
+            )
+            return await self._next(state, {"host": host}, step)
+        except SocialChimpError as error:
+            return Reply.for_error(error)
+
+    async def finish(self, platform: str, params: Mapping[str, str]) -> Reply:
+        """Carry on after the person comes back from the network.
+
+        Args:
+            platform: Which network.
+            params: The query values the network sent back, or - for a
+                network that asked for details instead - what the person
+                typed. Either way it has to carry the same `state` the
+                sign-in started with.
+
+        Returns:
+            The connected account as JSON, or the accounts to choose
+            between when the network needs to know which page or channel to
+            use.
+        """
+        state = params.get("state")
+        if not state:
+            return _needs("state", "The network should have sent it back.")
+
+        kept = await self._memory.look_up(state)
+        if kept is None:
+            return _unknown_state()
+
+        try:
+            step = await self._sc.finish_login(
+                platform,
+                callback=params,
+                redirect_uri=self._redirect_for(platform),
+                scopes=self._scopes_for(platform),
+                host=kept.get("host"),
+                state=state,
+                remember=kept.get("remember"),
+            )
+            return await self._next(state, kept, step)
+        except SocialChimpError as error:
+            return Reply.for_error(error)
+
+    async def choose(self, platform: str, params: Mapping[str, str]) -> Reply:
+        """Carry on a sign-in after the person picked which account to use.
+
+        Args:
+            platform: Which network.
+            params: `state` from the sign-in, and `account_id` naming which
+                of the offered accounts they picked.
+
+        Returns:
+            The connected account as JSON.
+        """
+        state = params.get("state")
+        if not state:
+            return _needs("state", "It is the one from the sign-in.")
+
+        account_id = params.get("account_id")
+        if not account_id:
+            return _needs("account_id", "It is the id of the account they picked.")
+
+        kept = await self._memory.look_up(state)
+        if kept is None:
+            return _unknown_state()
+
+        resume_token = kept.get("resume_token")
+        if not isinstance(resume_token, str):
+            message = (
+                "This sign-in did not stop to ask which account to use, so "
+                "there is nothing to carry on from. Only call this after a "
+                "callback answered with choose_account."
+            )
+            return Reply.json({"error": message}, status=400)
+
+        try:
+            step = await self._sc.choose(
+                platform,
+                account_id=account_id,
+                resume_token=resume_token,
+                redirect_uri=self._redirect_for(platform),
+                scopes=self._scopes_for(platform),
+                host=kept.get("host"),
+                state=state,
+                remember=kept.get("remember"),
+            )
+            return await self._next(state, kept, step)
+        except SocialChimpError as error:
+            return Reply.for_error(error)
+
+    async def _next(self, state: str, kept: RawData, step: LoginStep) -> Reply:
+        """Write down whatever the next request needs, and say what to do.
+
+        Args:
+            state: The state this sign-in is filed under.
+            kept: What is already written down for it.
+            step: Where the sign-in got to.
+
+        Returns:
+            The reply for this step.
+        """
+        if isinstance(step, SendToNetwork):
+            # Filed under the state the platform is actually sending, which
+            # is the one that will come back in the callback. It is normally
+            # the state we passed in, but a platform is free to make its own
+            # when we did not choose one.
+            await self._memory.keep(
+                step.state,
+                {**kept, "remember": dict(step.remember)},
+            )
+            return Reply.redirect(step.url)
+
+        if isinstance(step, AskForDetails):
+            await self._memory.keep(state, {**kept, "remember": {}})
+            return Reply.json(
+                {
+                    "step": "ask_for_details",
+                    "state": state,
+                    "help_url": step.help_url,
+                    "fields": [
+                        {
+                            "name": one.name,
+                            "label": one.label,
+                            "secret": one.secret,
+                            "help_text": one.help_text,
+                        }
+                        for one in step.fields
+                    ],
+                }
+            )
+
+        if isinstance(step, ChooseAccount):
+            # The resume token stays here and is never sent to the browser.
+            # On some networks it carries the tokens themselves, so a hidden
+            # form field would be handing them out - see `ChooseAccount`.
+            await self._memory.keep(
+                state,
+                {**kept, "resume_token": step.resume_token},
+            )
+            return Reply.json(
+                {
+                    "step": "choose_account",
+                    "state": state,
+                    "options": [
+                        {"id": one.id, "name": one.name, "kind": one.kind}
+                        for one in step.options
+                    ],
+                }
+            )
+
+        await self._memory.forget(state)
+        return Reply.json(
+            {
+                "step": "connected",
+                "connection_id": step.connection.id,
+                "platform": step.connection.platform,
+                "account_name": step.connection.account_name,
+            }
+        )
+
+    async def webhook(
+        self,
+        platform: str,
+        body: bytes,
+        headers: Mapping[str, str],
+    ) -> Reply:
+        """Receive one request a network pushed to us.
+
+        The body must be the **raw bytes** of the request, exactly as they
+        arrived. A signature is over those exact bytes, so a framework that
+        parses the JSON and builds it again has already broken it - the
+        spacing and the key order will not match. Read the body, pass it
+        here, and let `read_update` do the parsing afterwards. This is the
+        single most common reason a correct signature appears to fail.
+
+        Args:
+            platform: Which network.
+            body: The request body, untouched.
+            headers: The request headers.
+
+        Returns:
+            200 when the request was signed properly and handed on. 401 when
+            it was not, with nothing said about which check failed.
+        """
+        try:
+            pusher = self._sc.platform_for(platform)
+
+            if Feature.PUSH_UPDATES not in pusher.features:
+                raise NotSupportedError(
+                    platform=pusher.name,
+                    what="pushing updates to a URL of yours",
+                    suggestion=(
+                        "Ask it on a timer instead, with socialchimp.events.Poller."
+                    ),
+                )
+
+            if not isinstance(pusher, CanCheckSignature):
+                message = (
+                    f"The {pusher.name} platform says it pushes updates, but "
+                    f"its class has no check_signature method. That is a "
+                    f"mistake in the platform file: either add it or take "
+                    f"PUSH_UPDATES off its list."
+                )
+                raise ConfigError(message)
+
+            secret = self._secrets.get(platform)
+            if secret is None:
+                message = (
+                    f"No webhook secret is stored for {platform}, so nothing "
+                    f"it sends can be checked. Add it to the secrets given "
+                    f"to Routes."
+                )
+                raise ConfigError(message)
+
+            pusher.check_signature(body, headers, secret=secret)
+            update = pusher.read_update(body, headers)
+        except SocialChimpError as error:
+            return Reply.for_error(error)
+
+        if self._deliver is None:
+            logger.warning(
+                "Update %s from %s was checked and dropped, because these "
+                "routes were given nowhere to hand it on to.",
+                update.id,
+                platform,
+            )
+        else:
+            await self._deliver(update)
+
+        return Reply.json({"ok": True})
+
+    async def setup_check(self, platform: str, params: Mapping[str, str]) -> Reply:
+        """Answer the one-off check a network makes before it will send us anything.
+
+        Meta does a GET at the same address with a token you chose and a
+        challenge to echo back. Get it wrong and it says the URL could not
+        be verified, without saying why.
+
+        Args:
+            platform: Which network.
+            params: The query values from the check.
+
+        Returns:
+            The challenge as plain text, or 403 if the token was not ours.
+        """
+        try:
+            expected = self._setup_tokens.get(platform)
+            if expected is None:
+                message = (
+                    f"No setup token is stored for {platform}, so there is "
+                    f"nothing to check this against. Add it to the "
+                    f"setup_tokens given to Routes - it is the value you "
+                    f"typed into that network's dashboard."
+                )
+                raise ConfigError(message)
+            return Reply.text(answer_setup_check(params, expected_token=expected))
+        except SignatureError:
+            # 403 rather than the 401 a bad webhook signature gets. Meta's
+            # own setup flow expects it, and this is not a signed request -
+            # it is a token quoted back at us.
+            return Reply.json({"error": "Refused."}, status=403)
+        except SocialChimpError as error:
+            return Reply.for_error(error)
+
+
+def _needs(name: str, why: str) -> Reply:
+    """Say that a request left out something it had to carry.
+
+    Args:
+        name: The value that is missing.
+        why: A sentence saying where it should have come from.
+
+    Returns:
+        A 400 reply.
+    """
+    return Reply.json({"error": f"This request has no {name}. {why}"}, status=400)
+
+
+def _unknown_state() -> Reply:
+    """Say that we have no note of the sign-in this request claims to be.
+
+    Returns:
+        A 400 reply.
+    """
+    message = (
+        "There is no sign-in waiting under that state. Either it was never "
+        "started here, or it has been finished or forgotten already. Start "
+        "the sign-in again."
+    )
+    return Reply.json({"error": message}, status=400)
