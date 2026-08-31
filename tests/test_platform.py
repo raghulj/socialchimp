@@ -10,6 +10,7 @@ from socialchimp import (
     Limits,
     Post,
     PostResult,
+    PostState,
     RawData,
     Token,
 )
@@ -17,8 +18,11 @@ from socialchimp.events import Update, UpdateKind
 from socialchimp.platform import (
     AccountChoice,
     AskForDetails,
+    CanAnswerSetupCheck,
     CanCheckSignature,
+    CanCheckState,
     CanCreateApp,
+    CanReadPushedUpdates,
     CanReadUpdates,
     ChooseAccount,
     Finished,
@@ -248,6 +252,54 @@ class TestUpdateExtras:
         assert isinstance(platform, CanReadUpdates)
         assert isinstance(platform, CanCheckSignature)
         assert Feature.PUSH_UPDATES in platform.features
+
+
+class TestCheckingOnAPostAfterwards:
+    def test_a_network_that_finishes_while_we_wait_has_no_check_state(self) -> None:
+        # Nothing is stubbed out. Most networks are done by the time publish
+        # returns, so they simply have no check_state.
+        assert not isinstance(FakePlatform(), CanCheckState)
+
+    def test_a_network_that_keeps_working_afterwards_says_so(self) -> None:
+        class StillEncoding(FakePlatform):
+            async def check_state(
+                self, connection: Connection, post_id: str
+            ) -> PostResult:
+                return PostResult(id=post_id, state=PostState.PROCESSING)
+
+        assert isinstance(StillEncoding(), CanCheckState)
+
+
+class TestAnsweringTheSetupCheck:
+    def test_a_network_that_asks_nothing_first_has_no_answer(self) -> None:
+        assert not isinstance(FakePlatform(), CanAnswerSetupCheck)
+
+    def test_a_network_that_asks_before_pushing_says_so(self) -> None:
+        class AsksFirst(FakePlatform):
+            def answer_setup_check(
+                self, params: Mapping[str, str], *, verify_token: str
+            ) -> str:
+                return params["hub.challenge"]
+
+        assert isinstance(AsksFirst(), CanAnswerSetupCheck)
+
+
+class TestReadingAWholePushedMessage:
+    def test_a_network_we_cannot_unpack_a_message_from_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanReadPushedUpdates)
+
+    def test_reading_every_update_is_separate_from_asking_for_them(self) -> None:
+        # CanReadUpdates is "ask the network what has happened".
+        # CanReadPushedUpdates is "unpack a message the network sent us".
+        # A network can have either, both or neither.
+        class Batches(FakePlatform):
+            def read_updates(self, body: bytes) -> list[Update]:
+                return []
+
+        platform = Batches()
+
+        assert isinstance(platform, CanReadPushedUpdates)
+        assert not isinstance(platform, CanReadUpdates)
 
 
 class TestRememberingBetweenTheTwoHalves:

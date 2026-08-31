@@ -35,7 +35,9 @@ from socialchimp import (
 from socialchimp.features import TextCount
 from socialchimp.http import Retries
 from socialchimp.platform import (
+    CanAnswerSetupCheck,
     CanCheckSignature,
+    CanReadPushedUpdates,
     CanResumeLogin,
     ChooseAccount,
     Finished,
@@ -1779,6 +1781,15 @@ class TestRequestsInstagramPushesToUs:
                 body, signed(body, secret="someone-elses"), secret=APP_SECRET
             )
 
+    def test_a_typed_caller_can_reach_the_setup_check_and_the_updates(
+        self,
+        platform: InstagramPlatform,
+    ) -> None:
+        # SocialChimp.answer_setup_check and SocialChimp.read_updates
+        # both look for these before they will hand anything on.
+        assert isinstance(platform, CanAnswerSetupCheck)
+        assert isinstance(platform, CanReadPushedUpdates)
+
     def test_it_answers_the_one_off_setup_check(
         self,
         platform: InstagramPlatform,
@@ -1903,7 +1914,11 @@ class TestRequestsInstagramPushesToUs:
             }
         ).encode()
 
-        assert len(platform.read_updates(body)) == 2
+        first, second = platform.read_updates(body)
+
+        assert first.raw == {"id": "1"}
+        assert second.raw == {"id": "2"}
+        assert first.envelope["id"] == IG_ID
 
     def test_a_message_with_nothing_in_it_is_not_an_error(
         self,

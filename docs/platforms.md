@@ -12,7 +12,8 @@ things about it that surprise people.
 | Instagram | yes | by hand, reviewed | **no** | yes | yes | no | yes |
 | TikTok | yes | by hand, audited | **no** | no | yes | no | yes |
 | Threads | yes | by hand, **its own app id** | yes | yes | yes | no | yes |
-| X, Pinterest | not yet | | | | | | |
+| X | yes | by hand, **paid plan** | yes | yes | yes | no | on a timer |
+| Pinterest | yes | by hand, reviewed | **no** | yes | yes | no | **no** |
 
 "On a timer" means the network has no way to tell us when something happens,
 so socialchimp checks instead. Your code gets the same updates either way.
@@ -259,6 +260,116 @@ Almost nothing else about it lives where the rest of Meta lives:
   `mentions`, `publish` and `delete`, and **nothing at all where a private
   account is involved**. Verify with `check_signature` on the raw bytes,
   before anything parses them.
+
+---
+
+## X
+
+**Posting costs money, and there is no fixed price to write down.** Access to
+the API that lets an app publish is paid and tiered, what a plan includes
+changes without notice, and any number put here would be out of date within
+months. **When your plan does not cover something, X does not say "you have
+not paid" — it answers 403 with `client-not-enrolled`, which reads exactly
+like a scope your app forgot to ask for**, and people spend afternoons
+rewriting scopes over it. socialchimp names this one on sight: the message
+says plainly that the plan refused this, not your code, and points at
+[console.x.com](https://console.x.com), where you look up and change what
+your app is allowed to do.
+
+**You create the app and its OAuth client by hand**, at
+[developer.x.com](https://developer.x.com/en/portal/dashboard). There is no
+`create_app` here — somebody has to fill in the form, agree to the terms,
+choose a plan, and add your redirect address to the OAuth client themselves.
+
+- **Ask for `offline.access` or tokens die in two hours.** Leave it out of
+  your scopes and X sends back no refresh token at all — the access token
+  stops working two hours later and the person has to sign in again. It works
+  perfectly the morning you write it and starts logging people out after
+  lunch.
+- **Post options**: `reply_settings` (`everyone`, `mentionedUsers`,
+  `following`, `subscribers`), `quote_tweet_id`.
+- **The limit is 280 characters**, counted the way JavaScript counts them —
+  an emoji is two. X's paid subscribers can post longer ones, and nothing in
+  the API says whether the account we are posting as is one of them, so 280
+  is what socialchimp checks for everybody; a subscriber's own longer post
+  still gets through by asking for the limit they know they have.
+- **A thread is posts chained together, not one thing X has.**
+  `publish_thread` sends each one pointed at the id before it. If one fails
+  partway through, nothing already published is deleted and nothing after it
+  is sent — you get a `PartialThreadError` naming how far it got, so you can
+  carry the thread on from the last id once the problem is fixed.
+- **Files go up the old way**: INIT, then APPEND once per piece, then
+  FINALIZE, and for video a STATUS call in a loop until X finishes encoding
+  it. Sent a piece at a time off disk, so a large video does not have to fit
+  in memory.
+- **Deleting works.**
+- **No scheduling.** `Feature.SCHEDULE` is missing, so a post with
+  `publish_at` is refused rather than published now.
+- **No app to create.** See above.
+- **No pushed updates.** X's streaming and account-activity products are
+  both behind paid plans of their own, so mentions are read on a timer
+  through `fetch_updates` instead, which works on every plan that can read at
+  all.
+
+## Pinterest
+
+**Every pin needs a board.** Pinterest has no feed to post to — there is no
+such thing as a pin without one — and socialchimp never chooses one for you:
+name `board_id` on the post, or save one on the connection's `extra` if your
+app has a sensible default. A pin naming neither is refused before anything
+is sent, with a message naming both routes. `boards(connection)` lists what
+an account has, so you can build a picker.
+
+**A new app gets Trial access, and its pins are visible only to you.** Your
+code runs against the real API, with real credentials, and gets back real
+2xx replies carrying real pin ids — and nobody but the person who made them
+can see the pins. Not the public profile, not anybody's home feed, not a
+friend looking at the account. Nothing anywhere says this is happening, so
+the first thing to check when a pin "did not appear" is whether the app is
+still on Trial. Getting to Standard access is a review: a privacy policy and
+a video recording of your app taking a real person through the real sign-in.
+Check
+[the access tiers page](https://developers.pinterest.com/docs/key-concepts/access-tiers/)
+— there is no field anywhere in the API that says which tier you are on.
+
+**You create the app by hand** at
+[developers.pinterest.com/apps](https://developers.pinterest.com/apps).
+
+- **There is no PKCE.** Pinterest's v5 API refuses a `code_challenge` rather
+  than accepting it, so `SendToNetwork.remember` comes back empty here — that
+  is a real property of Pinterest, not something missing.
+- **Creating a pin needs all four scopes**: `boards:read`, `boards:write`,
+  `pins:read`, `pins:write`. Asking for only the `pins:` pair gets a 403 on
+  the first pin, which reads like a problem with the board rather than a
+  permission never asked for.
+- **Post options**: `board_id`, `board_section_id`, `title`, `link`,
+  `alt_text`, `dominant_color`.
+- **`Post.text` is the pin's description, and `title` is a separate
+  setting** — the thing people trip over. The description takes 800
+  characters, the title 100.
+- **Tokens last 30 days; the refresh token lasts 60 and is replaced every
+  time you use one.** An account nobody has posted from in two months needs
+  signing in again, because its refresh token ran out before anything
+  renewed it. That day is on `Token.refresh_token_expires_at`, so you can put
+  a "reconnect Pinterest" prompt in front of somebody before a post fails
+  rather than after.
+- **Pinterest really will fetch a picture from a web address.**
+  `Media.from_url(...)` costs nothing here. Two to five pictures become one
+  pin people can swipe through — all files or all links, never a mixture.
+- **Video is three steps and a different server**: registered with
+  Pinterest, uploaded to Amazon with a form Pinterest hands you (no account
+  token goes with it — the upload is not going to Pinterest), then waited
+  for. Pinterest gives out one form for one upload, so the whole file goes in
+  a single request and really does cost its own size in memory.
+- **Deleting works.**
+- **No text-only pin.** Every pin needs a picture or a video;
+  `Feature.POST_TEXT` is off and a post with nothing attached is refused.
+- **No comments at all, so no replies.** There is no comment endpoint
+  anywhere in v5; a post with `reply_to` is refused by name.
+- **No scheduling.** `Feature.SCHEDULE` is missing.
+- **No updates worth having.** No webhooks for ordinary pins, and nothing in
+  the API reports that something *happened* — so there is no `fetch_updates`
+  here and `Feature.PUSH_UPDATES` is off.
 
 ---
 

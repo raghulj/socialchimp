@@ -35,8 +35,10 @@ from socialchimp import (
 from socialchimp.features import TextCount
 from socialchimp.http import Retries
 from socialchimp.platform import (
+    CanAnswerSetupCheck,
     CanCheckSignature,
     CanDeletePosts,
+    CanReadPushedUpdates,
     CanResumeLogin,
     ChooseAccount,
     Finished,
@@ -1303,6 +1305,15 @@ class TestCheckingWhatFacebookPushed:
                 body, signed(body, secret="not-it"), secret=APP_SECRET
             )
 
+    def test_a_typed_caller_can_reach_the_setup_check_and_the_updates(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        # SocialChimp.answer_setup_check and SocialChimp.read_updates
+        # both look for these before they will hand anything on.
+        assert isinstance(platform, CanAnswerSetupCheck)
+        assert isinstance(platform, CanReadPushedUpdates)
+
     def test_it_answers_metas_one_off_setup_question(
         self,
         platform: FacebookPlatform,
@@ -1355,7 +1366,62 @@ class TestReadingWhatFacebookPushed:
         assert update.kind is UpdateKind.COMMENT_CREATED
         assert update.platform == "facebook"
         assert update.created_at == datetime.fromtimestamp(1_790_000_500, UTC)
-        assert update.raw["changes"][0]["value"]["message"] == "Lovely"
+        assert update.raw["message"] == "Lovely"
+
+    def test_each_update_carries_its_own_change_and_nothing_else(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        # One entry, two changes, two updates - and each `raw` is the change
+        # that update is about. A handler reads it straight, rather than
+        # walking the entry looking for its own change again.
+        body = json.dumps(
+            {
+                "object": "page",
+                "entry": [
+                    {
+                        "id": PAGE_ID,
+                        "time": 1_790_000_000,
+                        "changes": [
+                            {
+                                "field": "feed",
+                                "value": {
+                                    "item": "comment",
+                                    "verb": "add",
+                                    "comment_id": "c-1",
+                                    "message": "First",
+                                },
+                            },
+                            {
+                                "field": "feed",
+                                "value": {
+                                    "item": "comment",
+                                    "verb": "add",
+                                    "comment_id": "c-2",
+                                    "message": "Second",
+                                },
+                            },
+                        ],
+                    }
+                ],
+            }
+        ).encode()
+
+        first, second = platform.read_updates(body)
+
+        assert first.raw["message"] == "First"
+        assert second.raw["message"] == "Second"
+
+    def test_the_entry_it_arrived_in_is_kept_beside_the_change(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        # The page id and the time live out on the entry, so the entry is
+        # kept - just not where the change should be.
+        update = platform.read_update(a_push({"item": "comment", "verb": "add"}), {})
+
+        assert update.envelope["id"] == PAGE_ID
+        assert update.envelope["time"] == 1_790_000_000
 
     def test_it_names_the_connection_the_way_a_login_named_it(
         self,

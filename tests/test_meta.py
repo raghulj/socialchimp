@@ -989,7 +989,7 @@ class TestReadingWhatMetaPushed:
         with pytest.raises(PlatformError, match="could not be read"):
             changes_in(body, platform=PLATFORM)
 
-    def test_the_whole_entry_is_kept_for_anything_we_did_not_model(self) -> None:
+    def test_a_change_holds_what_happened_and_the_entry_it_came_in(self) -> None:
         entry = {
             "id": PAGE_ID,
             "time": 1_790_000_000,
@@ -997,7 +997,10 @@ class TestReadingWhatMetaPushed:
         }
         body = json.dumps({"entry": [entry]}).encode()
 
-        assert changes_in(body, platform=PLATFORM)[0].raw == entry
+        found = changes_in(body, platform=PLATFORM)[0]
+
+        assert found.value == {"item": "comment"}
+        assert found.envelope == entry
 
 
 # ---------------------------------------------------------------------------

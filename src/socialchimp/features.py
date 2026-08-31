@@ -300,6 +300,10 @@ class Limits:
             means.
         max_images: Most pictures allowed on one post.
         max_image_bytes: Largest picture file allowed.
+        max_title_length: Longest title allowed, on the networks that have a
+            title separate from the post itself. YouTube does, and requires
+            one; Pinterest and Reddit have them too. Worth reading if you
+            are showing somebody a character count as they type.
         max_videos: Most videos allowed on one post.
         max_video_bytes: Largest video file allowed.
         posts_left_today: How many more posts are allowed today, where the

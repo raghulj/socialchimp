@@ -36,9 +36,12 @@ if TYPE_CHECKING:
 __all__ = [
     "AccountChoice",
     "AskForDetails",
+    "CanAnswerSetupCheck",
     "CanCheckSignature",
+    "CanCheckState",
     "CanCreateApp",
     "CanDeletePosts",
+    "CanReadPushedUpdates",
     "CanReadUpdates",
     "CanResumeLogin",
     "ChooseAccount",
@@ -508,5 +511,111 @@ class CanCheckSignature(Protocol):
 
         Returns:
             What happened, in socialchimp's own words.
+        """
+        ...
+
+
+@runtime_checkable
+class CanCheckState(Protocol):
+    """Extra for networks that keep working after they accept a post.
+
+    YouTube encodes a video for minutes, sometimes hours. TikTok can put one
+    in somebody's drafts instead of publishing it. Both answer `publish`
+    before they have finished, so a `PostResult` that comes back
+    `PROCESSING` is not the end of the story - this is how an app finds out
+    the rest of it.
+
+    `Account.check_state` is what your app calls. It looks for this, renews
+    the token, and hands the connection down.
+    """
+
+    async def check_state(self, connection: Connection, post_id: str) -> PostResult:
+        """Ask the network how far it has got with a post.
+
+        Called with both arguments by position, so the order matters and
+        the names do not.
+
+        Args:
+            connection: The account the post belongs to, with a token that
+                works right now.
+            post_id: The network's identifier for the post, which is what
+                `publish` handed back.
+
+        Returns:
+            Where the post has got to now. The same shape `publish` gave,
+            so an app can treat the two the same way.
+        """
+        ...
+
+
+@runtime_checkable
+class CanAnswerSetupCheck(Protocol):
+    """Extra for networks that ask a question before they will push anything.
+
+    Facebook, Instagram and Threads all do this. Point Meta at a URL of
+    yours and it does a GET to it first, carrying a token you chose and a
+    challenge to echo back. Get it wrong and Meta says the URL could not be
+    verified, without saying why.
+
+    This happens before anybody has connected an account, so there is no
+    connection to hang it on. `SocialChimp.answer_setup_check` is what your
+    app calls.
+    """
+
+    def answer_setup_check(
+        self,
+        params: Mapping[str, str],
+        *,
+        verify_token: str,
+    ) -> str:
+        """Answer the one-off check and hand back what to reply with.
+
+        Args:
+            params: The query values from that GET, such as Django's
+                `request.GET` or FastAPI's `request.query_params`.
+            verify_token: The token you typed into the network's own form.
+
+        Returns:
+            The challenge. Send it back as the whole body, with a 200 and a
+            content type of `text/plain`.
+
+        Raises:
+            SignatureError: If this is not a setup check, or the token is
+                wrong. Answer 403 and send nothing back.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadPushedUpdates(Protocol):
+    """Extra for reading everything one pushed request carries.
+
+    Not the same as `CanReadUpdates`, which asks a network what has happened
+    since. This is for a request the network sent us, and it hands back the
+    whole of what that request held.
+
+    Which matters because Meta batches. One message from Facebook can carry
+    changes for several pages, and several changes for each of them, and it
+    does that when it is busy - exactly when you least want to drop the
+    rest. `read_update` on `CanCheckSignature` gives you the first one only.
+
+    A network that never batches still has this, handing back a list of one,
+    so that an app written against one network works against all of them.
+
+    `SocialChimp.read_updates` is what your app calls, after
+    `SocialChimp.check_signature` has passed.
+    """
+
+    def read_updates(self, body: bytes) -> list[Update]:
+        """Turn a checked request into every update it carries.
+
+        Args:
+            body: The request body, exactly as it arrived. Check its
+                signature first.
+
+        Returns:
+            What happened, in the order the network listed it. Empty when
+            the message carried nothing we can act on, which is not an
+            error - networks send shapes we have no interest in.
         """
         ...

@@ -1,0 +1,137 @@
+site_name: socialchimp
+site_url: https://raghulj.github.io/socialchimp/
+site_description: >-
+  One simple way to connect your app to social networks - Mastodon, Bluesky,
+  Facebook Pages, Instagram, YouTube, TikTok, X, Pinterest and Threads.
+site_author: Raghul Jagannathan
+copyright: Copyright &copy; Raghul Jagannathan
+
+repo_name: raghulj/socialchimp
+repo_url: https://github.com/raghulj/socialchimp
+edit_uri: edit/dev/docs/
+
+docs_dir: docs
+
+hooks:
+  - docs/hooks.py
+
+# hooks.py is build machinery, not a page - keep it (and its bytecode
+# cache) out of the published site.
+exclude_docs: |
+  hooks.py
+  __pycache__/
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - content.tabs.link
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            docstring_section_style: table
+            members_order: source
+            filters: ["!^_"]
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            heading_level: 2
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+# Every relative link between our own pages either resolves to a real page
+# or is a link this project decided to leave out of the nav on purpose
+# (see docs/PLAN.md, which is itself in the nav - this line is only needed
+# for the day a page is added and not yet linked from anywhere).
+validation:
+  omitted_files: info
+  absolute_links: warn
+  unrecognized_links: warn
+
+nav:
+  - Home: index.md
+  - Tutorial: tutorial.md
+  - Getting started: getting-started.md
+  - Use cases:
+      - A shop on Facebook Pages: use-cases/facebook-django.md
+      - Video to TikTok: use-cases/tiktok-fastapi.md
+      - YouTube Shorts: use-cases/youtube-shorts-flask.md
+  - Networks: platforms.md
+  - Frameworks: frameworks.md
+  - API reference:
+      - Overview: api/index.md
+      - Client - SocialChimp and Account: api/client.md
+      - Data - Post, Media, Connection, Token: api/models.md
+      - Writing a platform: api/platform.md
+      - Storage: api/storage.md
+      - Features and limits: api/features.md
+      - Updates and events: api/events.md
+      - Errors: api/errors.md
+      - Framework helpers: api/frameworks.md
+      - Testing helpers: api/testing.md
+  - Adding a platform: adding-a-platform.md
+  - Contributing:
+      - Contributing: contributing.md
+      - Releasing: releasing.md
+  - Changelog: changelog.md
+  - Plan: PLAN.md

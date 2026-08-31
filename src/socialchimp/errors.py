@@ -2,7 +2,7 @@
 
 Each network reports problems in its own way. A platform file turns those
 into the errors below, so your code catches one thing instead of learning
-fifteen different error formats.
+nine different error formats.
 
 Catch `SocialChimpError` to catch everything socialchimp raises.
 """

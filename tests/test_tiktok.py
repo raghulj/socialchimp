@@ -40,7 +40,9 @@ from socialchimp.features import TextCount
 from socialchimp.http import Retries
 from socialchimp.platform import (
     CanCheckSignature,
+    CanCheckState,
     CanCreateApp,
+    CanReadPushedUpdates,
     CanReadUpdates,
     CanResumeLogin,
     Finished,
@@ -1820,6 +1822,20 @@ class TestCheckingARequestCameFromTikTok:
             an_hour_later.check_signature(body, headers, secret=APP.client_secret)
 
 
+class TestWhatATypedCallerCanReach:
+    def test_it_offers_asking_how_a_post_is_getting_on(
+        self, platform: TikTokPlatform
+    ) -> None:
+        # TikTok answers publish while it is still working, so Account
+        # .check_state has to be able to find this.
+        assert isinstance(platform, CanCheckState)
+
+    def test_it_offers_reading_a_whole_pushed_message(
+        self, platform: TikTokPlatform
+    ) -> None:
+        assert isinstance(platform, CanReadPushedUpdates)
+
+
 class TestReadingWhatTikTokPushed:
     @pytest.mark.parametrize(
         ("event", "kind"),
@@ -1897,6 +1913,16 @@ class TestReadingWhatTikTokPushed:
         again = platform.read_update(body, {})
 
         assert first.id == again.id
+
+    def test_one_message_carries_one_event_and_still_comes_back_as_a_list(
+        self, platform: TikTokPlatform
+    ) -> None:
+        # TikTok never batches, unlike Facebook and Instagram. The list is
+        # so that an app written against one network works against all of
+        # them.
+        found = platform.read_updates(an_event("post.publish.complete"))
+
+        assert [update.kind for update in found] == [UpdateKind.POST_PUBLISHED]
 
     def test_two_different_messages_get_different_ids(
         self, platform: TikTokPlatform

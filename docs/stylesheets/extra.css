@@ -1,0 +1,55 @@
+/* Small, deliberate additions to Material's own styles. Everything here
+   reads its colours off Material's own custom properties, so light mode,
+   dark mode and the toggle between them all keep working without a second
+   set of rules to maintain. */
+
+.sc-networks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1.25rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sc-networks li {
+  padding: 0.3rem 0.85rem;
+  border-radius: 2rem;
+  background-color: var(--md-code-bg-color);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.sc-next {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 2rem;
+}
+
+.sc-next > a {
+  display: block;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.25rem;
+  text-decoration: none !important;
+  color: var(--md-default-fg-color) !important;
+  transition: border-color 0.15s ease;
+}
+
+.sc-next > a:hover {
+  border-color: var(--md-accent-fg-color);
+}
+
+.sc-next > a strong {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--md-primary-fg-color);
+  font-size: 1.05rem;
+}
+
+.sc-next > a span {
+  font-size: 0.85rem;
+  color: var(--md-default-fg-color--light);
+}

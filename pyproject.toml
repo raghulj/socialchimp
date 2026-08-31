@@ -93,6 +93,16 @@ dev = [
     "pre-commit>=4.0",
 ]
 
+# The documentation site. Kept out of `dev` so `uv sync --all-extras --dev`
+# does not pull a static site generator into every contributor's environment
+# - only `uv sync --group docs` (or `--group docs` on a single command) does.
+# See mkdocs.yml and .github/workflows/docs.yml.
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+]
+
 [tool.hatch.version]
 path = "src/socialchimp/__init__.py"
 
@@ -151,6 +161,20 @@ enable_error_code = [
 # ---------------------------------------------------------------------------
 # Style and lint.
 # ---------------------------------------------------------------------------
+# Django ships no type information, so a file that subclasses models.Model
+# cannot pass the settings above. The library itself does not need this - it
+# names the four Django things it uses as protocols and stays strict - but an
+# example is meant to look like the Django somebody would really write.
+#
+# This is the only place in the project where strictness is turned down, it
+# covers examples rather than shipped code, and everything not coming from
+# Django is still checked.
+[[tool.mypy.overrides]]
+module = "examples.facebook_django.*"
+disallow_any_unimported = false
+disallow_subclassing_any = false
+disallow_untyped_calls = false
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"

@@ -1,6 +1,6 @@
 # socialchimp
 
-[![CI](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml/badge.svg)](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml)
+[![CI](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/socialchimp?color=0b7285)](https://pypi.org/project/socialchimp/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://pypi.org/project/socialchimp/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](CONTRIBUTING.md)
@@ -9,6 +9,10 @@
 [![Licence](https://img.shields.io/badge/licence-MIT-black)](LICENSE)
 
 One simple way to connect your app to social networks.
+
+**Read this as a website:** **[raghulj.github.io/socialchimp](https://raghulj.github.io/socialchimp/)**
+— the tutorial, the reference and everything below, searchable and easier to
+read than markdown files in a repository.
 
 > **Status: 0.1.0, the first release.** All nine networks below work. The way
 > platforms are written is now settled - see
@@ -86,16 +90,38 @@ is yours.
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md) - from nothing to a post
+**New here?** Start with the [tutorial](docs/tutorial.md). It assumes you have
+built a web app before but have never touched a social network API, and
+explains why this is harder than one HTTP request.
+
+**Learning**
+
+- [Tutorial](docs/tutorial.md) - the ideas, and how the classes fit together
+- [Getting started](docs/getting-started.md) - from nothing to a post, in six steps
+
+**Three things people actually build**
+
+- [A shop posting to its Facebook Page](docs/use-cases/facebook-django.md) -
+  Django. Sign-in that pauses to ask which Page, and real scheduling.
+- [A creator tool uploading video to TikTok](docs/use-cases/tiktok-fastapi.md) -
+  FastAPI. Large files sent in pieces, and the audit trap that makes working
+  code look broken.
+- [Publishing YouTube Shorts](docs/use-cases/youtube-shorts-flask.md) - Flask.
+  A network with no text-only post at all, and why you cannot ask for a Short.
+
+**Reference**
+
 - [Networks](docs/platforms.md) - what each one can do, and what it needs
-- [Frameworks](docs/frameworks.md) - ready-made routes for Django,
-  FastAPI and Flask
-- [Adding a platform](docs/adding-a-platform.md) - a network we do not
-  support yet
-- [Plan](docs/PLAN.md) - what is built and what is coming
-- [Changelog](CHANGELOG.md) - what changed, and what it means for you
-- [Releasing](docs/releasing.md) - how a release goes out
+- [Frameworks](docs/frameworks.md) - the ready-made routes in detail
+- [Adding a platform](docs/adding-a-platform.md) - a network we do not support yet
 - [Examples](examples/) - runnable programs
+- [Changelog](CHANGELOG.md) - what changed, and what it means for you
+
+**Project**
+
+- [Plan](docs/PLAN.md) - what is built and what is coming
+- [Contributing](CONTRIBUTING.md) - the three rules that are not negotiable
+- [Releasing](docs/releasing.md) - how a release goes out
 
 ## Contributing
 

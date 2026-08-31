@@ -57,6 +57,7 @@ from socialchimp.features import Feature
 from socialchimp.platform import (
     AskForDetails,
     CanCheckSignature,
+    CanReadPushedUpdates,
     ChooseAccount,
     SendToNetwork,
 )
@@ -71,7 +72,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from socialchimp.client import SocialChimp
-    from socialchimp.events import DeliverUpdate
+    from socialchimp.events import DeliverUpdate, Update
     from socialchimp.models import RawData
     from socialchimp.platform import LoginStep
 
@@ -86,6 +87,7 @@ __all__ = [
     "read_form",
     "status_for",
     "sync_storage",
+    "updates_in",
 ]
 
 logger = logging.getLogger(__name__)
@@ -342,6 +344,34 @@ class InMemoryLoginMemory:
             state: The sign-in's state.
         """
         self._kept.pop(state, None)
+
+
+def updates_in(
+    pusher: CanCheckSignature,
+    body: bytes,
+    headers: Mapping[str, str],
+) -> list[Update]:
+    """Return everything one pushed message carries.
+
+    Meta puts several changes in a single message - a comment and a like on
+    the same post arrive together - so reading only the first would quietly
+    lose the rest, and nothing anywhere would say so.
+
+    A network that sends one thing per message says so by having no
+    `read_updates`, which is also what a platform written before that existed
+    looks like. Those still work.
+
+    Args:
+        pusher: The platform the message came from, already checked.
+        body: The request body, untouched.
+        headers: The request headers.
+
+    Returns:
+        Every update in the message, in the order the network sent them.
+    """
+    if isinstance(pusher, CanReadPushedUpdates):
+        return list(pusher.read_updates(body))
+    return [pusher.read_update(body, headers)]
 
 
 class Routes:
@@ -662,19 +692,20 @@ class Routes:
                 raise ConfigError(message)
 
             pusher.check_signature(body, headers, secret=secret)
-            update = pusher.read_update(body, headers)
+            updates = updates_in(pusher, body, headers)
         except SocialChimpError as error:
             return Reply.for_error(error)
 
         if self._deliver is None:
             logger.warning(
-                "Update %s from %s was checked and dropped, because these "
-                "routes were given nowhere to hand it on to.",
-                update.id,
+                "%d update(s) from %s were checked and dropped, because "
+                "these routes were given nowhere to hand them on to.",
+                len(updates),
                 platform,
             )
         else:
-            await self._deliver(update)
+            for update in updates:
+                await self._deliver(update)
 
         return Reply.json({"ok": True})
 

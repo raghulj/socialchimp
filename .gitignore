@@ -7,6 +7,9 @@ dist/
 .venv/
 venv/
 
+# Documentation build output (see mkdocs.yml)
+site/
+
 # Testing
 .pytest_cache/
 .coverage

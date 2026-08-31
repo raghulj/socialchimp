@@ -16,6 +16,7 @@ from socialchimp import (
     Limits,
     Post,
     PostResult,
+    PostState,
     SignatureError,
     Storage,
     Token,
@@ -34,6 +35,8 @@ from socialchimp.models import MediaKind, RawData
 from socialchimp.platform import (
     AccountChoice,
     AskForDetails,
+    CanCheckState,
+    CanReadPushedUpdates,
     CanResumeLogin,
     ChooseAccount,
     Finished,
@@ -565,7 +568,7 @@ class TestTheKitItself:
     )
 
     def test_there_is_a_check_for_each_thing_we_promised(self) -> None:
-        assert len(every_check()) == 15
+        assert len(every_check()) == 16
 
     async def test_a_good_fake_platform_passes_every_check(self) -> None:
         for name in every_check():
@@ -1202,6 +1205,60 @@ class TestRecordingStorage:
 
 
 class TestFakePlatform:
+    def test_a_pushed_request_can_be_read_the_way_facebook_is_read(self) -> None:
+        # SocialChimp.read_updates looks for read_updates, so a fake standing
+        # in for a pushing network has to have one too.
+        platform = FakePlatform()
+        body = json.dumps(
+            {
+                "id": "u9",
+                "kind": "comment_created",
+                "connection_id": "fake-connection",
+                "at": datetime.now(UTC).isoformat(),
+            }
+        ).encode()
+
+        found = platform.read_updates(body)
+
+        assert isinstance(platform, CanReadPushedUpdates)
+        assert [update.id for update in found] == ["u9"]
+
+    async def test_a_fake_with_no_states_has_no_check_state(self) -> None:
+        # Most networks are finished by the time publish returns, so the
+        # fake is too unless a test says otherwise.
+        assert not isinstance(FakePlatform(), CanCheckState)
+
+    async def test_a_fake_given_states_can_be_asked_how_a_post_is_going(
+        self,
+    ) -> None:
+        platform = FakePlatform(states=(PostState.PROCESSING, PostState.DONE))
+        connection = platform.connection()
+
+        first = await platform.check_state(connection, "post-1")
+        second = await platform.check_state(connection, "post-1")
+        third = await platform.check_state(connection, "post-1")
+
+        assert isinstance(platform, CanCheckState)
+        assert first.state is PostState.PROCESSING
+        # The last one repeats, so a post that is done stays done however
+        # many times a test asks.
+        assert second.state is PostState.DONE
+        assert third.state is PostState.DONE
+        assert platform.state_asked == [("fake-connection", "post-1")] * 3
+
+    async def test_a_subclass_that_wrote_its_own_check_state_keeps_it(self) -> None:
+        class SaysItFailed(FakePlatform):
+            async def check_state(
+                self, connection: Connection, post_id: str
+            ) -> PostResult:
+                return PostResult(id=post_id, state=PostState.FAILED)
+
+        platform = SaysItFailed(states=(PostState.DONE,))
+
+        result = await platform.check_state(platform.connection(), "post-1")
+
+        assert result.state is PostState.FAILED
+
     async def test_it_publishes_from_memory_without_a_transport(self) -> None:
         platform = FakePlatform()
 
@@ -1479,6 +1536,65 @@ class TestFakePlatform:
         assert update.kind is UpdateKind.COMMENT_CREATED
         assert update.created_at == datetime(2026, 1, 1, tzinfo=UTC)
         assert update.platform == "fake"
+
+
+class TestTheAskingHowItIsGoingCheck:
+    name = "test_a_platform_that_keeps_working_can_be_asked_how_it_is_going"
+
+    async def test_a_platform_that_finishes_while_we_wait_has_nothing_to_answer(
+        self,
+    ) -> None:
+        await getattr(checks_for(FakePlatform()), self.name)()
+
+    async def test_a_platform_that_can_be_asked_passes(self) -> None:
+        platform = FakePlatform(states=(PostState.PROCESSING,))
+
+        await getattr(checks_for(platform), self.name)()
+
+    async def test_asking_as_a_plain_function_is_refused(self) -> None:
+        class ChecksWithoutWaiting(Methods):
+            name = "checkswithoutwaiting"
+            features = Feature.POST_TEXT
+
+            def check_state(self, connection: Connection, post_id: str) -> PostResult:
+                return PostResult(id=post_id)
+
+        message = await failure_from(checks_for(ChecksWithoutWaiting()), self.name)
+
+        assert "check_state" in message
+        assert "async def" in message
+
+    async def test_a_check_state_that_is_not_even_callable_is_refused(self) -> None:
+        class ChecksWithNothing(Methods):
+            name = "checkswithnothing"
+            features = Feature.POST_TEXT
+            check_state = None
+
+        message = await failure_from(checks_for(ChecksWithNothing()), self.name)
+
+        assert "check_state" in message
+
+    async def test_asking_for_something_other_than_a_post_is_refused(self) -> None:
+        class ChecksItsOwnWay(Methods):
+            name = "checksitsownway"
+            features = Feature.POST_TEXT
+
+            async def check_state(self, connection: Connection) -> PostResult:
+                return PostResult(id="1")
+
+        message = await failure_from(checks_for(ChecksItsOwnWay()), self.name)
+
+        assert "connection and the post id" in message
+
+    async def test_taking_whatever_it_is_given_passes(self) -> None:
+        class ChecksHoweverItIsAsked(Methods):
+            name = "checkshoweveritisasked"
+            features = Feature.POST_TEXT
+
+            async def check_state(self, *whatever: object) -> PostResult:
+                return PostResult(id="1")
+
+        await getattr(checks_for(ChecksHoweverItIsAsked()), self.name)()
 
 
 class TestTheCarryingOnCheck:

@@ -397,10 +397,15 @@ def _update_from(change: Change) -> Update:
         # Meta says which page, not which of your connections. A login here
         # names a connection after its page, so the two line up without your
         # app keeping a table of its own. Rename connections and you match
-        # them up yourself, from the page id on `raw`.
+        # them up yourself, from the page id on `envelope`.
         connection_id=f"{PLATFORM_NAME}:{change.account_id}",
         created_at=happened,
-        raw=change.raw,
+        # The change itself, so a handler reads `update.raw["message"]`
+        # rather than walking the entry looking for its own change again.
+        # The entry goes alongside, because the page id and the time are
+        # only out there.
+        raw=change.value,
+        envelope=change.envelope,
     )
 
 

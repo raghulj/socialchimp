@@ -39,6 +39,7 @@ from socialchimp import (
 from socialchimp.features import TextCount
 from socialchimp.http import Retries
 from socialchimp.platform import (
+    CanCheckState,
     CanCreateApp,
     CanReadUpdates,
     CanResumeLogin,
@@ -1350,6 +1351,13 @@ class TestSchedulingAVideo:
 
 
 class TestCheckingWhatYouTubeDidNext:
+    def test_it_offers_asking_how_a_post_is_getting_on(
+        self, platform: YouTubePlatform
+    ) -> None:
+        # YouTube answers publish while it is still encoding, so Account
+        # .check_state has to be able to find this.
+        assert isinstance(platform, CanCheckState)
+
     async def test_a_freshly_uploaded_video_is_still_being_worked_on(
         self, platform: YouTubePlatform, account: Connection
     ) -> None:

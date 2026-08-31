@@ -878,10 +878,11 @@ def _update_from(envelope: RawData, field: str, value: RawData) -> Update:
     """Turn one thing Threads pushed into an update your app understands.
 
     Args:
-        envelope: The whole message, kept on the update for anything we did
-            not model.
+        envelope: The whole message. Kept beside the change, because the
+            account and the subscription are named out there.
         field: What Threads calls this kind of change.
-        value: What actually happened, in Threads' own words.
+        value: What actually happened, in Threads' own words. This is what
+            ends up on `Update.raw`.
 
     Returns:
         What happened, in socialchimp's own words. Anything we have no word
@@ -909,7 +910,11 @@ def _update_from(envelope: RawData, field: str, value: RawData) -> Update:
         # the two line up without your app keeping a table of its own.
         connection_id=f"{PLATFORM_NAME}:{account_id}",
         created_at=when,
-        raw=envelope,
+        # What happened, so a handler reads `update.raw["text"]` straight.
+        # The message goes alongside, because Threads names the account and
+        # the subscription out there rather than on the change.
+        raw=value,
+        envelope=envelope,
     )
 
 

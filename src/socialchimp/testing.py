@@ -66,12 +66,14 @@ from socialchimp.models import (
     Media,
     Post,
     PostResult,
+    PostState,
     Token,
 )
 from socialchimp.platform import (
     AccountChoice,
     AskForDetails,
     CanCheckSignature,
+    CanCheckState,
     CanCreateApp,
     CanDeletePosts,
     CanReadUpdates,
@@ -113,6 +115,10 @@ _WAYS_TO_POST: Final = Feature.POST_TEXT | Feature.POST_IMAGE | Feature.POST_VID
 
 # What `SocialChimp.choose` passes to `resume_login`, all of them by name.
 _RESUME_ARGUMENTS: Final = ("resume_token", "account_id", "remember")
+
+# How many things `Account.check_state` hands a `check_state`: the connection
+# and the post id, both by position.
+_CHECK_STATE_ARGUMENTS: Final = 2
 
 # Fields on `Limits` that this check leaves alone.
 #
@@ -594,6 +600,11 @@ class FakePlatform:
             to a sign-in page instead, which is what most networks do.
         secret: The secret `check_signature` expects, unless told another.
         updates: What `fetch_updates` hands back.
+        states: What `check_state` says about a post, one call after
+            another, with the last one repeating. Empty means this fake has
+            no `check_state` at all, the same as a network that has finished
+            by the time it answers - and then `Account.check_state` refuses,
+            which is what most networks do.
         token_lifetime: How long a fresh token lasts. `None` for a token
             that never expires.
         publish_fails_with: An error every `publish` raises instead of
@@ -608,6 +619,7 @@ class FakePlatform:
         created_apps: Every app registered.
         resumed: Every account picked part way through a sign-in, as
             (resume token, account id).
+        state_asked: Every post asked about, as (connection id, post id).
         refreshed: The id of every connection whose token was renewed.
         refreshed_with: Your app's credentials as each renewal was handed
             them, in the same order as `refreshed`. `None` where a renewal
@@ -628,6 +640,7 @@ class FakePlatform:
         ask_for: tuple[LoginField, ...] = (),
         secret: str = _FAKE_SIGNING_KEY,
         updates: Sequence[Update] = (),
+        states: Sequence[PostState] = (),
         token_lifetime: timedelta | None = timedelta(hours=1),
         publish_fails_with: SocialChimpError | None = None,
         login_fails_with: SocialChimpError | None = None,
@@ -646,6 +659,8 @@ class FakePlatform:
                 them to a sign-in page instead.
             secret: The secret `check_signature` expects.
             updates: What `fetch_updates` hands back.
+            states: What `check_state` says, one call after another. Empty
+                leaves this fake without a `check_state`.
             token_lifetime: How long a fresh token lasts, or `None` for one
                 that never expires.
             publish_fails_with: An error every `publish` raises.
@@ -658,6 +673,7 @@ class FakePlatform:
         self.ask_for = ask_for
         self.secret = secret
         self.updates = tuple(updates)
+        self.states = tuple(states)
         self.token_lifetime = token_lifetime
         self.publish_fails_with = publish_fails_with
         self.login_fails_with = login_fails_with
@@ -665,6 +681,7 @@ class FakePlatform:
         self.deleted: list[str] = []
         self.created_apps: list[AppCredentials] = []
         self.resumed: list[tuple[str, str]] = []
+        self.state_asked: list[tuple[str, str]] = []
         self.refreshed: list[str] = []
         self.refreshed_with: list[AppCredentials | None] = []
         self.last_remember: RawData | None = None
@@ -676,6 +693,7 @@ class FakePlatform:
         self._transport = transport
         self._live: set[str] = set()
         self._counter = 0
+        self._state_asks = 0
         if accounts and not hasattr(self, "resume_login"):
             # Put on the instance rather than written as a method, so that a
             # fake with nothing to choose between has no `resume_login` at
@@ -684,6 +702,12 @@ class FakePlatform:
             # while never pausing would let a wrong app pass its own tests.
             # A subclass that wrote its own keeps it - hence the hasattr.
             self.resume_login = self._resume_login
+        if states and not hasattr(self, "check_state"):
+            # Same trick, same reason. A fake with nothing left to happen
+            # has no `check_state`, so `Account.check_state` refuses against
+            # it the way it does against every network that finishes while
+            # we wait.
+            self.check_state = self._check_state
 
     def _expiry(self) -> datetime | None:
         """Work out when a token handed out now would stop working."""
@@ -978,6 +1002,31 @@ class FakePlatform:
         self._live.discard(post_id)
         self.deleted.append(post_id)
 
+    async def _check_state(
+        self,
+        connection: Connection,
+        post_id: str,
+    ) -> PostResult:
+        """Say how far along a post is, working through `states` in turn.
+
+        Put on the instance by `__init__` when there are states to give, so
+        that a fake with none has no `check_state` and is not a
+        `CanCheckState` - the same as a network that has finished by the
+        time it answers.
+
+        Args:
+            connection: The account the post belongs to.
+            post_id: The id this fake handed back.
+
+        Returns:
+            The next state in the list. The last one repeats, so a post that
+            has finished stays finished however many times you ask.
+        """
+        self.state_asked.append((connection.id, post_id))
+        step = min(self._state_asks, len(self.states) - 1)
+        self._state_asks += 1
+        return PostResult(id=post_id, state=self.states[step])
+
     async def fetch_updates(
         self,
         connection: Connection,
@@ -1019,6 +1068,22 @@ class FakePlatform:
             secret=secret,
             header_name=_FAKE_SIGNATURE_HEADER,
         )
+
+    def read_updates(self, body: bytes) -> list[Update]:
+        """Turn a checked request into every update it carries.
+
+        This fake never batches, so it is always a list of one. It is here
+        so that `SocialChimp.read_updates` reaches a fake the same way it
+        reaches Facebook, and an app's own tests do not have to know the
+        difference.
+
+        Args:
+            body: The request body, untouched.
+
+        Returns:
+            What happened, as a list of one.
+        """
+        return [self.read_update(body, {})]
 
     def read_update(self, body: bytes, headers: Mapping[str, str]) -> Update:
         """Turn a checked request into an update.
@@ -1382,6 +1447,59 @@ class PlatformChecks:
                     f"the box."
                 )
 
+    async def test_a_platform_that_keeps_working_can_be_asked_how_it_is_going(
+        self,
+    ) -> None:
+        """A `check_state` is `async def check_state(self, connection, post_id)`.
+
+        YouTube encodes for minutes and TikTok can put a video in somebody's
+        drafts, so both answer `publish` while they are still busy.
+        `Account.check_state` hands this the connection and the post id, in
+        that order and by position. A plain `def`, or one that takes some
+        other number of things, is a TypeError in somebody else's app rather
+        than a failure here.
+        """
+        platform = self.platform
+        if not hasattr(platform, "check_state"):
+            # Most networks have finished by the time they answer. Nothing
+            # to check.
+            return
+
+        if _method_is_wrong(
+            platform, "check_state", wants_async=True
+        ) or not isinstance(platform, CanCheckState):
+            pytest.fail(
+                f"{platform.name} has a check_state, but not one socialchimp "
+                f"can use. It is `async def check_state(self, connection, "
+                f"post_id)`. Anything else - a plain def, something that is "
+                f"not callable - and Account.check_state raises instead of "
+                f"telling an app how its post is getting on."
+            )
+
+        taken = list(inspect.signature(platform.check_state).parameters.values())
+        if any(given.kind is inspect.Parameter.VAR_POSITIONAL for given in taken):
+            # Something that takes whatever it is handed cannot be missing
+            # an argument, so there is nothing left to look at.
+            return
+
+        positional = [
+            given
+            for given in taken
+            if given.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        if len(positional) != _CHECK_STATE_ARGUMENTS:
+            pytest.fail(
+                f"{platform.name}.check_state takes {len(positional)} things "
+                f"where it should take two: the connection and the post id, "
+                f"in that order. socialchimp passes both by position, so any "
+                f"other shape is a TypeError the moment an app asks how a "
+                f"post is getting on."
+            )
+
     async def test_a_platform_that_pauses_to_ask_can_carry_on(self) -> None:
         """A `resume_login` is `async def` and takes what it will be given.
 
@@ -1663,7 +1781,7 @@ class PlatformChecks:
                     f"{platform.name} raised {type(error).__name__}: "
                     f"{error}. Every error a platform raises is a "
                     f"SocialChimpError, so an app catches one thing rather "
-                    f"than learning what fifteen networks each throw."
+                    f"than learning what nine networks each throw."
                 )
 
     async def test_the_updates_it_reads_come_back_as_updates(self) -> None:

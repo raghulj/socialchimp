@@ -24,7 +24,7 @@ storage = InMemoryStorage()
 ```
 
 `InMemoryStorage` forgets everything when your program stops, which is fine
-while you are trying things out. [Step 6](#step-6---real-storage) replaces it
+while you are trying things out. [Step 6](#step-6-real-storage) replaces it
 with your own database.
 
 ## Step 2 - register your app
