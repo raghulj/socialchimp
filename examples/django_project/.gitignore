@@ -1,0 +1,3 @@
+# The sample database, made by `manage.py migrate`. Nothing in it is worth
+# keeping - connect the accounts again.
+db.sqlite3

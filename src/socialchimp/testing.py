@@ -57,7 +57,7 @@ from socialchimp.errors import (
     NotSupportedError,
     SocialChimpError,
 )
-from socialchimp.events import Update, verify_hmac_sha256
+from socialchimp.events import Update, answer_setup_check, verify_hmac_sha256
 from socialchimp.features import Feature, Limits, TextCount, check_post, measure_text
 from socialchimp.http import HttpClient
 from socialchimp.models import (
@@ -584,6 +584,11 @@ class FakePlatform:
     anybody anywhere, the way Bluesky's app password and the bot-token
     networks work.
 
+    It answers Meta's `hub.challenge` handshake out of the box. Give it
+    `answers_setup_checks=False` and it has no `answer_setup_check` at all,
+    so it is not a `CanAnswerSetupCheck` - the way TikTok is, which pushes
+    without asking anything first.
+
     Example:
         transport = RecordingTransport({"POST /posts": {"id": "1"}})
         platform = FakePlatform(transport=transport)
@@ -644,6 +649,7 @@ class FakePlatform:
         token_lifetime: timedelta | None = timedelta(hours=1),
         publish_fails_with: SocialChimpError | None = None,
         login_fails_with: SocialChimpError | None = None,
+        answers_setup_checks: bool = True,
     ) -> None:
         """Set up a fake network that behaves however you need it to.
 
@@ -666,6 +672,9 @@ class FakePlatform:
             publish_fails_with: An error every `publish` raises.
             login_fails_with: An error `finish_login` and `resume_login`
                 raise instead of finishing.
+            answers_setup_checks: Whether this fake answers Meta's setup
+                check. `False` leaves it without an `answer_setup_check` at
+                all, the way TikTok has none.
         """
         self.name = name
         self.features = features
@@ -708,6 +717,13 @@ class FakePlatform:
             # it the way it does against every network that finishes while
             # we wait.
             self.check_state = self._check_state
+        if answers_setup_checks and not hasattr(self, "answer_setup_check"):
+            # And once more. Meta's three networks ask a question before
+            # they will push anything; TikTok pushes without asking. A fake
+            # told not to answer has no `answer_setup_check`, so
+            # `SocialChimp.answer_setup_check` refuses against it the way it
+            # refuses against TikTok.
+            self.answer_setup_check = self._answer_setup_check
 
     def _expiry(self) -> datetime | None:
         """Work out when a token handed out now would stop working."""
@@ -718,20 +734,29 @@ class FakePlatform:
     def connection(
         self,
         *,
-        connection_id: str = "fake-connection",
+        connection_id: str | None = None,
         account_id: str = _FAKE_ACCOUNT,
     ) -> Connection:
         """Build a connection to this fake, ready to use.
 
         Args:
-            connection_id: The id your app would have given it.
+            connection_id: The id your app would have given it. Left out,
+                the network's name and the account's id joined by a colon,
+                which is what every real platform hands back. It used to be
+                the same word whatever the fake was called, so an app tested
+                against nine fake networks got nine rows sharing one primary
+                key.
             account_id: The id the network would use.
 
         Returns:
             A connection with a working token.
         """
         return Connection(
-            id=connection_id,
+            id=(
+                connection_id
+                if connection_id is not None
+                else f"{self.name}:{account_id}"
+            ),
             platform=self.name,
             host=None,
             account_id=account_id,
@@ -1068,6 +1093,33 @@ class FakePlatform:
             secret=secret,
             header_name=_FAKE_SIGNATURE_HEADER,
         )
+
+    def _answer_setup_check(
+        self,
+        params: Mapping[str, str],
+        *,
+        verify_token: str,
+    ) -> str:
+        """Answer the one-off GET a network sends before it will push.
+
+        Put on the instance by `__init__` unless a test said
+        `answers_setup_checks=False` - see there for why. It answers exactly
+        the way Meta's three networks do, because it is the same function
+        underneath, so an app can test its own handshake route against a
+        fake instead of subclassing one.
+
+        Args:
+            params: The query values from that GET.
+            verify_token: The token your app chose.
+
+        Returns:
+            The challenge, to send back as the whole body.
+
+        Raises:
+            SignatureError: If this is not a setup check, or the token is
+                not the expected one.
+        """
+        return answer_setup_check(params, expected_token=verify_token)
 
     def read_updates(self, body: bytes) -> list[Update]:
         """Turn a checked request into every update it carries.
@@ -1446,6 +1498,42 @@ class PlatformChecks:
                     f"and a label, which is what the person reads next to "
                     f"the box."
                 )
+
+    async def test_a_platform_with_no_app_starts_a_login_without_one(self) -> None:
+        """A network with no app to register signs somebody in without one.
+
+        Bluesky has no developer portal and no app: a person signs in with
+        their handle and an app password they made themselves. That is what
+        `Feature.NEEDS_NO_APP` says, and where it is listed socialchimp asks
+        your storage for nothing and hands the platform a `LoginRequest`
+        with `app` as `None`.
+
+        A platform that lists the flag and then refuses without credentials
+        is the worst of both: nothing to save, and a sign-in that will not
+        start, with a message telling somebody to save credentials that do
+        not exist anywhere.
+        """
+        platform = self.platform
+        if Feature.NEEDS_NO_APP not in platform.features:
+            pytest.skip(
+                f"{platform.name} does not list Feature.NEEDS_NO_APP, so it "
+                f"has an app like every other network and refusing a login "
+                f"without one is the right answer."
+            )
+
+        try:
+            await platform.start_login(LoginRequest(redirect_uri=_A_REDIRECT))
+        except SocialChimpError as refused:
+            pytest.fail(
+                f"{platform.name} lists Feature.NEEDS_NO_APP but would not "
+                f"start a login without an app: {type(refused).__name__}: "
+                f"{refused}. The flag says there is nothing to register, so "
+                f"socialchimp asks storage for nothing and hands you a "
+                f"LoginRequest with app as None. Sign somebody in from "
+                f"that, or take NEEDS_NO_APP out of features - a network "
+                f"that does need credentials is refused without them on "
+                f"purpose."
+            )
 
     async def test_a_platform_that_keeps_working_can_be_asked_how_it_is_going(
         self,

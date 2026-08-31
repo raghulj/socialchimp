@@ -27,9 +27,11 @@ than something else happening quietly. Where a network lives and how it wants
 to be asked come from the platform for the same reason: a host name is not
 enough to work either one out.
 
-**Nothing is shared between accounts.** `post_to_many` sends to every account
-at once and gives each one its own result, so one account failing never hides
-the rest.
+**Nothing is absorbed.** When something goes wrong you get an error raised at
+the call that caused it, never a failure written down and handed back. That
+is why there is no call here that posts as several accounts: posting is one
+account at a time, and the loop over your accounts is yours to write, because
+only your app knows whether one account failing should stop the others.
 
 Everything is passed in rather than reached for: storage, platforms, token
 renewal and the HTTP client. That is how the tests here run without a
@@ -39,7 +41,7 @@ network, and it is how your app swaps any piece for its own.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from socialchimp.errors import ConfigError, NotSupportedError
@@ -78,8 +80,6 @@ if TYPE_CHECKING:
 __all__ = [
     "Account",
     "Direct",
-    "PostError",
-    "PostJob",
     "SocialChimp",
 ]
 
@@ -91,58 +91,15 @@ _REGISTER_BY_HAND = (
     "Storage.save_app"
 )
 
-
-@dataclass(frozen=True, slots=True)
-class PostError:
-    """One account's post that did not work.
-
-    Handed back inside a `PostJob` rather than raised, so that one account
-    failing never costs you the accounts that worked.
-
-    Attributes:
-        connection_id: Which connected account this was for.
-        error: What went wrong. Usually a `SocialChimpError`, but anything a
-            platform raised ends up here.
-    """
-
-    connection_id: str
-    error: Exception
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class PostJob:
-    """What happened when one post went to several accounts.
-
-    Attributes:
-        connection_ids: The accounts you asked for, in the order you asked.
-        results: One outcome per account, in that same order. Each is either
-            a `PostResult` or a `PostError`.
-    """
-
-    connection_ids: tuple[str, ...]
-    results: tuple[PostResult | PostError, ...]
-
-    @property
-    def succeeded(self) -> list[PostResult]:
-        """The accounts that posted, in the order you asked for them."""
-        return [item for item in self.results if isinstance(item, PostResult)]
-
-    @property
-    def failed(self) -> list[PostError]:
-        """The accounts that did not post, each with its own error."""
-        return [item for item in self.results if isinstance(item, PostError)]
-
-    def __repr__(self) -> str:
-        """Say how many posted and name the accounts that did not.
-
-        Returns:
-            A line short enough for a log, naming what went wrong.
-        """
-        failed = self.failed
-        if not failed:
-            return f"PostJob({len(self.succeeded)} posted)"
-        names = ", ".join(item.connection_id for item in failed)
-        return f"PostJob({len(self.succeeded)} posted, {len(failed)} failed: {names})"
+# And what we tell someone on a network that has no app of any kind. Sending
+# them to a developer portal that does not exist is the same wrong answer in
+# a friendlier voice.
+_NOTHING_TO_REGISTER = (
+    "registering an app for you. There is no app to register on this "
+    "network and no developer portal to register one in - people sign in "
+    "with a password they made themselves - so start_login works with "
+    "nothing saved"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +136,33 @@ def _no_app_saved(platform: str, host: str | None) -> str:
         f"them for you; everywhere else, register the app by hand in that "
         f"network's developer portal and save the id and secret with "
         f"Storage.save_app."
+    )
+
+
+def _no_setup_check(platform: Platform) -> str:
+    """Say why there is no setup check to answer on this network.
+
+    There are two reasons, and they need different answers. A network that
+    pushes but asks nothing first starts sending the moment you give it a
+    URL, so there is nothing to do. A network that never pushes at all has no
+    URL to give it, and telling somebody it will start sending is a sentence
+    they cannot act on - Pinterest is the one that shows this up.
+
+    Args:
+        platform: The network that was asked.
+
+    Returns:
+        What to do instead, in plain words.
+    """
+    if Feature.PUSH_UPDATES not in platform.features:
+        return (
+            "It never pushes anything to a URL of yours, so there is no URL "
+            "for it to check. Ask it on a timer instead, with "
+            "Account.fetch_updates and socialchimp.events.Poller."
+        )
+    return (
+        "It starts sending as soon as you point it at a URL, so there is "
+        "nothing to answer. Meta's three networks are the ones that ask."
     )
 
 
@@ -915,7 +899,13 @@ class SocialChimp:
                 it.
         """
         maker = self.platform_for(platform)
-        _refuse(maker, Feature.CREATE_APP, _REGISTER_BY_HAND)
+        _refuse(
+            maker,
+            Feature.CREATE_APP,
+            _NOTHING_TO_REGISTER
+            if Feature.NEEDS_NO_APP in maker.features
+            else _REGISTER_BY_HAND,
+        )
         if not isinstance(maker, CanCreateApp):
             raise _missing_method(maker, "create_app")
 
@@ -932,7 +922,7 @@ class SocialChimp:
 
     async def _login_request(
         self,
-        platform: str,
+        platform: Platform,
         *,
         redirect_uri: str,
         scopes: tuple[str, ...],
@@ -944,23 +934,35 @@ class SocialChimp:
         Your app's own credentials are looked up here and handed down with
         the request, so no platform has to reach into your storage for them.
 
+        The platform itself is passed rather than its name, because whether
+        credentials are needed at all is something only it can say.
+
         Args:
-            platform: Which network, for example `"mastodon"`.
+            platform: The network being signed in to.
             redirect_uri: Where the network sends the person back to.
             scopes: Permissions to ask for.
             host: Which server, for networks that have more than one.
             state: A value handed back to you at the end.
 
         Returns:
-            The request, carrying your app's credentials for this network.
+            The request, carrying your app's credentials for this network,
+            or carrying `None` for a network that has no app.
 
         Raises:
-            ConfigError: If no credentials are stored for this network and
-                server. The message says how to get some.
+            ConfigError: If this network needs credentials and none are
+                stored for it and this server. The message says how to get
+                some.
         """
-        app = await self.storage.get_app(platform, host)
-        if app is None:
-            raise ConfigError(_no_app_saved(platform, host))
+        if Feature.NEEDS_NO_APP in platform.features:
+            # Nothing to look up. Bluesky has no developer portal, so there
+            # is no id and no secret anywhere to find - and asking storage
+            # for them and refusing when it has none turned the one network
+            # that needs nothing into the one network that would not start.
+            app = None
+        else:
+            app = await self.storage.get_app(platform.name, host)
+            if app is None:
+                raise ConfigError(_no_app_saved(platform.name, host))
         return LoginRequest(
             redirect_uri=redirect_uri,
             scopes=scopes,
@@ -1006,13 +1008,15 @@ class SocialChimp:
             as `callback`, under the names the fields gave.
 
         Raises:
-            ConfigError: If your app is not registered with this network yet.
+            ConfigError: If your app is not registered with this network
+                yet, on a network that needs one registered. Bluesky has
+                no app to register, so nothing has to be saved first.
         """
         # The platform is found first, so a name nobody has is answered with
         # the registry's message rather than one about app credentials.
         starter = self.platform_for(platform)
         request = await self._login_request(
-            platform,
+            starter,
             redirect_uri=redirect_uri,
             scopes=scopes,
             host=host,
@@ -1063,11 +1067,13 @@ class SocialChimp:
             `choose`.
 
         Raises:
-            ConfigError: If your app is not registered with this network yet.
+            ConfigError: If your app is not registered with this network
+                yet, on a network that needs one registered. Bluesky has
+                no app to register, so nothing has to be saved first.
         """
         finisher = self.platform_for(platform)
         request = await self._login_request(
-            platform,
+            finisher,
             redirect_uri=redirect_uri,
             scopes=scopes,
             host=host,
@@ -1111,7 +1117,9 @@ class SocialChimp:
         Raises:
             NotSupportedError: If this network never pauses to ask, so there
                 is nothing to carry on from.
-            ConfigError: If your app is not registered with this network yet.
+            ConfigError: If your app is not registered with this network
+                yet, on a network that needs one registered. Bluesky has
+                no app to register, so nothing has to be saved first.
         """
         chooser = self.platform_for(platform)
         if not isinstance(chooser, CanResumeLogin):
@@ -1125,7 +1133,7 @@ class SocialChimp:
             )
 
         request = await self._login_request(
-            platform,
+            chooser,
             redirect_uri=redirect_uri,
             scopes=scopes,
             host=host,
@@ -1185,7 +1193,8 @@ class SocialChimp:
 
         Raises:
             NotSupportedError: If this network asks nothing before it starts
-                sending.
+                sending, or never sends anything at all. The message says
+                which, because what to do about them is different.
             SignatureError: If this is not a setup check, or the token is
                 wrong. Answer 403 and send nothing back.
         """
@@ -1194,11 +1203,7 @@ class SocialChimp:
             raise NotSupportedError(
                 platform=answerer.name,
                 what="a setup check before it will push anything",
-                suggestion=(
-                    "It starts sending as soon as you point it at a URL, so "
-                    "there is nothing to answer. Meta's three networks are "
-                    "the ones that ask."
-                ),
+                suggestion=_no_setup_check(answerer),
             )
         return answerer.answer_setup_check(params, verify_token=verify_token)
 
@@ -1288,77 +1293,6 @@ class SocialChimp:
                 ),
             )
         return reader.read_updates(body)
-
-    async def post_to_many(
-        self,
-        connection_ids: Sequence[str],
-        post: Post,
-        *,
-        options_per_platform: Mapping[str, RawData] | None = None,
-    ) -> PostJob:
-        """Publish one post as several accounts at once.
-
-        Every account is sent to at the same time, and every account gets its
-        own outcome. One failing never cancels or hides the rest, so a job
-        where two accounts worked and one did not tells you exactly that.
-
-        Args:
-            connection_ids: The accounts to post as.
-            post: What to publish.
-            options_per_platform: Settings to add for one network only, such
-                as `{"pinterest": {"board_id": "x"}}`. They are added to the
-                post's own options for accounts on that network; the post you
-                passed in is left alone.
-
-        Returns:
-            One outcome per account, in the order you asked for them.
-
-        Raises:
-            BaseException: Anything that is not an ordinary error, such as
-                the job being cancelled. Those are passed on rather than
-                written down, so that shutting down really does shut down.
-        """
-        ids = tuple(connection_ids)
-        extras = options_per_platform if options_per_platform is not None else {}
-        outcomes: list[PostResult | BaseException] = await asyncio.gather(
-            *(self._post_one(connection_id, post, extras) for connection_id in ids),
-            return_exceptions=True,
-        )
-
-        results: list[PostResult | PostError] = []
-        for connection_id, outcome in zip(ids, outcomes, strict=True):
-            if isinstance(outcome, BaseException):
-                if not isinstance(outcome, Exception):
-                    raise outcome
-                results.append(PostError(connection_id=connection_id, error=outcome))
-            else:
-                results.append(outcome)
-
-        return PostJob(connection_ids=ids, results=tuple(results))
-
-    async def _post_one(
-        self,
-        connection_id: str,
-        post: Post,
-        options_per_platform: Mapping[str, RawData],
-    ) -> PostResult:
-        """Publish one post as one account, adding that network's options.
-
-        Args:
-            connection_id: The account to post as.
-            post: What to publish.
-            options_per_platform: Settings to add for one network only.
-
-        Returns:
-            What the network said about the new post.
-        """
-        connection = await self.fresh_connection(connection_id)
-        extra = options_per_platform.get(connection.platform)
-        if extra:
-            # A new post rather than a changed one: the caller's post goes to
-            # several networks at once, and each needs different options.
-            post = replace(post, options={**post.options, **extra})
-        return await _publish(self.platform_for(connection.platform), connection, post)
 
     async def aclose(self) -> None:
         """Close the HTTP clients this made.

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Which account?{% endblock %}
+{% block heading %}Which {{ network.label }} account?{% endblock %}
+{% block body %}
+
+{# The sign-in paused here. The person has approved this app, but the
+   network needs to know which Page, channel or business account is meant.
+   It asks even when there is only one, on purpose: choosing silently would
+   leave this app with two paths through a sign-in, one of which almost
+   never runs and is therefore never right. #}
+
+<p>You have approved this app. Now pick the one it should post as.</p>
+
+<form method="post" action="{{ url_for('signin.choose', platform=platform) }}">
+  {% for option in options %}
+    <label>
+      <input type="radio" name="account_id" value="{{ option.id }}"
+             {% if loop.first %}checked{% endif %}>
+      {{ option.name }}
+      {% if option.kind %}<span class="quiet">({{ option.kind }})</span>{% endif %}
+    </label>
+  {% endfor %}
+  <button type="submit">Use this one</button>
+</form>
+
+<p class="quiet">
+  The resume token that carries this sign-in on is not in this form. On
+  Facebook it holds the person's own access token, because Facebook's code
+  can only be swapped once and that already happened. It stays in the
+  <code>login_note</code> table and the browser only carries the state.
+</p>
+
+{% endblock %}

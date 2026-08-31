@@ -37,6 +37,7 @@ from socialchimp.http import Retries
 from socialchimp.platform import (
     CanAnswerSetupCheck,
     CanCheckSignature,
+    CanCheckState,
     CanDeletePosts,
     CanReadPushedUpdates,
     CanResumeLogin,
@@ -61,6 +62,7 @@ APP_SECRET = "app-secret"
 PAGE_ID = "111222333"
 PAGE_TOKEN = "page-token"
 POST_ID = f"{PAGE_ID}_444555"
+VIDEO_ID = "777888999"
 REDIRECT = "https://app.example/callback"
 
 # One try and no waiting, so the error tests do not spend real seconds asleep.
@@ -217,11 +219,13 @@ class TestWhatItSaysItCanDo:
         resumes: CanResumeLogin = platform
         deletes: CanDeletePosts = platform
         listens: CanCheckSignature = platform
+        answers: CanCheckState = platform
 
         assert isinstance(checked, Platform)
         assert isinstance(resumes, CanResumeLogin)
         assert isinstance(deletes, CanDeletePosts)
         assert isinstance(listens, CanCheckSignature)
+        assert isinstance(answers, CanCheckState)
         assert platform.name == "facebook"
 
     def test_it_lists_the_features_facebook_really_has(
@@ -1118,6 +1122,166 @@ class TestPublishingVideo:
             pytest.raises(InvalidPostError),
         ):
             await platform.publish(account, Post(media=clips))
+        assert not network.calls
+
+
+# ---------------------------------------------------------------------------
+# What happens after a video is accepted
+# ---------------------------------------------------------------------------
+
+
+def stub_status(network: respx.Router, said: dict[str, Any]) -> respx.Route:
+    """Answer "how is this video getting on?" with what Facebook would say."""
+    return network.get(f"/{VIDEO_ID}").mock(return_value=httpx.Response(200, json=said))
+
+
+class TestAskingHowAVideoIsGettingOn:
+    def test_it_offers_asking_how_a_post_is_getting_on(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        # publish() answers PROCESSING for a video, so there has to be
+        # somewhere to ask. Without this, Account.check_state refuses and
+        # the state means nothing anybody can act on.
+        assert isinstance(platform, CanCheckState)
+
+    async def test_it_asks_facebook_for_the_one_field_that_says(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            route = stub_status(
+                network,
+                {
+                    "id": VIDEO_ID,
+                    "status": {"video_status": "ready", "processing_progress": 100},
+                },
+            )
+
+            result = await platform.check_state(account, VIDEO_ID)
+
+        asked = route.calls.last.request
+        assert asked.url.params["fields"] == "status"
+        assert asked.headers["Authorization"] == f"Bearer {PAGE_TOKEN}"
+        assert result.id == VIDEO_ID
+        assert result.state is PostState.DONE
+        assert result.is_done
+        assert result.url == f"https://www.facebook.com/{PAGE_ID}/videos/{VIDEO_ID}"
+
+    @pytest.mark.parametrize(
+        ("video_status", "expected"),
+        [
+            ("ready", PostState.DONE),
+            ("processing", PostState.PROCESSING),
+            ("error", PostState.FAILED),
+            # A word Meta adds next year means "ask again", never "done".
+            ("something-new", PostState.PROCESSING),
+        ],
+    )
+    async def test_it_reads_every_state_facebook_reports(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+        video_status: str,
+        expected: PostState,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_status(
+                network, {"id": VIDEO_ID, "status": {"video_status": video_status}}
+            )
+
+            result = await platform.check_state(account, VIDEO_ID)
+
+        assert result.state is expected
+
+    async def test_the_state_publish_gives_back_can_be_resolved(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        # The whole point: what publish() hands back is something you can
+        # then go and ask about.
+        clip = Media.from_bytes(b"pretend mp4", filename="buns.mp4")
+
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.post(f"/{PAGE_ID}/videos").mock(
+                return_value=httpx.Response(200, json={"id": VIDEO_ID})
+            )
+            stub_status(network, {"id": VIDEO_ID, "status": {"video_status": "ready"}})
+
+            published = await platform.publish(
+                account, Post(text="Watch this", media=(clip,))
+            )
+            settled = await platform.check_state(account, published.id)
+
+        assert published.state is PostState.PROCESSING
+        assert settled.state is PostState.DONE
+        assert settled.url == published.url
+
+    async def test_it_keeps_what_facebook_said_about_the_allowance(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get(f"/{VIDEO_ID}").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"id": VIDEO_ID, "status": {"video_status": "processing"}},
+                    headers={
+                        "X-App-Usage": json.dumps(
+                            {"call_count": 12, "total_time": 3, "total_cputime": 1}
+                        )
+                    },
+                )
+            )
+
+            await platform.check_state(account, VIDEO_ID)
+
+        assert platform.usage is not None
+        assert platform.usage.calls == 12
+
+    async def test_it_says_so_when_facebook_answers_without_a_status(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_status(network, {"id": VIDEO_ID})
+
+            with pytest.raises(PlatformError) as refused:
+                await platform.check_state(account, VIDEO_ID)
+
+        said = str(refused.value)
+        assert VIDEO_ID in said
+        # It has to say what check_state is for, or the next thing somebody
+        # does is call it on a text post and get the same message again.
+        assert "video" in said
+
+    async def test_a_video_facebook_has_never_heard_of(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get(f"/{VIDEO_ID}").mock(
+                return_value=httpx.Response(404, text="gone")
+            )
+
+            with pytest.raises(NotFoundError):
+                await platform.check_state(account, VIDEO_ID)
+
+    async def test_it_refuses_a_connection_that_names_no_page(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        with (
+            respx.mock(assert_all_called=False) as network,
+            pytest.raises(ConfigError),
+        ):
+            await platform.check_state(an_account(page_id="", extra={}), VIDEO_ID)
+
         assert not network.calls
 
 

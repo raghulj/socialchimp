@@ -345,9 +345,7 @@ class TestDispatcher:
 
         assert heard == [UpdateKind.MENTION, UpdateKind.UNKNOWN]
 
-    async def test_a_handler_that_throws_does_not_stop_the_others(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_a_handler_that_throws_does_not_stop_the_others(self) -> None:
         survivors: list[str] = []
         dispatcher = Dispatcher()
 
@@ -360,10 +358,77 @@ class TestDispatcher:
 
         dispatcher.on(UpdateKind.COMMENT_CREATED, explode)
         dispatcher.on(UpdateKind.COMMENT_CREATED, note)
-        await dispatcher.deliver(an_update("u1"))
+
+        with pytest.raises(ExceptionGroup) as raised:
+            await dispatcher.deliver(an_update("u1"))
 
         assert survivors == ["u1"]
-        assert "the database is down" in caplog.text
+        assert "the database is down" in str(raised.value.exceptions[0])
+
+    async def test_a_lone_failure_is_still_raised_as_a_group(self) -> None:
+        # One shape to catch whichever way it goes. Registering a second
+        # handler tomorrow must not change what the caller catches today.
+        dispatcher = Dispatcher()
+
+        async def explode(update: Update) -> None:
+            message = "the database is down"
+            raise RuntimeError(message)
+
+        dispatcher.on_any(explode)
+
+        with pytest.raises(ExceptionGroup) as raised:
+            await dispatcher.deliver(an_update("u1"))
+
+        assert len(raised.value.exceptions) == 1
+        assert isinstance(raised.value.exceptions[0], RuntimeError)
+
+    async def test_every_failure_is_kept_not_just_the_first(self) -> None:
+        dispatcher = Dispatcher()
+
+        async def explode(update: Update) -> None:
+            message = "the database is down"
+            raise RuntimeError(message)
+
+        async def refuse(update: Update) -> None:
+            message = "that account is gone"
+            raise ValueError(message)
+
+        dispatcher.on_any(explode)
+        dispatcher.on_any(refuse)
+
+        with pytest.raises(ExceptionGroup) as raised:
+            await dispatcher.deliver(an_update("u1"))
+
+        assert [type(one) for one in raised.value.exceptions] == [
+            RuntimeError,
+            ValueError,
+        ]
+
+    async def test_an_update_a_handler_failed_on_is_not_remembered(self) -> None:
+        # The half that matters most. An update written down as handled is
+        # skipped when the network retries it, so remembering one that no
+        # handler got through loses it for good.
+        memory = InMemorySeenUpdates()
+        dispatcher = Dispatcher(seen=memory)
+        tries: list[str] = []
+
+        async def explode(update: Update) -> None:
+            tries.append(update.id)
+            message = "the database is down"
+            raise RuntimeError(message)
+
+        dispatcher.on_any(explode)
+
+        with pytest.raises(ExceptionGroup):
+            await dispatcher.deliver(an_update("u1"))
+
+        assert await memory.seen("u1") is False
+
+        # So the network's retry gets a real second chance.
+        with pytest.raises(ExceptionGroup):
+            await dispatcher.deliver(an_update("u1"))
+
+        assert tries == ["u1", "u1"]
 
     async def test_the_same_update_arriving_twice_is_handled_once(self) -> None:
         # Networks promise to deliver at least once, so this is normal.

@@ -76,6 +76,23 @@ an error.
 approximate. A library that quietly does something else is a library nobody
 can trust with a customer's account.
 
+**Say so if your network has no app to register.** Most do: somebody creates
+one in a developer portal, saves the id and secret with `Storage.save_app`,
+and socialchimp hands them to every sign-in. A network with no portal at all
+has none of that, so list `Feature.NEEDS_NO_APP` and socialchimp asks storage
+for nothing and hands your `start_login` a `LoginRequest` with `app=None`:
+
+```python
+features = Feature.NEEDS_NO_APP | Feature.POST_TEXT | Feature.REPLY
+```
+
+Bluesky is the built-in one - a person signs in with their handle and an app
+password they made themselves. Leave the flag off for a network that does
+need credentials, including one that can register itself: Mastodon creates
+the app for you, but the app still exists, and a sign-in without it fails.
+Claim it wrongly and your platform is handed `app=None` and finds out at the
+token swap, which is a worse place to find out.
+
 **Renewing a token is given your app's credentials.** Google, Meta and X all
 sign a renewal with a client id and secret, and a platform has nowhere else
 to get them - so `refresh` is handed them the same way a sign-in is.
@@ -201,6 +218,8 @@ From here:
 - **Adding something is a minor release.** A new `Feature`, a new
   `UpdateKind`, a new optional `Can...` extra, a new field on `Limits` with a
   default. Your platform keeps working and does not need touching.
+  `Feature.NEEDS_NO_APP` arrived in 0.3.0 this way: a platform that does not
+  list it behaves exactly as it did.
 - **Changing or removing something is a major release**, and comes with a
   note saying what to do about it.
 - **Anything named with a leading underscore is ours**, including
@@ -235,8 +254,9 @@ These hold you to what you claim: a platform declaring it can create apps
 must actually be able to, a post over a declared limit must be refused before
 anything reaches the network, scheduling on a platform without
 `Feature.SCHEDULE` must raise `NotSupportedError` rather than quietly
-posting, and a platform that pauses to ask which account to use must have a
-`resume_login` socialchimp can actually call.
+posting, a platform listing `Feature.NEEDS_NO_APP` must really start a login
+with nothing saved, and a platform that pauses to ask which account to use
+must have a `resume_login` socialchimp can actually call.
 
 Add `make_connection()` and `make_transport()` to unlock the checks that need
 a working platform. Leave them out and those skip with a line telling you

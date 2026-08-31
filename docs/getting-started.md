@@ -52,6 +52,10 @@ keeps them apart for you, but you do have to register on each one.
 Most networks cannot do this. Ask Facebook and you get a clear refusal
 pointing at its developer portal, because Meta reviews every app by hand.
 
+**Bluesky needs no app at all** - no portal, nothing to register, nothing to
+save. Skip this step for it entirely; see
+[networks with no sign-in page](#networks-with-no-sign-in-page).
+
 ## Step 3 - sign someone in
 
 Signing in has two halves, because the person goes off to the network in the
@@ -117,6 +121,8 @@ Bluesky has no page to send anyone to. You sign in with an app password, so
 `start_login` answers with `AskForDetails` instead:
 
 ```python
+# Nothing was registered first. Bluesky has no developer portal and no app,
+# so there is nothing for save_app to hold and nothing to look up.
 step = await sc.start_login("bluesky", redirect_uri="unused")
 
 # step.fields tells you what to ask for:
@@ -133,6 +139,12 @@ step = await sc.finish_login(
 
 Show the fields in the order given, and never write anything marked `secret`
 to a log.
+
+**Step 2 does not apply here.** Bluesky's platform says `Feature.NEEDS_NO_APP`,
+so socialchimp asks your storage for no credentials before the sign-in and
+hands the platform `None` where the app would go. Every other network still
+needs its id and secret saved first, and says so plainly when they are
+missing.
 
 ## Step 4 - post
 
@@ -161,18 +173,38 @@ The same two lines post to Bluesky. You do not write anything per network.
 Your token is renewed before every post, so a post never fails just because
 a token aged out. Bluesky's tokens last minutes, and you will not notice.
 
-### Posting to several accounts at once
+### Posting to more than one account
+
+You loop. socialchimp posts as one account at a time, and there is no call
+that spans several:
 
 ```python
-job = await sc.post_to_many([mastodon_id, bluesky_id], Post(text="Hi"))
+from socialchimp import SocialChimpError
 
-for result in job.succeeded:
-    print("posted:", result.url)
-for failure in job.failed:
-    print("failed:", failure.connection_id, failure.error)
+for connection_id in (mastodon_id, bluesky_id):
+    try:
+        result = await sc.account(connection_id).post(Post(text="Hi"))
+        print("posted:", result.url)
+    except SocialChimpError as refused:
+        print("failed:", connection_id, refused)
 ```
 
-One account failing never hides the ones that worked.
+That loop is four lines, and writing it yourself is the point. socialchimp
+raises when something goes wrong and stops; your app catches it and decides
+what happens next. Only your app knows whether Bluesky being down should
+stop the Mastodon post too, whether the failure belongs in a table so a
+worker can retry it tonight, or whether somebody needs telling. A library
+that looped for you would have to pick one of those on your behalf, and it
+would pick wrong often enough to matter.
+
+Catching `SocialChimpError` catches everything socialchimp raises. Catch
+something narrower - `RateLimitError`, `AuthError`, `NotSupportedError` - when
+you want to treat one kind differently, which is the reason those types exist:
+one set of errors across every network, instead of nine networks' error
+formats.
+
+There is a runnable version in
+[`examples/post_to_each.py`](../examples/post_to_each.py).
 
 ## Step 5 - when a network cannot do something
 

@@ -66,6 +66,22 @@ class Feature(Flag):
     in the network's developer portal first.
     """
 
+    NEEDS_NO_APP = auto()
+    """There is no app to register, so nothing has to be saved first.
+
+    Bluesky only, today. It has no developer portal at all - a person signs
+    in with their handle and an app password they made themselves - so there
+    is no client id and no secret, and nothing for `Storage.save_app` to
+    hold. `SocialChimp.start_login` works against empty storage there, and
+    the platform is handed `LoginRequest.app` as `None`.
+
+    Leave it off for a network that does need credentials, including one
+    that can register itself: Mastodon creates the app for you, but the app
+    still exists and a sign-in without it fails. A sign-in with none saved is
+    then refused with a message naming `Storage.save_app`, which is the
+    right answer everywhere but here.
+    """
+
     POST_TEXT = auto()
     """Can publish words."""
 

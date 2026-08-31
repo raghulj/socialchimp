@@ -31,7 +31,6 @@ The names here go on working.
 from __future__ import annotations
 
 import json
-import logging
 import math
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -89,8 +88,6 @@ __all__ = [
     "sync_storage",
     "updates_in",
 ]
-
-logger = logging.getLogger(__name__)
 
 # How much randomness goes into a state we make up for an app that did not
 # choose one. The state is the key a half-finished sign-in is filed under, so
@@ -374,6 +371,72 @@ def updates_in(
     return [pusher.read_update(body, headers)]
 
 
+def _no_webhook_secret(platform: str) -> str:
+    """Say that we cannot check anything this network sends.
+
+    Args:
+        platform: Which network sent it.
+
+    Returns:
+        The message, saying what to do about it.
+    """
+    return (
+        f"No webhook secret is stored for {platform}, so nothing it sends "
+        f"can be checked. Add it to the secrets given to Routes."
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Webhooks:
+    """What receiving a webhook takes: how to check one, and where it goes.
+
+    The two are kept together because neither is any use alone. Secrets with
+    no `deliver` would check a real update and then throw it away, and
+    `Routes` refuses to be built that way - see `_webhooks_from`.
+
+    Attributes:
+        secrets: The secret each network signs its webhooks with, by network
+            name.
+        deliver: Where a checked update goes.
+    """
+
+    secrets: Mapping[str, str]
+    deliver: DeliverUpdate
+
+
+def _webhooks_from(
+    secrets: Mapping[str, str] | None,
+    deliver: DeliverUpdate | None,
+) -> _Webhooks | None:
+    """Pair up what receiving a webhook takes, or refuse the pairing.
+
+    Args:
+        secrets: The secret each network signs its webhooks with.
+        deliver: Where a checked update goes.
+
+    Returns:
+        The pair, or `None` when these routes receive no webhooks at all,
+        which is fine - plenty of apps only sign people in.
+
+    Raises:
+        ConfigError: If there are secrets but nowhere to hand updates on to.
+    """
+    if deliver is None:
+        if secrets:
+            message = (
+                "These routes were given webhook secrets but no deliver, so "
+                "an update that arrived and passed its signature check would "
+                "be thrown away, and the network would be told it was "
+                "handled. Pass deliver=dispatcher.deliver. If you only want "
+                "to see them while you get the URL working, pass a function "
+                "of your own that writes them to your log - then dropping "
+                "them is your decision rather than a surprise."
+            )
+            raise ConfigError(message)
+        return None
+    return _Webhooks(secrets=secrets if secrets is not None else {}, deliver=deliver)
+
+
 class Routes:
     """Signing in and receiving a webhook, with no framework in sight.
 
@@ -383,8 +446,18 @@ class Routes:
     else.
 
     Every method is a wrapper around a `SocialChimp` method you could call
-    yourself, and every one answers rather than raises: an error becomes a
-    `Reply` with a sensible status, so a route never has to catch anything.
+    yourself. Anything the caller did wrong, and anything a network said no
+    to, comes back as a `Reply` with a sensible status, so a route never has
+    to catch those. Two things are raised instead, because both are yours to
+    deal with and neither is the caller's fault:
+
+    - `ConfigError`. Something is set up wrong - a secret that was never
+      stored, an app that was never registered. It would be the same mistake
+      on every request, so answering a tidy 500 only buries it in a log.
+      Raised, it stops you in development and shows up as an error in
+      production, which is what a mistake in your own set-up deserves.
+    - Whatever `deliver` raised - an `ExceptionGroup` of the handlers that
+      failed, if it is `Dispatcher.deliver`. See `webhook`.
 
     Example:
         routes = Routes(sc, redirect_uri="https://app.example/cb/{platform}")
@@ -421,16 +494,20 @@ class Routes:
             setup_tokens: The token each network's setup check quotes back,
                 by network name. Meta's forms call this the verify token.
             deliver: Where a webhook's update goes. `Dispatcher.deliver`
-                fits exactly. Left out, updates are checked and dropped,
-                which is only useful while you are getting a URL working.
+                fits exactly. Leave it out only if these routes sign people
+                in and nothing else: giving `secrets` without it is refused
+                here, because it would mean checking a real update and then
+                dropping it.
+
+        Raises:
+            ConfigError: If there are webhook secrets but no `deliver`.
         """
         self._sc = sc
         self._redirect_uri = redirect_uri
         self._memory = memory if memory is not None else InMemoryLoginMemory()
         self._scopes = scopes if scopes is not None else {}
-        self._secrets = secrets if secrets is not None else {}
         self._setup_tokens = setup_tokens if setup_tokens is not None else {}
-        self._deliver = deliver
+        self._webhooks = _webhooks_from(secrets, deliver)
 
     def _redirect_for(self, platform: str) -> str:
         """Work out where this network should send people back to.
@@ -480,6 +557,9 @@ class Routes:
                 state=state,
             )
             return await self._next(state, {"host": host}, step)
+        except ConfigError:
+            # Your set-up, not this request. See the class docstring.
+            raise
         except SocialChimpError as error:
             return Reply.for_error(error)
 
@@ -517,6 +597,9 @@ class Routes:
                 remember=kept.get("remember"),
             )
             return await self._next(state, kept, step)
+        except ConfigError:
+            # Your set-up, not this request. See the class docstring.
+            raise
         except SocialChimpError as error:
             return Reply.for_error(error)
 
@@ -564,6 +647,9 @@ class Routes:
                 remember=kept.get("remember"),
             )
             return await self._next(state, kept, step)
+        except ConfigError:
+            # Your set-up, not this request. See the class docstring.
+            raise
         except SocialChimpError as error:
             return Reply.for_error(error)
 
@@ -658,8 +744,20 @@ class Routes:
             headers: The request headers.
 
         Returns:
-            200 when the request was signed properly and handed on. 401 when
-            it was not, with nothing said about which check failed.
+            200 when the request was signed properly and every update in it
+            was handed on. 401 when it was not signed properly, with nothing
+            said about which check failed.
+
+        Raises:
+            ConfigError: If these routes are not set up to receive this
+                network's webhooks, or the platform file is wrong about
+                itself. Both are mistakes to fix rather than answers to send.
+            Exception: Whatever `deliver` raised, which for
+                `Dispatcher.deliver` is an `ExceptionGroup` of the handlers
+                that failed. Nothing is answered, so the framework's own 500
+                goes back - and a 500 is how a network is told to send the
+                update again. Answering 200 for an update nothing handled
+                would tell it never to bother.
         """
         try:
             pusher = self._sc.platform_for(platform)
@@ -682,30 +780,32 @@ class Routes:
                 )
                 raise ConfigError(message)
 
-            secret = self._secrets.get(platform)
+            webhooks = self._webhooks
+            if webhooks is None:
+                # No deliver was given, so there are no secrets either -
+                # `Routes` refuses that pairing when it is built. These
+                # routes receive no webhooks at all.
+                raise ConfigError(_no_webhook_secret(platform))
+
+            secret = webhooks.secrets.get(platform)
             if secret is None:
-                message = (
-                    f"No webhook secret is stored for {platform}, so nothing "
-                    f"it sends can be checked. Add it to the secrets given "
-                    f"to Routes."
-                )
-                raise ConfigError(message)
+                raise ConfigError(_no_webhook_secret(platform))
 
             pusher.check_signature(body, headers, secret=secret)
             updates = updates_in(pusher, body, headers)
+        except ConfigError:
+            # Your set-up, not this request. See the class docstring.
+            raise
         except SocialChimpError as error:
             return Reply.for_error(error)
 
-        if self._deliver is None:
-            logger.warning(
-                "%d update(s) from %s were checked and dropped, because "
-                "these routes were given nowhere to hand them on to.",
-                len(updates),
-                platform,
-            )
-        else:
-            for update in updates:
-                await self._deliver(update)
+        # Outside the try on purpose. A handler that failed is not something
+        # to turn into a tidy reply: it goes up, the framework answers 500,
+        # and the network sends the update again. Anything handed on before
+        # the failure is skipped second time round if you gave the dispatcher
+        # a `SeenUpdates`, which is what that is for.
+        for update in updates:
+            await webhooks.deliver(update)
 
         return Reply.json({"ok": True})
 
@@ -722,25 +822,30 @@ class Routes:
 
         Returns:
             The challenge as plain text, or 403 if the token was not ours.
+
+        Raises:
+            ConfigError: If no setup token is stored for this network. See
+                the class docstring for why that is raised and not answered.
         """
+        # Outside the try, because it is the one thing here that is your
+        # set-up rather than this request, and it is meant to get out.
+        expected = self._setup_tokens.get(platform)
+        if expected is None:
+            message = (
+                f"No setup token is stored for {platform}, so there is "
+                f"nothing to check this against. Add it to the "
+                f"setup_tokens given to Routes - it is the value you "
+                f"typed into that network's dashboard."
+            )
+            raise ConfigError(message)
+
         try:
-            expected = self._setup_tokens.get(platform)
-            if expected is None:
-                message = (
-                    f"No setup token is stored for {platform}, so there is "
-                    f"nothing to check this against. Add it to the "
-                    f"setup_tokens given to Routes - it is the value you "
-                    f"typed into that network's dashboard."
-                )
-                raise ConfigError(message)
             return Reply.text(answer_setup_check(params, expected_token=expected))
         except SignatureError:
             # 403 rather than the 401 a bad webhook signature gets. Meta's
             # own setup flow expects it, and this is not a signed request -
             # it is a token quoted back at us.
             return Reply.json({"error": "Refused."}, status=403)
-        except SocialChimpError as error:
-            return Reply.for_error(error)
 
 
 def _needs(name: str, why: str) -> Reply:

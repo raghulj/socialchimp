@@ -89,6 +89,12 @@ has finished encoding it. Only then can the file be named on a post.
 Pieces are read off disk one at a time through `Media.piece`, so a large
 video costs one piece of memory rather than all of it.
 
+**Alt text is a fifth request.** X has nowhere to carry a description on the
+upload itself, so a `Media.alt_text` goes up on its own afterwards, through
+`POST /2/media/metadata`, and it has to happen before the file is named on a
+post - X will not take a description for a file that is already published.
+A file with no alt text sends nothing extra.
+
 ## A thread is five posts, not one thing
 
 X has no thread. A thread is posts chained together, each one replying to the
@@ -200,6 +206,7 @@ PLANS_URL: Final = "https://console.x.com"
 TOKEN_PATH: Final = "/oauth2/token"  # noqa: S105 - a public address, not a secret
 TWEETS_PATH: Final = "/tweets"
 MEDIA_PATH: Final = "/media/upload"
+MEDIA_METADATA_PATH: Final = "/media/metadata"
 ME_PATH: Final = "/users/me"
 
 DEFAULT_SCOPES: Final = ("tweet.read", "tweet.write", "users.read", "offline.access")
@@ -1435,8 +1442,10 @@ class XPlatform:
     async def _upload(self, http: HttpClient, item: Media) -> str:
         """Send one file to X and wait until it can be used.
 
-        Four steps: say what is coming, send it a piece at a time, say that
-        is all of it, and - for video - wait while X encodes it.
+        Say what is coming, send it a piece at a time, say that is all of
+        it, and - for video - wait while X encodes it. A file with
+        `Media.alt_text` on it takes one more request after that, because
+        alt text is its own call here.
 
         Args:
             http: A client already signed as this account.
@@ -1496,7 +1505,40 @@ class XPlatform:
             # Only video comes back with anything to wait for. A picture is
             # ready the moment it is finalised and says nothing here.
             await self._wait_until_ready(http, media_id, state, progress)
+
+        await self._describe(http, media_id, item.alt_text)
         return media_id
+
+    async def _describe(
+        self,
+        http: HttpClient,
+        media_id: str,
+        alt_text: str | None,
+    ) -> None:
+        """Tell X what a file shows, for anybody using a screen reader.
+
+        Alt text is a request of its own - the upload has nowhere to carry
+        it - and it has to happen while the file is still loose. Once the
+        file is named on a post X will not take a description for it, so
+        this goes between the upload and the post rather than after both.
+
+        Args:
+            http: A client already signed as this account.
+            media_id: The file to describe.
+            alt_text: What the file shows. Nothing is sent when there is
+                none, so a file with no description costs no extra request.
+
+        Raises:
+            SocialChimpError: If X refuses the description. Nothing has been
+                published at this point, so the post is not half-sent.
+        """
+        if not alt_text:
+            return
+
+        await http.post(
+            MEDIA_METADATA_PATH,
+            json={"id": media_id, "metadata": {"alt_text": {"text": alt_text}}},
+        )
 
     def _media_id(self, reply: RawData) -> str:
         """Read X's id for a file out of what it answered.

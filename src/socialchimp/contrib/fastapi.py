@@ -113,6 +113,8 @@ def router(
         setup_tokens: The token each network's setup check quotes back, by
             network name.
         deliver: Where a webhook's update goes. `Dispatcher.deliver` fits.
+            Giving `secrets` without it is refused, because it would mean
+            checking a real update and then dropping it.
 
     Returns:
         A router to give `app.include_router`.

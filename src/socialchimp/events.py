@@ -175,7 +175,7 @@ class Update:
         """Check the time has a timezone and fill in the missing word.
 
         Raises:
-            ValueError: If `created_at` has no timezone. Without one it
+            ConfigError: If `created_at` has no timezone. Without one it
                 compares wrongly against every other time we hold, and the
                 failure is silent.
         """
@@ -379,7 +379,7 @@ def check_not_too_old(
         now: The current time. Only useful in tests.
 
     Raises:
-        ValueError: If `sent_at` is a datetime with no timezone.
+        ConfigError: If `sent_at` is a datetime with no timezone.
         SignatureError: If the request is older than allowed.
     """
     if isinstance(sent_at, datetime):
@@ -591,16 +591,33 @@ class Dispatcher:
         """Hand one update to every handler that wants it.
 
         Handlers run one after another rather than all at once, so their
-        order is the order you registered them in. A handler that raises is
-        logged and the rest still run: one broken handler must not cost you
-        the others.
+        order is the order you registered them in. A handler that raises does
+        not stop the rest: they all get the update, and what they raised is
+        kept until the end. One broken handler must not cost you the others.
 
-        The update is remembered as handled only once every handler has had
-        it. Remembering first would mean a crash halfway through lost the
-        update for good, and a network's retry is the second chance.
+        Then, if anything was raised, two things happen. The update is **not**
+        remembered as handled, because it was not - so the network's retry
+        arrives to a clean slate instead of being skipped by the `seen` check.
+        And the failures come back to you as an `ExceptionGroup`, because a
+        handler that could not do its job is your problem to log, alert on or
+        retry, and only your app knows which.
+
+        It is always a group, even when only one handler failed. That way
+        there is one shape to catch, and registering a second handler
+        tomorrow does not change what your code has to catch today. Catch it
+        with `except*`, or with `except ExceptionGroup` if you only want to
+        know that something went wrong.
+
+        A route that lets the group out answers 500, which is exactly how a
+        network is told to send the update again - see
+        `socialchimp.contrib.shared.Routes.webhook`.
 
         Args:
             update: What happened.
+
+        Raises:
+            ExceptionGroup: Holding what every failed handler raised, if any
+                did. Nothing is raised when they all succeeded.
         """
         if self._seen is not None and await self._seen.seen(update.id):
             logger.debug(
@@ -608,15 +625,26 @@ class Dispatcher:
             )
             return
 
+        failures: list[Exception] = []
         for handler in [*self._by_kind.get(update.kind, []), *self._catch_all]:
             try:
                 await handler(update)
-            except Exception:
-                logger.exception(
-                    "A handler for update %s failed. The other handlers for "
-                    "it still ran.",
-                    update.id,
-                )
+            except Exception as failure:
+                # Kept rather than raised here, so the handlers after this one
+                # still get their update. They are all raised together below.
+                failures.append(failure)
+
+        if failures:
+            # Deliberately before `remember`, and instead of it. An update
+            # nobody got through is not handled, and writing it down as
+            # handled would make the `seen` check above skip the network's
+            # retry - the only second chance there is.
+            message = (
+                f"{len(failures)} handler(s) for update {update.id} failed, so "
+                f"it has not been remembered as handled. If the network sends "
+                f"it again, the handlers get another go at it."
+            )
+            raise ExceptionGroup(message, failures)
 
         if self._seen is not None:
             await self._seen.remember(update.id)

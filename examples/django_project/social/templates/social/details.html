@@ -1,0 +1,33 @@
+{% extends "social/base.html" %}
+{% block title %}Sign in to {{ network.label }}{% endblock %}
+
+{% block body %}
+<h1>Sign in to {{ network.label }}</h1>
+
+<p class="note">
+  This network has no sign-in page to send anybody to, so instead of a
+  redirect it says what to ask for. Nothing leaves this app on this route.
+</p>
+
+<form method="post" action="{% url 'social:details' network.name %}">
+  {% csrf_token %}
+  {# In the order the platform gave them. The ones it marked secret get a
+     password box, and none of them is ever logged. #}
+  {% for field in fields %}
+    <label>
+      {{ field.label }}
+      <input
+        type="{% if field.secret %}password{% else %}text{% endif %}"
+        name="{{ field.name }}"
+        autocomplete="off"
+        required>
+      {% if field.help_text %}<span class="note">{{ field.help_text }}</span>{% endif %}
+    </label>
+  {% endfor %}
+  <button type="submit">Connect</button>
+</form>
+
+{% if help_url %}
+  <p class="note">Where to get these: <a href="{{ help_url }}">{{ help_url }}</a></p>
+{% endif %}
+{% endblock %}

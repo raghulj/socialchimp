@@ -1,0 +1,76 @@
+{% extends "social/base.html" %}
+{% block title %}Connections{% endblock %}
+
+{% block body %}
+<h1>Connected accounts</h1>
+
+{% if connections %}
+  <table>
+    <tr><th>Account</th><th>Network</th><th>Connection id</th><th>Token expires</th><th></th></tr>
+    {% for connection in connections %}
+      <tr>
+        <td>{{ connection.account_name }}</td>
+        <td>{{ connection.platform }}{% if connection.host %} on {{ connection.host }}{% endif %}</td>
+        {# socialchimp chose this id, after the account. The webhook relies
+           on it: the network names the account, not one of our rows. #}
+        <td><code>{{ connection.id }}</code></td>
+        <td>
+          {% if connection.expires_at %}{{ connection.expires_at }}
+          {% else %}never{% endif %}
+          {% if connection.refresh_token_expires_at %}
+            <div class="note">Sign in again before {{ connection.refresh_token_expires_at }} - the refresh token itself runs out then, and nothing can renew that one.</div>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="{% url 'social:disconnect' connection.id %}">
+            {% csrf_token %}
+            <button type="submit">Disconnect</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+{% else %}
+  <p>Nothing connected yet.</p>
+{% endif %}
+
+{% if running_out %}
+  <h2>These need signing in again</h2>
+  <p class="note">
+    Their <em>refresh</em> token runs out soon, and nothing can renew that
+    one - an access token socialchimp renews for you before a post, but when
+    the refresh token goes there is nothing left to renew with. Found by
+    querying this app's own columns: socialchimp has five storage methods and
+    none of them lists anything.
+  </p>
+  <ul>
+    {% for connection in running_out %}
+      <li>{{ connection.account_name }} ({{ connection.platform }}) - {{ connection.refresh_token_expires_at }}</li>
+    {% endfor %}
+  </ul>
+{% endif %}
+
+<h2>The nine networks</h2>
+<table>
+  <tr><th>Network</th><th>Where the app comes from</th><th>Webhook</th><th></th></tr>
+  {% for row in networks %}
+    <tr>
+      <td>{{ row.network.label }}{% if row.connected %} &check;{% endif %}</td>
+      <td class="note">{{ row.network.where_the_app_comes_from }}</td>
+      <td class="note">
+        {% if row.pushes %}
+          it pushes: <code>/social/webhooks/{{ row.network.name }}</code>
+        {% else %}
+          asked on a timer
+        {% endif %}
+      </td>
+      <td><a href="{% url 'social:connect' row.network.name %}">Connect</a></td>
+    </tr>
+  {% endfor %}
+</table>
+
+{% if attempts %}
+  <h2>What this app has tried</h2>
+  {% include "social/attempts.html" %}
+{% endif %}
+{% endblock %}

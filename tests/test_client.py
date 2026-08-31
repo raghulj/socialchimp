@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -25,13 +26,14 @@ from socialchimp import (
     PostState,
     RawData,
     SignatureError,
+    SocialChimpError,
     Storage,
     Token,
     TokenManager,
     Update,
     UpdateKind,
 )
-from socialchimp.client import Account, PostError, PostJob, SocialChimp
+from socialchimp.client import Account, SocialChimp
 from socialchimp.http import HttpClient
 from socialchimp.platform import (
     AccountChoice,
@@ -164,7 +166,6 @@ class FakePlatform:
     name = "fake"
     features = Feature.POST_TEXT | Feature.POST_IMAGE | Feature.REPLY
     allowed = Limits(max_text_length=50)
-    pause = 0.0
 
     def __init__(self) -> None:
         MADE.append(self)
@@ -217,7 +218,6 @@ class FakePlatform:
         return a_token(access_token=NEW_ACCESS)
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
-        await asyncio.sleep(self.pause)
         self.published.append((connection, post))
         return PostResult(id=f"post-{connection.id}")
 
@@ -385,6 +385,27 @@ class ChoosyPlatform(FakePlatform):
         )
 
 
+class ChoosyWithNoApp(ChoosyPlatform):
+    """Pauses to ask which account, and has no app to register either."""
+
+    name = "choosy-no-app"
+    features = FakePlatform.features | Feature.NEEDS_NO_APP
+
+
+class SilentPusher(FakePlatform):
+    """Pushes to a URL, but asks nothing first. TikTok is like this."""
+
+    name = "silent-pusher"
+    features = FakePlatform.features | Feature.PUSH_UPDATES
+
+
+class NoAppNeededPlatform(FakePlatform):
+    """A network with no developer portal at all, the way Bluesky is."""
+
+    name = "no-app"
+    features = FakePlatform.features | Feature.NEEDS_NO_APP
+
+
 class FixedAddressPlatform(FakePlatform):
     """A network that lives at one address, whatever the account says.
 
@@ -436,22 +457,6 @@ class BrokenPlatform(FakePlatform):
         raise PlatformError(message, platform=self.name)
 
 
-class CancellingPlatform(FakePlatform):
-    """A platform whose work gets cancelled part way through."""
-
-    name = "cancels"
-
-    async def publish(self, connection: Connection, post: Post) -> PostResult:
-        raise asyncio.CancelledError
-
-
-class SlowPlatform(FakePlatform):
-    """A platform that takes its time, so results do not arrive in order."""
-
-    name = "slow"
-    pause = 0.05
-
-
 class NeedsCredentials(FakePlatform):
     """A network that will not renew a token without your app's credentials.
 
@@ -490,9 +495,10 @@ FAKES: dict[str, type[FakePlatform]] = {
     "fixed": FixedAddressPlatform,
     "per-server": PerServerPlatform,
     "app-password": AppPasswordPlatform,
+    "silent-pusher": SilentPusher,
+    "no-app": NoAppNeededPlatform,
+    "choosy-no-app": ChoosyWithNoApp,
     "broken": BrokenPlatform,
-    "cancels": CancellingPlatform,
-    "slow": SlowPlatform,
 }
 
 
@@ -711,6 +717,56 @@ class TestSigningSomeoneIn:
             "app_password": "abcd-efgh",
         }
 
+    async def test_a_network_with_no_app_signs_people_in_with_nothing_stored(
+        self,
+    ) -> None:
+        # Bluesky has no developer portal, so there is nothing to save and
+        # nothing to look up. Asking for credentials first refused a network
+        # that could never have any.
+        sc = SocialChimp(InMemoryStorage())
+
+        step = await sc.start_login("no-app", redirect_uri=REDIRECT)
+
+        assert isinstance(step, SendToNetwork)
+        assert made("no-app").started[0].app is None
+
+    async def test_finishing_and_choosing_need_nothing_stored_either(self) -> None:
+        # All three halves of a sign-in look the credentials up, so all
+        # three had the same problem.
+        storage = InMemoryStorage()
+        sc = SocialChimp(storage)
+
+        step = await sc.finish_login(
+            "no-app",
+            callback={"code": "abc"},
+            redirect_uri=REDIRECT,
+        )
+
+        assert isinstance(step, Finished)
+        assert await storage.get_connection("conn-new") == step.connection
+
+        carried_on = await sc.choose(
+            "choosy-no-app",
+            account_id="page-1",
+            resume_token="carry-on",
+            redirect_uri=REDIRECT,
+        )
+
+        assert isinstance(carried_on, Finished)
+        assert made("choosy-no-app").resumed == [("carry-on", "page-1")]
+
+    async def test_a_network_that_does_need_an_app_still_refuses_clearly(
+        self,
+    ) -> None:
+        # The flag is one network saying "not me". Everywhere else is
+        # unchanged, because a missing id and secret really is a mistake.
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(ConfigError) as missing:
+            await sc.start_login("fake", redirect_uri=REDIRECT)
+
+        assert "No app credentials are stored for fake" in str(missing.value)
+
     async def test_choosing_on_a_network_that_never_asks_says_so(self) -> None:
         sc = SocialChimp(await storage_holding_the_app())
 
@@ -753,6 +809,19 @@ class TestRegisteringAnApp:
         assert "fake does not support" in message
         assert "developer portal" in message
         assert "save_app" in message
+
+    async def test_a_network_with_no_app_at_all_is_told_that_instead(self) -> None:
+        # "Register it by hand in that network's developer portal" is not
+        # true of a network that has no portal and no app.
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.create_app("no-app", name="My App", redirect_uri=REDIRECT)
+
+        message = str(refused.value)
+        assert "no app to register on this network" in message
+        assert "no developer portal to register one in" in message
+        assert "Storage.save_app" not in message
 
     async def test_a_platform_that_claims_it_but_cannot_is_a_setup_problem(
         self,
@@ -979,13 +1048,31 @@ class TestRequestsANetworkSendsUs:
                 verify_token="chosen-by-me",
             )
 
-    def test_a_network_that_asks_nothing_first_says_so(self) -> None:
+    def test_a_network_that_pushes_but_asks_nothing_first_says_so(self) -> None:
+        # TikTok is like this: point it at a URL and it starts sending.
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(NotSupportedError) as refused:
+            sc.answer_setup_check("silent-pusher", {}, verify_token="chosen-by-me")
+
+        message = str(refused.value)
+        assert "silent-pusher" in message
+        assert "starts sending as soon as you point it at a URL" in message
+
+    def test_a_network_that_never_pushes_is_told_to_ask_on_a_timer(self) -> None:
+        # Pinterest never sends anything to a URL of yours, so telling
+        # somebody it starts sending as soon as you point it at one is a
+        # sentence they cannot act on.
         sc = SocialChimp(InMemoryStorage())
 
         with pytest.raises(NotSupportedError) as refused:
             sc.answer_setup_check("fake", {}, verify_token="chosen-by-me")
 
-        assert "fake" in str(refused.value)
+        message = str(refused.value)
+        assert "fake" in message
+        assert "starts sending" not in message
+        assert "Account.fetch_updates" in message
+        assert "Poller" in message
 
     def test_a_signature_is_checked_without_building_the_platform(self) -> None:
         sc = SocialChimp(InMemoryStorage())
@@ -1279,26 +1366,34 @@ class TestALoopThatDoesNotLast:
         assert "async" in str(refused.value)
 
 
-class TestPostingToManyAccounts:
-    async def test_every_account_gets_its_own_result_in_order(self) -> None:
+class TestPostingAsOneAccountAtATime:
+    """Posting to several accounts is a loop the app writes.
+
+    The library posts as one account and raises if that account fails. What
+    happens next - stop, carry on, write the failure down - is the app's to
+    decide, so these tests are written the way an app would write the loop.
+    """
+
+    async def test_a_loop_posts_as_every_account(self) -> None:
         storage = await storage_holding(
-            a_connection(connection_id="conn-a", platform="slow"),
+            a_connection(connection_id="conn-a"),
             a_connection(connection_id="conn-b"),
             a_connection(connection_id="conn-c"),
         )
         sc = SocialChimp(storage)
 
-        job = await sc.post_to_many(["conn-a", "conn-b", "conn-c"], Post(text="hello"))
+        posted = [
+            await sc.account(connection_id).post(Post(text="hello"))
+            for connection_id in ("conn-a", "conn-b", "conn-c")
+        ]
 
-        assert job.connection_ids == ("conn-a", "conn-b", "conn-c")
-        assert [result.id for result in job.succeeded] == [
+        assert [result.id for result in posted] == [
             "post-conn-a",
             "post-conn-b",
             "post-conn-c",
         ]
-        assert job.results == tuple(job.succeeded)
 
-    async def test_one_account_failing_does_not_hide_the_others(self) -> None:
+    async def test_one_account_failing_raises_and_the_app_can_carry_on(self) -> None:
         storage = await storage_holding(
             a_connection(connection_id="conn-a"),
             a_connection(connection_id="conn-b", platform="broken"),
@@ -1306,62 +1401,41 @@ class TestPostingToManyAccounts:
         )
         sc = SocialChimp(storage)
 
-        job = await sc.post_to_many(["conn-a", "conn-b", "conn-c"], Post(text="hi"))
+        posted: list[PostResult] = []
+        failed: list[tuple[str, Exception]] = []
+        for connection_id in ("conn-a", "conn-b", "conn-c"):
+            try:
+                posted.append(await sc.account(connection_id).post(Post(text="hi")))
+            except SocialChimpError as refused:
+                failed.append((connection_id, refused))
 
-        first, second, third = job.results
-        assert isinstance(first, PostResult)
-        assert isinstance(third, PostResult)
-        assert isinstance(second, PostError)
-        assert second.connection_id == "conn-b"
-        assert isinstance(second.error, PlatformError)
-        assert job.failed == [second]
-        assert job.succeeded == [first, third]
+        assert [result.id for result in posted] == ["post-conn-a", "post-conn-c"]
+        assert [connection_id for connection_id, _ in failed] == ["conn-b"]
+        assert isinstance(failed[0][1], PlatformError)
 
-    async def test_a_missing_connection_is_one_account_failing(self) -> None:
+    async def test_a_missing_connection_raises_like_any_other_failure(self) -> None:
         storage = await storage_holding(a_connection(connection_id="conn-a"))
         sc = SocialChimp(storage)
 
-        job = await sc.post_to_many(["conn-a", "gone"], Post(text="hi"))
+        with pytest.raises(ConfigError):
+            await sc.account("gone").post(Post(text="hi"))
 
-        assert [failure.connection_id for failure in job.failed] == ["gone"]
-        assert isinstance(job.failed[0].error, ConfigError)
-
-    async def test_options_for_one_network_are_added_to_the_post(self) -> None:
+    async def test_options_for_one_network_are_the_apps_to_add(self) -> None:
+        # There is no per-network options argument, because there is no call
+        # that spans networks any more. An app that wants different options
+        # per network builds the post it wants for that account.
         storage = await storage_holding(a_connection())
         sc = SocialChimp(storage)
         post = Post(text="hi", options={"mine": "kept"})
 
-        await sc.post_to_many(
-            ["conn-1"],
-            post,
-            options_per_platform={"fake": {"board_id": "x"}, "other": {"no": "no"}},
+        await sc.account("conn-1").post(
+            replace(post, options={**post.options, "board_id": "x"})
         )
 
         _, sent = made("fake").published[0]
         assert sent.options == {"mine": "kept", "board_id": "x"}
-        # The post you passed in is left exactly as it was.
+        # The post the app started from is left exactly as it was.
         assert post.options == {"mine": "kept"}
-
-    def test_the_repr_says_how_it_went(self) -> None:
-        worked = PostResult(id="post-1")
-        broke = PostError(connection_id="conn-b", error=ValueError("no"))
-
-        assert repr(PostJob(connection_ids=("conn-a",), results=(worked,))) == (
-            "PostJob(1 posted)"
-        )
-        assert repr(
-            PostJob(connection_ids=("conn-a", "conn-b"), results=(worked, broke))
-        ) == ("PostJob(1 posted, 1 failed: conn-b)")
-
-    async def test_being_cancelled_is_passed_on_rather_than_written_down(self) -> None:
-        storage = await storage_holding(
-            a_connection(connection_id="conn-a"),
-            a_connection(connection_id="conn-b", platform="cancels"),
-        )
-        sc = SocialChimp(storage)
-
-        with pytest.raises(asyncio.CancelledError):
-            await sc.post_to_many(["conn-a", "conn-b"], Post(text="hi"))
 
 
 class TestKeepingTokensFresh:

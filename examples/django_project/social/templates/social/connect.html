@@ -1,0 +1,58 @@
+{% extends "social/base.html" %}
+{% block title %}Connect {{ network.label }}{% endblock %}
+
+{% block body %}
+<h1>Connect {{ network.label }}</h1>
+
+<p class="note">{{ network.where_the_app_comes_from }}</p>
+
+<p class="note">
+  This network must have
+  <code>{{ redirect_uri }}</code>
+  on file as a valid redirect address, character for character. A trailing
+  slash is a different address.
+</p>
+
+{% if asks_which_account %}
+  <p class="note">
+    Signing in here stops half way to ask which account to use. It asks even
+    when there is only one - so this app has one path through a sign-in
+    rather than two, and nobody finds out which account got connected by
+    seeing a post appear on it.
+  </p>
+{% endif %}
+
+{% if can_register_the_app %}
+  {# Mastodon, and nothing else. Every other network makes somebody fill in
+     a form in a developer portal, and most of them then review it. #}
+  <form method="post" action="{% url 'social:register-app' network.name %}">
+    {% csrf_token %}
+    <fieldset>
+      <legend>Register this app first</legend>
+      <p class="note">
+        Once per server. An app registered on mastodon.social means nothing
+        on fosstodon.org, so each server gets its own row.
+      </p>
+      <label>Server <input type="text" name="host" placeholder="mastodon.social" required></label>
+      <label>App name <input type="text" name="name" value="socialchimp sample project"></label>
+      <button type="submit">Register</button>
+    </fieldset>
+  </form>
+{% endif %}
+
+<form method="post">
+  {% csrf_token %}
+  {% if network.asks_for_a_server %}
+    <label>
+      Server
+      <input type="text" name="host" placeholder="mastodon.social" required>
+    </label>
+    <p class="note">
+      Every Mastodon server is a separate place, with its own app, its own
+      accounts and its own post length. Ask <code>account.limits()</code>
+      rather than assuming 500 characters.
+    </p>
+  {% endif %}
+  <button type="submit">Connect {{ network.label }}</button>
+</form>
+{% endblock %}

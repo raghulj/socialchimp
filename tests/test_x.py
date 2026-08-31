@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1136,6 +1137,166 @@ class TestSendingFiles:
                     account,
                     Post(media=(Media.from_bytes(b"a picture", filename="a.png"),)),
                 )
+
+
+class TestAltText:
+    """`Media.alt_text` is what a screen reader reads out. It has to arrive."""
+
+    async def test_a_pictures_alt_text_reaches_x(
+        self,
+        platform: XPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            network.post(f"{API}/media/upload").mock(
+                side_effect=[
+                    httpx.Response(202, json={"data": {"id": "media-1"}}),
+                    httpx.Response(204),
+                    httpx.Response(201, json={"data": {"id": "media-1"}}),
+                ]
+            )
+            described = network.post(f"{API}/media/metadata").mock(
+                return_value=httpx.Response(200, json={"data": {"id": "media-1"}})
+            )
+            network.post(f"{API}/tweets").mock(
+                return_value=httpx.Response(201, json=A_TWEET)
+            )
+
+            await platform.publish(
+                account,
+                Post(
+                    text="Look",
+                    media=(
+                        Media.from_bytes(
+                            b"a picture",
+                            filename="a.png",
+                            alt_text="A cat asleep on a keyboard",
+                        ),
+                    ),
+                ),
+            )
+
+        assert json.loads(described.calls.last.request.content) == {
+            "id": "media-1",
+            "metadata": {"alt_text": {"text": "A cat asleep on a keyboard"}},
+        }
+
+    async def test_it_is_set_before_the_file_is_named_on_a_post(
+        self,
+        platform: XPlatform,
+        account: Connection,
+    ) -> None:
+        # X will not take alt text for a file that is already on a post, so
+        # the order here is the whole of whether it works.
+        sent: list[str] = []
+
+        with respx.mock() as network:
+            network.post(f"{API}/media/upload").mock(
+                side_effect=[
+                    httpx.Response(202, json={"data": {"id": "media-1"}}),
+                    httpx.Response(204),
+                    httpx.Response(201, json={"data": {"id": "media-1"}}),
+                ]
+            )
+            network.post(f"{API}/media/metadata").mock(
+                return_value=httpx.Response(200, json={"data": {"id": "media-1"}})
+            )
+            network.post(f"{API}/tweets").mock(
+                return_value=httpx.Response(201, json=A_TWEET)
+            )
+
+            await platform.publish(
+                account,
+                Post(
+                    media=(
+                        Media.from_bytes(
+                            b"a picture", filename="a.png", alt_text="A cat"
+                        ),
+                    ),
+                ),
+            )
+            sent = [str(call.request.url) for call in network.calls]
+
+        assert sent.index(f"{API}/media/metadata") < sent.index(f"{API}/tweets")
+
+    async def test_a_video_is_described_only_once_x_has_finished_with_it(
+        self,
+        platform: XPlatform,
+        account: Connection,
+        waits: list[float],
+    ) -> None:
+        # Describing a file X is still encoding, or one it gave up on, is a
+        # wasted request. The wait comes first.
+        with respx.mock() as network:
+            network.post(f"{API}/media/upload").mock(
+                side_effect=[
+                    httpx.Response(202, json={"data": {"id": "media-9"}}),
+                    httpx.Response(204),
+                    httpx.Response(
+                        201,
+                        json={
+                            "data": {
+                                "id": "media-9",
+                                "processing_info": {"state": "in_progress"},
+                            }
+                        },
+                    ),
+                ]
+            )
+            status = network.get(f"{API}/media/upload").mock(
+                return_value=httpx.Response(
+                    200, json={"data": {"processing_info": {"state": "succeeded"}}}
+                )
+            )
+            described = network.post(f"{API}/media/metadata").mock(
+                return_value=httpx.Response(200, json={"data": {"id": "media-9"}})
+            )
+            network.post(f"{API}/tweets").mock(
+                return_value=httpx.Response(201, json=A_TWEET)
+            )
+
+            await platform.publish(
+                account,
+                Post(
+                    media=(
+                        Media.from_bytes(
+                            b"pretend mp4", filename="a.mp4", alt_text="A cat, walking"
+                        ),
+                    ),
+                ),
+            )
+
+        assert status.called
+        assert json.loads(described.calls.last.request.content)["metadata"] == {
+            "alt_text": {"text": "A cat, walking"}
+        }
+
+    async def test_a_file_with_no_alt_text_costs_no_extra_request(
+        self,
+        platform: XPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(assert_all_called=False) as network:
+            network.post(f"{API}/media/upload").mock(
+                side_effect=[
+                    httpx.Response(202, json={"data": {"id": "media-1"}}),
+                    httpx.Response(204),
+                    httpx.Response(201, json={"data": {"id": "media-1"}}),
+                ]
+            )
+            described = network.post(f"{API}/media/metadata").mock(
+                return_value=httpx.Response(200, json={"data": {"id": "media-1"}})
+            )
+            network.post(f"{API}/tweets").mock(
+                return_value=httpx.Response(201, json=A_TWEET)
+            )
+
+            await platform.publish(
+                account,
+                Post(media=(Media.from_bytes(b"a picture", filename="a.png"),)),
+            )
+
+        assert not described.called
 
 
 class TestPostingAThread:

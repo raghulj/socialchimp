@@ -16,6 +16,7 @@ from socialchimp import (
     AuthError,
     Connection,
     Feature,
+    InMemoryStorage,
     InvalidPostError,
     Limits,
     Media,
@@ -24,6 +25,7 @@ from socialchimp import (
     Post,
     PostState,
     RateLimitError,
+    SocialChimp,
     Token,
     TokenExpiredError,
     UpdateKind,
@@ -201,6 +203,9 @@ class TestWhatItSaysItCanDo:
             Feature.REPLY,
             Feature.DELETE_POST,
             Feature.READ_POSTS,
+            # There is no developer portal and no app to register, so
+            # socialchimp does not ask for credentials before a sign-in.
+            Feature.NEEDS_NO_APP,
         ):
             assert feature in platform.features
 
@@ -298,6 +303,52 @@ class TestAskingForAnAppPassword:
         with respx.mock(assert_all_called=False) as network:
             await platform.start_login(LoginRequest(redirect_uri="unused"))
         assert not network.calls
+
+
+class TestSigningInWithNothingStored:
+    """Bluesky has no app to register, so empty storage is the normal state."""
+
+    async def test_the_getting_started_example_works(self) -> None:
+        # This is docs/getting-started.md, line for line. Nothing has been
+        # saved with save_app, because on Bluesky there is nothing to save.
+        sc = SocialChimp(InMemoryStorage())
+
+        step = await sc.start_login("bluesky", redirect_uri="unused")
+
+        assert isinstance(step, AskForDetails)
+        assert [field.name for field in step.fields] == ["handle", "app_password"]
+
+    async def test_the_platform_is_handed_no_credentials(self) -> None:
+        # Nothing invented a placeholder on the way through: the request
+        # carries `app=None`, which is the truth about Bluesky.
+        seen: list[LoginRequest] = []
+
+        class Watched(BlueskyPlatform):
+            async def start_login(self, request: LoginRequest) -> AskForDetails:
+                seen.append(request)
+                return await super().start_login(request)
+
+        sc = SocialChimp(InMemoryStorage(), platforms={"bluesky": Watched()})
+        await sc.start_login("bluesky", redirect_uri="unused")
+
+        assert seen[0].app is None
+
+    async def test_finishing_that_login_needs_nothing_stored_either(self) -> None:
+        storage = InMemoryStorage()
+        sc = SocialChimp(storage)
+
+        with respx.mock(base_url=XRPC) as network:
+            network.post("/com.atproto.server.createSession").mock(
+                return_value=httpx.Response(200, json=a_session())
+            )
+            step = await sc.finish_login(
+                "bluesky",
+                redirect_uri="unused",
+                callback={"handle": HANDLE, "app_password": "abcd-efgh"},
+            )
+
+        assert isinstance(step, Finished)
+        assert await storage.get_connection(step.connection.id) == step.connection
 
 
 class TestCreatingASession:

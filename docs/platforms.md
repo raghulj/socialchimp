@@ -18,6 +18,38 @@ things about it that surprise people.
 "On a timer" means the network has no way to tell us when something happens,
 so socialchimp checks instead. Your code gets the same updates either way.
 
+## Alt text
+
+`Media.alt_text` is the description read out to somebody using a screen
+reader, and it reaches **Bluesky, Facebook, Instagram, Mastodon, Threads and
+X** — every network here that takes a picture through `Media`.
+
+Two exceptions, both of them real properties of the network rather than
+something missing:
+
+- **Pinterest** hangs alt text off the whole pin rather than off one picture,
+  so it is `options={"alt_text": "..."}` there and `Media.alt_text` is not
+  read. A pin with five pictures has one description, which is Pinterest's
+  own shape.
+- **YouTube and TikTok** take video and nothing else, and neither has alt
+  text for a video.
+
+On X it costs one extra request per file, because X has nowhere to carry a
+description on the upload itself.
+
+## How much of a video has to fit in memory
+
+**YouTube, TikTok and X send a video in pieces**, reading it off disk one
+piece at a time, so a four gigabyte file costs one piece of memory rather
+than four gigabytes.
+
+**Facebook and Pinterest read the whole file first.** Neither sends a video
+in pieces today — Facebook's chunked upload is not written yet, and Pinterest
+hands out one upload form for one request — so a video really does cost its
+own size in memory on your own server while it goes out. Facebook refuses
+anything over a gigabyte for that reason, and `biggest_video_bytes` lowers
+the line if a gigabyte is more than your server has.
+
 ---
 
 ## Mastodon
@@ -52,6 +84,13 @@ real password and can be revoked on its own.
 `start_login` answers with `AskForDetails` rather than a link. Show the fields
 it gives you, and never log the one marked secret.
 
+**Nothing has to be saved first.** Bluesky is the only network here that lists
+`Feature.NEEDS_NO_APP`, so socialchimp asks your storage for no credentials
+before a sign-in and hands the platform `app=None`. `sc.start_login("bluesky",
+redirect_uri="unused")` works against empty storage. There is no `create_app`
+either — asking for one says there is no app to register, rather than sending
+you to a portal that does not exist.
+
 - **Post options**: `langs`
 - **Length is 300 letters and 3,000 bytes**, both enforced. A family emoji is
   one letter and eleven bytes, so the two limits catch different posts.
@@ -79,7 +118,15 @@ all. That review is the slowest part of getting started, so begin it early.
 - **A page token made from a long-lived user token does not expire.**
 - **Webhooks work.** Verify with the platform's `check_signature` on the raw
   bytes of the request, before anything parses them.
-- Large video is refused with a clear message rather than half-uploaded.
+- **A video comes back `PostState.PROCESSING`, not `DONE`.** Facebook takes
+  the bytes and carries on encoding after it answers. Ask again later with
+  `check_state`, which reads the video's `status` and says `DONE`,
+  `PROCESSING` or `FAILED`. Words and pictures are live the moment `publish`
+  returns, so there is nothing to ask about there.
+- **A video is read into memory whole**, not sent in pieces. Anything over a
+  gigabyte is refused with a clear message rather than half-uploaded, and
+  `biggest_video_bytes` lowers that line.
+- **Alt text works.** `Media.alt_text` goes up with the picture.
 
 ## YouTube
 
@@ -103,7 +150,10 @@ users can sign in.
 - **The daily allowance is quota, not rate limiting.** An upload costs about
   1,600 of 10,000 units a day. Running out raises `RateLimitError`, but
   retrying shortly is the wrong move — it resets at midnight Pacific.
-- Files are sent in pieces, so a large video does not have to fit in memory.
+- Files are sent in pieces, so a large video does not have to fit in memory —
+  unlike Facebook and Pinterest, which read the whole file first.
+- **No alt text.** Every post here is a video, and YouTube has no alt text
+  for one, so `Media.alt_text` is not sent anywhere.
 
 ## Instagram
 
@@ -123,7 +173,9 @@ makes the other much quicker.
   Instagram to finish with it, then publish. socialchimp does the waiting. If
   it runs out of patience you get a message saying the post *may still appear*
   — because it might, and being told it failed when it later succeeds is
-  worse than being told we do not know.
+  worse than being told we do not know. Because the waiting happens inside
+  `publish`, a post here is live by the time you get it: you never see
+  `PostState.PROCESSING`, and there is no `check_state` to need.
 - **Post options**: `carousel` (only needed to force a single picture into a
   carousel; two or more already make one). 2 to 10 items.
 - **The daily posting limit is read, not written down.** Meta's own
@@ -193,7 +245,10 @@ values the client key and the client secret; the client key goes in
   time, so save both halves of what `refresh` returns. An access token lasts a
   day and a refresh token a year.
 - **Files are sent in pieces**, so a large video does not have to fit in
-  memory. Up to 4 GB.
+  memory. Up to 4 GB. Facebook and Pinterest read a whole video first
+  instead.
+- **No alt text.** Every post here is a video, and TikTok has no alt text for
+  one, so `Media.alt_text` is not sent anywhere.
 - **The daily posting cap belongs to the creator, not to your app** — about 15
   posts in 24 hours, shared across every app they use. It comes back as a
   `RateLimitError`, but waiting a few seconds is the wrong move; only tomorrow
@@ -244,6 +299,8 @@ Almost nothing else about it lives where the rest of Meta lives:
   Threads to finish with it, then publish. socialchimp does the waiting, and
   only where there is video — words and pictures are ready straight away. If
   it runs out of patience you get a message saying the post *may still appear*.
+  As on Instagram, that means a post here is live by the time you get it: no
+  `PostState.PROCESSING`, and no `check_state` to need.
 - **The length limit is 500 bytes, not 500 characters.** Threads' own
   documentation says characters and means bytes, so an emoji costs four and
   500 emoji are 2,000. socialchimp counts the way Threads does.
@@ -302,6 +359,11 @@ choose a plan, and add your redirect address to the OAuth client themselves.
   FINALIZE, and for video a STATUS call in a loop until X finishes encoding
   it. Sent a piece at a time off disk, so a large video does not have to fit
   in memory.
+- **Alt text is a request of its own.** X has nowhere to carry a description
+  on the upload, so a `Media.alt_text` goes up afterwards through
+  `POST /2/media/metadata`, before the file is named on a post — X will not
+  take one for a file that is already published. A file with no alt text
+  costs no extra request.
 - **Deleting works.**
 - **No scheduling.** `Feature.SCHEDULE` is missing, so a post with
   `publish_at` is refused rather than published now.
@@ -344,6 +406,10 @@ Check
   permission never asked for.
 - **Post options**: `board_id`, `board_section_id`, `title`, `link`,
   `alt_text`, `dominant_color`.
+- **Alt text belongs to the pin, not to one picture.** It is
+  `options={"alt_text": ...}` here, and `Media.alt_text` is not read — a pin
+  with five pictures has one description, which is Pinterest's own shape
+  rather than something missing.
 - **`Post.text` is the pin's description, and `title` is a separate
   setting** — the thing people trip over. The description takes 800
   characters, the title 100.
@@ -360,7 +426,8 @@ Check
   Pinterest, uploaded to Amazon with a form Pinterest hands you (no account
   token goes with it — the upload is not going to Pinterest), then waited
   for. Pinterest gives out one form for one upload, so the whole file goes in
-  a single request and really does cost its own size in memory.
+  a single request and really does cost its own size in memory. Facebook is
+  the same; YouTube, TikTok and X send theirs in pieces.
 - **Deleting works.**
 - **No text-only pin.** Every pin needs a picture or a video;
   `Feature.POST_TEXT` is off and a post with nothing attached is refused.

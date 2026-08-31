@@ -1,0 +1,38 @@
+{# The whole of this app's styling. No build step, no framework, nothing to
+   install - the point of the example is the Python, and a page you can read
+   in a browser with no toolchain is worth more here than a pretty one. #}
+<!doctype html>
+<meta charset="utf-8">
+<title>{% block title %}socialchimp{% endblock %}</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 52rem;
+         padding: 0 1rem; color: #222; }
+  nav a { margin-right: 1rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #ddd;
+           vertical-align: top; }
+  th { background: #f4f4f4; }
+  code { background: #f4f4f4; padding: 0 .2rem; }
+  .flash { padding: .6rem .8rem; margin: .5rem 0; border-left: 4px solid #888; }
+  .flash.good { border-color: #2a7; background: #eefaf3; }
+  .flash.bad  { border-color: #c33; background: #fdeeee; }
+  .flash.note { border-color: #58a; background: #eef3fa; }
+  .quiet { color: #666; font-size: .9em; }
+  fieldset { margin: 1rem 0; }
+  label { display: block; margin: .4rem 0; }
+  textarea, input[type=text], input[type=url], select { width: 100%; padding: .3rem; }
+</style>
+
+<nav>
+  <a href="{{ url_for('connections.index') }}">Connections</a>
+  <a href="{{ url_for('signin.index') }}">Connect an account</a>
+  <a href="{{ url_for('posting.compose') }}">Write a post</a>
+</nav>
+
+<h1>{% block heading %}{% endblock %}</h1>
+
+{% for category, message in get_flashed_messages(with_categories=true) %}
+  <p class="flash {{ category }}">{{ message }}</p>
+{% endfor %}
+
+{% block body %}{% endblock %}

@@ -1,0 +1,26 @@
+{# What this app wrote down about every post it tried. socialchimp raises
+   and stops; keeping a record of that is the app's job, not the library's. #}
+<table>
+  <tr><th>When</th><th>Account</th><th>Result</th></tr>
+  {% for attempt in attempts %}
+    <tr>
+      <td class="note">{{ attempt.attempted_at }}</td>
+      <td>{{ attempt.account_name }}<div class="note">{{ attempt.platform }}</div></td>
+      <td>
+        {% if attempt.worked %}
+          <strong>{{ attempt.state }}</strong>
+          {% if attempt.url %}<a href="{{ attempt.url }}">{{ attempt.url }}</a>
+          {% elif attempt.post_id %}<code>{{ attempt.post_id }}</code>{% endif %}
+          {% if attempt.state == "SCHEDULED" %}
+            <div class="note">There is no link yet. The network has taken a plan, not published a post.</div>
+          {% endif %}
+          {% if attempt.state == "WAITING_FOR_PERSON" %}
+            <div class="note">Nothing more will happen until somebody opens the app. Do not sit and poll this one.</div>
+          {% endif %}
+        {% else %}
+          <span class="error">{{ attempt.error }}</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+</table>
