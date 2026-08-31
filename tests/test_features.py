@@ -1,5 +1,6 @@
 """Tests for what each network can do, and for checking a post against it."""
 
+from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -485,3 +486,16 @@ class TestTheNewLimits:
         # Every platform written before this existed keeps working exactly
         # as it did, which is the point of the default.
         assert Limits().text_counted_in is TextCount.CHARACTERS
+
+
+class TestLimitsDocumentsItself:
+    def test_every_limit_is_explained_in_the_docstring(self) -> None:
+        # A field nobody documented is a field nobody knows to set, and the
+        # one that went missing (max_title_length) was the only thing
+        # YouTube's required title is checked against.
+        documented = Limits.__doc__ or ""
+        missing = [
+            shape.name for shape in fields(Limits) if f"{shape.name}:" not in documented
+        ]
+
+        assert missing == []

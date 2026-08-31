@@ -4,6 +4,17 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## Unreleased
+
+- **`testing.FakePlatform` built with `accounts` now satisfies
+  `CanResumeLogin`.** Before, a fake with accounts to choose between still
+  had no `resume_login`, so calling `sc.choose(...)` against it raised
+  `NotSupportedError` even though `finish_login` had just answered
+  `ChooseAccount`. It now carries a real `resume_login`, the same as
+  Facebook, Instagram and YouTube do, so `choose()` succeeds. If your own
+  tests relied on that `NotSupportedError` to prove your app's error
+  handling worked, they will now see the login finish instead.
+
 ## 0.1.0 - 2026-08-31
 
 The first release. Nine networks work end to end.
@@ -62,6 +73,8 @@ nothing to a post on Mastodon in six steps.
 
 ### Quality
 
-1706 tests. 100% of lines and branches covered, enforced - the suite fails
+1725 tests, of which 19 skip because they need credentials for a network
+that nobody has in CI. 100% of lines and branches covered, enforced - the
+suite fails
 below it. `mypy --strict` with no ignores anywhere. Checked on Python 3.11,
 3.12 and 3.13.

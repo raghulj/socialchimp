@@ -1663,7 +1663,7 @@ class PlatformChecks:
                     f"{platform.name} raised {type(error).__name__}: "
                     f"{error}. Every error a platform raises is a "
                     f"SocialChimpError, so an app catches one thing rather "
-                    f"than learning what fifteen networks each throw."
+                    f"than learning what nine networks each throw."
                 )
 
     async def test_the_updates_it_reads_come_back_as_updates(self) -> None:

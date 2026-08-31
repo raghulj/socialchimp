@@ -86,16 +86,38 @@ is yours.
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md) - from nothing to a post
+**New here?** Start with the [tutorial](docs/tutorial.md). It assumes you have
+built a web app before but have never touched a social network API, and
+explains why this is harder than one HTTP request.
+
+**Learning**
+
+- [Tutorial](docs/tutorial.md) - the ideas, and how the classes fit together
+- [Getting started](docs/getting-started.md) - from nothing to a post, in six steps
+
+**Three things people actually build**
+
+- [A shop posting to its Facebook Page](docs/use-cases/facebook-django.md) -
+  Django. Sign-in that pauses to ask which Page, and real scheduling.
+- [A creator tool uploading video to TikTok](docs/use-cases/tiktok-fastapi.md) -
+  FastAPI. Large files sent in pieces, and the audit trap that makes working
+  code look broken.
+- [Publishing YouTube Shorts](docs/use-cases/youtube-shorts-flask.md) - Flask.
+  A network with no text-only post at all, and why you cannot ask for a Short.
+
+**Reference**
+
 - [Networks](docs/platforms.md) - what each one can do, and what it needs
-- [Frameworks](docs/frameworks.md) - ready-made routes for Django,
-  FastAPI and Flask
-- [Adding a platform](docs/adding-a-platform.md) - a network we do not
-  support yet
-- [Plan](docs/PLAN.md) - what is built and what is coming
-- [Changelog](CHANGELOG.md) - what changed, and what it means for you
-- [Releasing](docs/releasing.md) - how a release goes out
+- [Frameworks](docs/frameworks.md) - the ready-made routes in detail
+- [Adding a platform](docs/adding-a-platform.md) - a network we do not support yet
 - [Examples](examples/) - runnable programs
+- [Changelog](CHANGELOG.md) - what changed, and what it means for you
+
+**Project**
+
+- [Plan](docs/PLAN.md) - what is built and what is coming
+- [Contributing](CONTRIBUTING.md) - the three rules that are not negotiable
+- [Releasing](docs/releasing.md) - how a release goes out
 
 ## Contributing
 

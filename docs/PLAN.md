@@ -113,7 +113,7 @@ Everything a platform needs, before any platform exists.
 In the order in the table above. Each one:
 - passes the checks in `socialchimp.testing`
 - adds its own line to the platform table and to `pyproject.toml`
-- gets a page in `docs/platforms/`
+- gets a section in `docs/platforms.md`
 
 ### Step 5 - Framework helpers
 - [x] Django, FastAPI, Flask: ready-made routes and storage examples
@@ -128,30 +128,25 @@ In the order in the table above. Each one:
 
 ## Settling the platform contract
 
-Writing each real network has exposed something the contract could not show
-on its own. Six so far: somewhere to carry a secret between the two halves
-of signing in, app credentials arriving as an argument instead of platforms
-reading storage, platforms saying where their API lives, a sign-in step for
-networks with no page to send anyone to, those same app credentials reaching
-`refresh` as well as a sign-in, and a way to read a large file a piece at a
-time.
+Writing each real network exposed something the contract could not show on
+its own. Four times across all nine: somewhere to carry a secret between the
+two halves of signing in, app credentials arriving as an argument instead of
+platforms reading storage, platforms saying where their API lives, and a
+sign-in step for networks with no page to send anyone to.
 
-The last two came from YouTube and Facebook independently saying the same
-thing: neither can renew a token without a client id and secret, and
-`refresh` was only ever handed the connection. YouTube worked around it with
-a constructor argument, Facebook refused to renew at all, and two workarounds
-for one gap is the contract telling us where it is wrong. `Media.size` and
-`Media.piece` came the same way - YouTube had written both privately, and
-TikTok and Facebook video both need them next.
+We expected this to stop mattering once Instagram (number 4 in the list) was
+done, since it publishes in two steps and looked like the one most likely to
+need something new. It did not: the credentials change above only showed up
+once YouTube and Facebook both needed `refresh` handed a client id and
+secret, and neither is early in the list. `Media.size` and `Media.piece` came
+the same way but are a shared helper rather than a change to what a platform
+provides - YouTube had written both privately, and TikTok and Facebook video
+both needed them next.
 
-That is the right thing to happen at two platforms and the wrong thing to
-happen at six, because every change breaks platforms other people wrote.
-
-So: **the contract is free to move until Instagram is done** (number 4 in
-the list, and the one most likely to need something new, since it publishes
-in two steps). After that it is fixed, and changes to it need a version bump
-and a note in the release. Until then, `docs/adding-a-platform.md` says
-plainly that a platform written today may need small changes.
+**The contract settled at 0.1.0, once all nine networks existed to test it
+against**, not partway through as first planned. See
+[the promise about changes](adding-a-platform.md#what-we-promise-about-changes)
+for what that means for a platform written today.
 
 ---
 

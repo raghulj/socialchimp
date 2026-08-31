@@ -3,7 +3,7 @@
 Every platform file sends its requests through `HttpClient`. Trying again
 after a hiccup, waiting as long as a network asks, reading how much of an
 allowance is left, and turning an unhappy reply into a socialchimp error are
-all written once here instead of fifteen times.
+all written once here instead of nine times.
 
 Nothing here is hidden or fixed in place. Pass your own transport to send
 requests however you like, pass your own error function to name a network's

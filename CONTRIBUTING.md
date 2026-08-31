@@ -32,7 +32,7 @@ what the code does rather than what it should do.
 
 **2. Coverage stays at 100%.** `uv run pytest` fails below it. This is not
 about the number - it is that a line nobody tested is a line nobody has ever
-run, and in a library that talks to fifteen different networks those lines
+run, and in a library that talks to nine different networks those lines
 pile up fast.
 
 Coverage is a floor, not a finish line. A test that runs a line without
