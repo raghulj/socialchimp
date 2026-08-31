@@ -32,6 +32,19 @@ Optionally, on GitHub under **Settings → Environments → pypi**, add yourself
 as a required reviewer. Then every publish waits for you to press a button,
 which is a cheap way to make an accidental release impossible.
 
+## Where work happens
+
+`dev` is the default branch and where everything lands. `main` is what has
+been released.
+
+`main` is protected: no force pushes, no deletions, CI has to pass on all
+three Python versions, and changes arrive by pull request. So a release is a
+pull request from `dev` to `main`, and the tag goes on `main`.
+
+Publishing has a second gate on top of that: the `pypi` environment needs
+`raghulj` to approve it, so nothing reaches PyPI without somebody pressing a
+button, even if a bad commit gets onto `main`.
+
 ## Cutting a release
 
 1. **Update the version** in `src/socialchimp/__init__.py`. That is the only
@@ -63,11 +76,16 @@ which is a cheap way to make an accidental release impossible.
    Every network should be listed. If one is missing, its entry point is not
    in `pyproject.toml`, and nobody would be able to load it by name.
 
-5. **Commit, tag and push:**
+5. **Open a pull request from `dev` to `main` and merge it once CI is
+   green**, then tag the merge commit:
 
    ```bash
+   gh pr create --base main --head dev --title "Release 0.2.0"
+   # once it is merged:
+   git checkout main && git pull
    git tag -a v0.2.0 -m "socialchimp 0.2.0"
-   git push origin main && git push origin v0.2.0
+   git push origin v0.2.0
+   git checkout dev
    ```
 
 6. **Publish the GitHub release.** That is what starts the upload:

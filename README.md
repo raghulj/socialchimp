@@ -1,6 +1,6 @@
 # socialchimp
 
-[![CI](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml/badge.svg)](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml)
+[![CI](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/raghulj/socialchimp/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/socialchimp?color=0b7285)](https://pypi.org/project/socialchimp/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://pypi.org/project/socialchimp/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](CONTRIBUTING.md)

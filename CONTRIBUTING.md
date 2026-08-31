@@ -3,6 +3,14 @@
 Thanks for helping. This page covers how to get set up and the three rules
 that are not negotiable.
 
+## Branches
+
+`dev` is where work happens, and it is the default branch, so a fresh clone
+puts you there. `main` is what has been released - it is protected, and only
+changes through a pull request when a release goes out.
+
+Branch off `dev`, and open your pull request against `dev`.
+
 ## Getting set up
 
 ```bash
