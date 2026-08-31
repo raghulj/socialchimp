@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from socialchimp.errors import ConfigError, NotSupportedError
 from socialchimp.features import Feature, check_post
@@ -43,6 +43,7 @@ from socialchimp.models import PostResult
 from socialchimp.platform import (
     CanCreateApp,
     CanDeletePosts,
+    CanResumeLogin,
     Finished,
     LoginRequest,
 )
@@ -62,7 +63,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Account",
-    "CanResumeLogin",
     "Direct",
     "PostError",
     "PostJob",
@@ -76,40 +76,6 @@ _REGISTER_BY_HAND = (
     "developer portal, then save the id and secret you are given with "
     "Storage.save_app"
 )
-
-
-@runtime_checkable
-class CanResumeLogin(Protocol):
-    """Extra for networks that pause to ask which account to use.
-
-    Facebook asks which page, Instagram which business account, YouTube which
-    channel. Those platforms answer `finish_login` with `ChooseAccount`, and
-    finish the job here once the person has picked one.
-    """
-
-    async def resume_login(
-        self,
-        request: LoginRequest,
-        *,
-        resume_token: str,
-        account_id: str,
-        remember: RawData | None = None,
-    ) -> LoginStep:
-        """Carry on with the login, now that an account has been picked.
-
-        Args:
-            request: The same request the login was started with.
-            resume_token: The value from `ChooseAccount`, handed straight
-                back. Only this platform understands it.
-            account_id: Which of the offered accounts the person picked.
-            remember: Whatever `start_login` put in `SendToNetwork.remember`,
-                the same as `finish_login` was given.
-
-        Returns:
-            Usually the finished connection. A network that asks twice can
-            answer with another question instead.
-        """
-        ...
 
 
 @dataclass(frozen=True, slots=True)

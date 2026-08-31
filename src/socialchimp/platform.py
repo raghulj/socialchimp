@@ -39,6 +39,7 @@ __all__ = [
     "CanCreateApp",
     "CanDeletePosts",
     "CanReadUpdates",
+    "CanResumeLogin",
     "ChooseAccount",
     "Finished",
     "LoginRequest",
@@ -147,6 +148,13 @@ LoginStep = SendToNetwork | ChooseAccount | Finished
 @runtime_checkable
 class Platform(Protocol):
     """What every platform file provides.
+
+    A platform is built with no arguments - `MastodonPlatform()` - because
+    `SocialChimp` builds it for you from the name you asked for. Everything
+    it needs for a particular account arrives as an argument: credentials on
+    the `LoginRequest`, the account on the `Connection`. Keep nothing per
+    account on the instance, so one platform can serve every account your
+    app holds.
 
     Attributes:
         name: How this network is named in code, for example `"mastodon"`.
@@ -265,6 +273,40 @@ class CanCreateApp(Protocol):
         Returns:
             Credentials to save and reuse. Registering again for the same
             server wastes a record on that server, so save these.
+        """
+        ...
+
+
+@runtime_checkable
+class CanResumeLogin(Protocol):
+    """Extra for networks that pause to ask which account to use.
+
+    Facebook asks which page, Instagram which business account, YouTube which
+    channel. Those platforms answer `finish_login` with `ChooseAccount`, and
+    finish the job here once the person has picked one.
+    """
+
+    async def resume_login(
+        self,
+        request: LoginRequest,
+        *,
+        resume_token: str,
+        account_id: str,
+        remember: RawData | None = None,
+    ) -> LoginStep:
+        """Carry on with the login, now that an account has been picked.
+
+        Args:
+            request: The same request the login was started with.
+            resume_token: The value from `ChooseAccount`, handed straight
+                back. Only this platform understands it.
+            account_id: Which of the offered accounts the person picked.
+            remember: Whatever `start_login` put in `SendToNetwork.remember`,
+                the same as `finish_login` was given.
+
+        Returns:
+            Usually the finished connection. A network that asks twice can
+            answer with another question instead.
         """
         ...
 
