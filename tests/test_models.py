@@ -220,3 +220,46 @@ class TestContentType:
 
         assert picture.content_type == "image/jpeg"
         assert video.content_type == "video/mp4"
+
+
+class TestReadingAFileInPieces:
+    def test_the_size_of_data_we_hold_is_known(self) -> None:
+        media = Media.from_bytes(b"12345", filename="a.png")
+
+        assert media.size == 5
+
+    def test_the_size_of_a_file_is_read_from_disk(self, tmp_path: Path) -> None:
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"x" * 2048)
+
+        assert Media.from_file(video).size == 2048
+
+    def test_the_size_of_something_online_is_unknown(self) -> None:
+        # We would have to download it to find out, and the point of a url
+        # is usually to avoid that.
+        assert Media.from_url("https://example.com/a.mp4").size is None
+
+    def test_a_piece_can_be_read_from_data_we_hold(self) -> None:
+        media = Media.from_bytes(b"0123456789", filename="a.png")
+
+        assert media.piece(start=2, length=3) == b"234"
+
+    def test_a_piece_can_be_read_from_a_file_without_loading_it_all(
+        self, tmp_path: Path
+    ) -> None:
+        # This is the whole point: a four gigabyte video must not become
+        # four gigabytes of memory just to be sent.
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(bytes(range(256)) * 8)
+
+        assert Media.from_file(video).piece(start=256, length=4) == bytes(range(4))
+
+    def test_a_piece_past_the_end_comes_back_short(self, tmp_path: Path) -> None:
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"12345")
+
+        assert Media.from_file(video).piece(start=3, length=100) == b"45"
+
+    def test_reading_a_piece_of_something_online_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="url"):
+            Media.from_url("https://example.com/a.mp4").piece(start=0, length=1)

@@ -81,8 +81,14 @@ class Lock(Protocol):
         ...
 
 
-# Asking a network for a new token. `Platform.refresh` is exactly this, so
-# you can usually pass the platform's own method straight in.
+# Asking a network for a new token. One connection in, one token out.
+#
+# `Platform.refresh` takes your app's credentials as well, because Google,
+# Meta and X all sign a renewal with them - so the credentials are bound in
+# before the platform's method gets here. `SocialChimp` does that for you,
+# looking them up per renewal; do the same if you build one of these
+# yourself. Nothing here reads storage, because a renewal for one network
+# must not need to know how another network's credentials are kept.
 GetNewToken: TypeAlias = "Callable[[Connection], Awaitable[Token]]"
 
 # Making the lock for one connection id. Called once per connection.
@@ -112,7 +118,7 @@ class TokenManager:
     Ask it for a connection and it either gives you the one you have, or
     renews the token first, saves it, and gives you that.
 
-        tokens = TokenManager(storage, platform.refresh)
+        tokens = TokenManager(storage, renew)
         connection = await tokens.valid_token("conn-1")
 
     One of these can be shared by everything in your process, and should be:
@@ -132,8 +138,11 @@ class TokenManager:
 
         Args:
             storage: Where connections are read from and written back to.
-            get_new_token: Asks a network for a new token. `Platform.refresh`
-                fits as it is.
+            get_new_token: Asks a network for a new token. Wrap
+                `Platform.refresh` in something that looks your app's
+                credentials up first - most networks will not renew without
+                them, and `SocialChimp` does exactly that when it makes one
+                of these itself.
             refresh_before_seconds: How long before a token runs out to renew
                 it. The default of 60 seconds leaves room for a slow request.
             make_lock: Makes the lock used while renewing one connection. The

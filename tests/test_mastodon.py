@@ -577,6 +577,20 @@ class TestTokensThatNeverExpire:
         assert token.expires_at is None
         assert not catch_all.called
 
+    async def test_it_takes_your_apps_credentials_and_ignores_them(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        # Google and Meta sign a renewal with them. Mastodon has no renewal
+        # to sign, so they arrive and nothing happens.
+        with respx.mock(assert_all_called=False) as network:
+            catch_all = network.route().mock(return_value=httpx.Response(500, json={}))
+            token = await platform.refresh(account, APP)
+
+        assert token is account.token
+        assert not catch_all.called
+
 
 class TestLimits:
     async def test_it_reads_what_this_server_allows(

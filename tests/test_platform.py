@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from socialchimp import (
+    AppCredentials,
     Connection,
     Feature,
     Limits,
@@ -59,7 +60,11 @@ class FakePlatform:
     ) -> LoginStep:
         return Finished(connection=_a_connection())
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         return Token(access_token="new")
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:

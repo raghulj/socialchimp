@@ -782,7 +782,11 @@ class MastodonPlatform:
             )
         )
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         """Hand back the token that is already there.
 
         Mastodon access tokens do not expire. They work until the person
@@ -791,6 +795,9 @@ class MastodonPlatform:
 
         Args:
             connection: The account socialchimp was about to renew.
+            app: Your app's credentials for this server. Taken and ignored:
+                Google and Meta need them to renew a token, Mastodon has no
+                renewal to sign in the first place.
 
         Returns:
             The token the connection already holds.

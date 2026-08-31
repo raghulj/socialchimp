@@ -171,6 +171,12 @@ class ChooseAccount:
         options: What they can choose from.
         resume_token: Hand this back to carry on. Treat it as meaningless
             text; only the platform file understands it.
+
+            **Treat it as a secret.** On some networks it has to carry the
+            tokens themselves, because the sign-in code can only be swapped
+            once and that happens before the person picks. Keep it with
+            their session, the way you keep `SendToNetwork.remember`. Do not
+            put it in a URL, a hidden form field, or a log.
     """
 
     options: tuple[AccountChoice, ...]
@@ -299,7 +305,11 @@ class Platform(Protocol):
         """
         ...
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         """Get a fresh token for an account.
 
         Called for you before a token runs out. A platform whose tokens do
@@ -307,6 +317,9 @@ class Platform(Protocol):
 
         Args:
             connection: The account whose token is running out.
+            app: Your app's credentials for this network. Most networks want
+                them to renew a token - Google, Meta and X all do. Networks
+                that do not can ignore this.
 
         Returns:
             The new token. Save it - if the network rotates refresh tokens,

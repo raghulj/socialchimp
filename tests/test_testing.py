@@ -22,10 +22,10 @@ from socialchimp import (
     Update,
     UpdateKind,
 )
-from socialchimp.errors import ConfigError, NotFoundError
+from socialchimp.errors import ConfigError, NotFoundError, NotSupportedError
 from socialchimp.features import TextCount
 from socialchimp.http import HttpClient
-from socialchimp.models import RawData
+from socialchimp.models import MediaKind, RawData
 from socialchimp.platform import (
     AccountChoice,
     AskForDetails,
@@ -143,7 +143,11 @@ class Methods:
     ) -> LoginStep:
         return Finished(connection=a_connection())
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         return Token(access_token="new")
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
@@ -174,6 +178,41 @@ class NotAFeature(Methods):
 class NoWayToPost(Methods):
     name = "nowaytopost"
     features = Feature.READ_POSTS | Feature.READ_STATS
+
+
+class PicturesOnly(Methods):
+    """A network that takes pictures and nothing written on its own."""
+
+    name = "picturesonly"
+    features = Feature.POST_IMAGE
+
+
+class VideoOnly(Methods):
+    """A network with no text-only post at all, the way YouTube has none."""
+
+    name = "videoonly"
+    features = Feature.POST_VIDEO
+    limits_reply: ClassVar[object] = Limits(max_text_length=300)
+
+    async def publish(self, connection: Connection, post: Post) -> PostResult:
+        if not post.media:
+            raise NotSupportedError(platform=self.name, what="text-only posts")
+        return PostResult(id="1")
+
+
+class TakesWordsAnyway(Methods):
+    """Says it cannot post text, then takes a post made of nothing else."""
+
+    name = "takeswords"
+    features = Feature.POST_VIDEO
+
+
+class RefusesTextWithTheWrongError(Methods):
+    """Turns words away, but not in a way an app can read."""
+
+    name = "wrongtextrefusal"
+    features = Feature.POST_VIDEO
+    publish_error = InvalidPostError("no idea what you mean")
 
 
 class LiesAboutApps(Bare):
@@ -298,7 +337,11 @@ class MissingPublish:
     ) -> LoginStep:
         return Finished(connection=a_connection())
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         return Token(access_token="new")
 
 
@@ -463,8 +506,14 @@ class TestTheKitItself:
         # one. Rename it and every subclass silently stops being checked.
         assert not PlatformChecks.__name__.startswith("Test")
 
+    # The one check a platform that can post text has nothing to answer,
+    # so the fake skipping it is the right answer rather than a gap.
+    NOT_FOR_A_TEXT_PLATFORM = frozenset(
+        {"test_a_text_only_post_is_refused_when_it_cannot_post_text"}
+    )
+
     def test_there_is_a_check_for_each_thing_we_promised(self) -> None:
-        assert len(every_check()) == 13
+        assert len(every_check()) == 14
 
     async def test_a_good_fake_platform_passes_every_check(self) -> None:
         for name in every_check():
@@ -472,7 +521,8 @@ class TestTheKitItself:
             try:
                 await getattr(checks, name)()
             except pytest.skip.Exception as skipped:
-                pytest.fail(f"{name} skipped instead of running: {skipped}")
+                if name not in self.NOT_FOR_A_TEXT_PLATFORM:
+                    pytest.fail(f"{name} skipped instead of running: {skipped}")
 
     def test_a_subclass_must_say_how_to_build_its_platform(self) -> None:
         with pytest.raises(NotImplementedError) as caught:
@@ -807,6 +857,77 @@ class TestTheNoRequestCheck:
         assert "make_transport" in message
 
 
+class TestBuildingAPostToCheckWith:
+    """The post the length checks measure, and where it comes from."""
+
+    async def test_a_platform_that_takes_text_gets_words_and_nothing_else(
+        self,
+    ) -> None:
+        post = checks_for(Bare()).make_post("hello")
+
+        assert post.text == "hello"
+        assert post.media == ()
+
+    async def test_a_platform_with_no_text_post_gets_a_picture(self) -> None:
+        # Otherwise the length checks measure a post the platform was always
+        # going to turn away, and pass without measuring anything.
+        post = checks_for(PicturesOnly()).make_post("hello")
+
+        assert post.text == "hello"
+        assert [item.kind for item in post.media] == [MediaKind.IMAGE]
+
+    async def test_a_network_that_only_takes_video_gets_a_video(self) -> None:
+        post = checks_for(VideoOnly()).make_post("hello")
+
+        assert [item.kind for item in post.media] == [MediaKind.VIDEO]
+
+    async def test_a_platform_that_can_post_nothing_skips(self) -> None:
+        checks = checks_for(NoWayToPost())
+
+        with pytest.raises(pytest.skip.Exception) as skipped:
+            checks.make_post("hello")
+
+        assert "make_post" in str(skipped.value)
+
+
+class TestTheTextOnlyCheck:
+    name = "test_a_text_only_post_is_refused_when_it_cannot_post_text"
+
+    async def test_a_platform_that_says_so_plainly_passes(self) -> None:
+        checks = checks_for(VideoOnly(), connection=a_connection())
+
+        await getattr(checks, self.name)()
+
+    async def test_publishing_words_anyway_is_refused(self) -> None:
+        checks = checks_for(TakesWordsAnyway(), connection=a_connection())
+
+        message = await failure_from(checks, self.name)
+
+        assert "POST_TEXT" in message
+        assert "NotSupportedError" in message
+
+    async def test_refusing_with_the_wrong_error_is_refused(self) -> None:
+        # An app catches NotSupportedError to say "this network cannot do
+        # that". An InvalidPostError reads as "fix your post", which is
+        # advice nobody can follow here.
+        checks = checks_for(RefusesTextWithTheWrongError(), connection=a_connection())
+
+        message = await failure_from(checks, self.name)
+
+        assert "InvalidPostError" in message
+        assert "NotSupportedError" in message
+
+    async def test_it_skips_when_the_platform_can_post_text(self) -> None:
+        message = await skip_from(checks_for(Bare()), self.name)
+
+        assert "POST_TEXT" in message
+
+    async def test_it_skips_without_a_connection(self) -> None:
+        message = await skip_from(checks_for(VideoOnly()), self.name)
+
+        assert "make_connection" in message
+
+
 class TestTheSchedulingCheck:
     name = "test_scheduling_is_refused_when_it_cannot_schedule"
 
@@ -1130,6 +1251,24 @@ class TestFakePlatform:
         assert token.refresh_token != "fake-refresh"
         assert token.expires_at is not None
         assert platform.refreshed == ["fake-connection"]
+        assert platform.refreshed_with == [None]
+
+    async def test_it_writes_down_the_credentials_a_renewal_was_given(
+        self,
+    ) -> None:
+        # Most networks will not renew without them, so a test needs a way
+        # to say they really arrived rather than hoping they did.
+        platform = FakePlatform()
+        app = AppCredentials(
+            platform="fake",
+            host=None,
+            client_id="client-id",
+            client_secret="client-secret",
+        )
+
+        await platform.refresh(platform.connection(), app)
+
+        assert platform.refreshed_with == [app]
 
     async def test_a_token_that_never_expires(self) -> None:
         platform = FakePlatform(token_lifetime=None)

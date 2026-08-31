@@ -110,9 +110,17 @@ _A_REDIRECT: Final = "https://app.example/callback"
 # A platform that cannot post anything is not a platform anyone can use.
 _WAYS_TO_POST: Final = Feature.POST_TEXT | Feature.POST_IMAGE | Feature.POST_VIDEO
 
-# The one thing on `Limits` that is not a number. It says how the length is
-# counted, not how much of anything is allowed.
-_NOT_A_NUMBER: Final = frozenset({"text_counted_in"})
+# Fields on `Limits` that this check leaves alone.
+#
+# `text_counted_in` is not a number at all - it says how the length is
+# counted, not how much is allowed.
+#
+# `posts_left_today` is a number, but zero is a real answer for it, not a
+# stand-in for "we do not know". Instagram and Threads both count down and
+# both reach zero, and `check_post` reads that zero to refuse the post. Every
+# other number here means a limit, and a limit of zero would mean the network
+# allows none of something, which is what the check is looking for.
+_NOT_CHECKED: Final = frozenset({"text_counted_in", "posts_left_today"})
 
 # One thumbs-up with a skin tone on it. One letter to a person, two
 # characters to Python, four units to a network counting the way Java does,
@@ -218,6 +226,27 @@ def _must_be_a_plain_function(platform: object, name: str) -> None:
         f"function that reads what it needs off the connection. Anything "
         f"you would wait for here belongs in refresh()."
     )
+
+
+def _something_to_attach(features: Feature) -> tuple[Media, ...]:
+    """Build the smallest attachment a platform will take.
+
+    For a network with no text-only post, this is what makes a probe post
+    into something it will look at. Nothing here is a real picture or a real
+    video - no check sends one to anything but a fake transport.
+
+    Args:
+        features: What the platform says it can do.
+
+    Returns:
+        One attachment, or nothing at all when the platform takes neither
+        pictures nor video.
+    """
+    if Feature.POST_IMAGE in features:
+        return (Media.from_bytes(b"not really a picture", filename="a.png"),)
+    if Feature.POST_VIDEO in features:
+        return (Media.from_bytes(b"not really a video", filename="a.mp4"),)
+    return ()
 
 
 def _posts_it_should_refuse(features: Feature, limits: Limits) -> list[Post]:
@@ -565,6 +594,10 @@ class FakePlatform:
         deleted: The id of every post deleted.
         created_apps: Every app registered.
         refreshed: The id of every connection whose token was renewed.
+        refreshed_with: Your app's credentials as each renewal was handed
+            them, in the same order as `refreshed`. `None` where a renewal
+            was given none, which is how a test says the client failed to
+            look them up.
         last_remember: What the last `finish_login` was handed back from
             `start_login`. `None` until one has happened.
     """
@@ -612,6 +645,7 @@ class FakePlatform:
         self.deleted: list[str] = []
         self.created_apps: list[AppCredentials] = []
         self.refreshed: list[str] = []
+        self.refreshed_with: list[AppCredentials | None] = []
         self.last_remember: RawData | None = None
         self._limits = (
             limits
@@ -760,17 +794,26 @@ class FakePlatform:
         account_id = callback.get("account", _FAKE_ACCOUNT)
         return Finished(connection=self.connection(account_id=account_id))
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         """Hand out a fresh token.
 
         Args:
             connection: The account whose token is running out.
+            app: Your app's credentials. This fake does not need them - it
+                asks nobody for anything - but it writes down what arrived
+                on `refreshed_with`, so a test can say the credentials
+                really did reach the platform.
 
         Returns:
             A new token, with a new refresh token, the way the networks that
             rotate them do it.
         """
         self.refreshed.append(connection.id)
+        self.refreshed_with.append(app)
         return Token(
             access_token=_FAKE_NEW_ACCESS,
             refresh_token=_FAKE_NEW_REFRESH,
@@ -993,6 +1036,46 @@ class PlatformChecks:
             watch the wire.
         """
         return None
+
+    def make_post(self, text: str) -> Post:
+        """Build a post your platform would take, carrying this text. Optional.
+
+        The checks that measure length need a post that is right in every
+        other way, so that its length is the only thing being judged. Left
+        alone, this is `Post(text=...)`, with a small picture or video
+        attached for a network that has no text-only post.
+
+        Write your own when your network wants more than that. YouTube
+        refuses any video without a title, so there is no post it will look
+        at twice without one:
+
+            def make_post(self, text: str) -> Post:
+                return Post(
+                    text=text,
+                    media=(Media.from_bytes(b"video", filename="a.mp4"),),
+                    options={"title": "A video", "made_for_kids": False},
+                )
+
+        Args:
+            text: The words the post has to carry, exactly as they are
+                given. The checks count them, so a post that changes them
+                is a post that measures the wrong thing.
+
+        Returns:
+            A post your platform would take.
+        """
+        features = self.platform.features
+        if Feature.POST_TEXT in features:
+            return Post(text=text)
+
+        attached = _something_to_attach(features)
+        if not attached:
+            pytest.skip(
+                f"{self.platform.name} says it can post neither text, "
+                f"pictures nor video, so there is no post to build. Say what "
+                f"it can post in features, or write make_post."
+            )
+        return Post(text=text, media=attached)
 
     @cached_property
     def platform(self) -> Platform:
@@ -1244,7 +1327,7 @@ class PlatformChecks:
             )
 
         for shape in fields(Limits):
-            if shape.name in _NOT_A_NUMBER:
+            if shape.name in _NOT_CHECKED:
                 continue
             value: object = getattr(limits, shape.name)
             if value is None:
@@ -1274,7 +1357,7 @@ class PlatformChecks:
         before = len(sent)
         with pytest.raises(InvalidPostError):
             await platform.publish(
-                connection, Post(text="x" * (limits.max_text_length + 1))
+                connection, self.make_post("x" * (limits.max_text_length + 1))
             )
 
         if len(sent) != before:
@@ -1318,20 +1401,26 @@ class PlatformChecks:
             )
 
         # A post as long as this network allows, written in a letter that
-        # takes more than one of everything else.
+        # takes more than one of everything else. It is built through
+        # `make_post` so that a network with no text-only post gets one it
+        # will actually look at, rather than being refused for the wrong
+        # reason and passing this check by accident.
         fits = _A_BIG_LETTER * _copies_that_fit(limits, allowed)
         before = len(sent)
         try:
-            await platform.publish(connection, Post(text=fits))
+            await platform.publish(connection, self.make_post(fits))
         except InvalidPostError:
             if len(sent) == before:
                 pytest.fail(
                     f"{platform.name} says its limit of {allowed} is counted "
                     f"in {counted.in_words}, then refused a post of "
                     f"{measure_text(fits, counted)} {counted.in_words} "
-                    f"without asking the network at all. It is counting "
-                    f"something else - `socialchimp.features.measure_text` "
-                    f"counts whichever way your Limits says."
+                    f"without asking the network at all. Either it is "
+                    f"counting something else - "
+                    f"`socialchimp.features.measure_text` counts whichever "
+                    f"way your Limits says - or the post was missing "
+                    f"something else your network insists on, which is what "
+                    f"make_post is for."
                 )
         except SocialChimpError:
             # The network itself said no. Not our business here: the post
@@ -1346,7 +1435,7 @@ class PlatformChecks:
         before = len(sent)
         refused: Exception | None = None
         try:
-            await platform.publish(connection, Post(text=too_long))
+            await platform.publish(connection, self.make_post(too_long))
         except SocialChimpError as problem:
             refused = problem
 
@@ -1370,6 +1459,44 @@ class PlatformChecks:
                 f"breaks a declared limit is an InvalidPostError, which is "
                 f"the one an app can catch and explain to a person."
             )
+
+    async def test_a_text_only_post_is_refused_when_it_cannot_post_text(
+        self,
+    ) -> None:
+        """A platform without POST_TEXT turns words away, and says why.
+
+        YouTube has no text-only post at all: everything on it is a video,
+        and its community posts are not in the API. A platform in that
+        position has to say so plainly, because `Post(text="hello")` is the
+        first thing anybody tries.
+        """
+        platform = self.platform
+        if Feature.POST_TEXT in platform.features:
+            pytest.skip(
+                f"{platform.name} lists Feature.POST_TEXT, so a post of "
+                f"words is one it should take."
+            )
+
+        connection = self.connection_or_skip()
+
+        try:
+            await platform.publish(connection, Post(text="just some words"))
+        except NotSupportedError:
+            return
+        except Exception as error:
+            pytest.fail(
+                f"{platform.name} does not list Feature.POST_TEXT, so a post "
+                f"of words alone should raise NotSupportedError, naming what "
+                f"to attach instead. It raised {type(error).__name__}: "
+                f"{error}. NotSupportedError is the one an app can catch and "
+                f"explain to a person."
+            )
+
+        pytest.fail(
+            f"{platform.name} does not list Feature.POST_TEXT but took a "
+            f"post of words anyway. Whatever it did with them, it was not "
+            f"what the caller asked for - raise NotSupportedError instead."
+        )
 
     async def test_scheduling_is_refused_when_it_cannot_schedule(self) -> None:
         """A platform without SCHEDULE says so, rather than posting now."""

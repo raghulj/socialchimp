@@ -12,6 +12,7 @@ import pytest
 import respx
 
 from socialchimp import (
+    AppCredentials,
     AuthError,
     Connection,
     Feature,
@@ -472,6 +473,32 @@ class TestRenewingAToken:
         # access token every other call uses.
         headers = route.calls.last.request.headers
         assert headers["authorization"] == f"Bearer {REFRESH}"
+
+    async def test_it_takes_your_apps_credentials_and_ignores_them(
+        self,
+        platform: BlueskyPlatform,
+        account: Connection,
+    ) -> None:
+        # Google and Meta sign a renewal with a client id and secret.
+        # Bluesky is signed in to with an app password, so there is no
+        # registered app and nothing for these to say.
+        app = AppCredentials(
+            platform="bluesky",
+            host=None,
+            client_id="client-id",
+            client_secret="client-secret",
+        )
+
+        with respx.mock(base_url=XRPC) as network:
+            route = network.post("/com.atproto.server.refreshSession").mock(
+                return_value=httpx.Response(200, json=a_session())
+            )
+
+            await platform.refresh(account, app)
+
+        sent = route.calls.last.request
+        assert "client-id" not in str(sent.url)
+        assert not sent.content
 
     async def test_both_tokens_are_replaced_every_time(
         self,

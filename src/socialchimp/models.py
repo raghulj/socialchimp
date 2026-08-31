@@ -353,6 +353,55 @@ class Media:
             return guessed
         return "image/jpeg" if self.kind is MediaKind.IMAGE else "video/mp4"
 
+    @property
+    def size(self) -> int | None:
+        """How many bytes this is, when we can tell.
+
+        `None` for a file that is only a web address, because finding out
+        would mean downloading it - which is usually the thing a web address
+        was used to avoid.
+
+        Returns:
+            The size in bytes, or `None` if it is not knowable yet.
+        """
+        if self.content is not None:
+            return len(self.content)
+        if self.path is not None:
+            return self.path.stat().st_size
+        return None
+
+    def piece(self, start: int, length: int) -> bytes:
+        """Read part of the file.
+
+        Networks that take large video want it in pieces - YouTube, TikTok
+        and Facebook all do. Reading a piece at a time keeps a four gigabyte
+        video from becoming four gigabytes of memory, so use this rather
+        than slicing what `read()` gives you.
+
+        Args:
+            start: How many bytes in to begin.
+            length: How many bytes to read. Fewer come back at the end of
+                the file, which is how you know you have reached it.
+
+        Returns:
+            The bytes read.
+
+        Raises:
+            ValueError: If this media is only a web address.
+        """
+        if self.content is not None:
+            return self.content[start : start + length]
+        if self.path is not None:
+            with self.path.open("rb") as opened:
+                opened.seek(start)
+                return opened.read(length)
+
+        message = (
+            f"This media is a url ({self.url!r}), so there are no bytes to "
+            f"read yet. Download it first, or let the platform fetch it."
+        )
+        raise ValueError(message)
+
     def read(self) -> bytes:
         """Return the file's bytes.
 

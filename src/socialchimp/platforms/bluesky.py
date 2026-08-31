@@ -138,6 +138,7 @@ if TYPE_CHECKING:
 
     from socialchimp.errors import SocialChimpError
     from socialchimp.http import Retries
+    from socialchimp.models import AppCredentials
 
 __all__ = ["BlueskyPlatform", "bluesky_errors", "count_graphemes", "facets_for"]
 
@@ -947,7 +948,11 @@ class BlueskyPlatform:
             )
         )
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         """Get a fresh pair of tokens.
 
         Two things about this call catch people out, and both are on purpose
@@ -963,6 +968,10 @@ class BlueskyPlatform:
 
         Args:
             connection: The account whose token is running out.
+            app: Your app's credentials. Taken and ignored: Bluesky is
+                signed in to with an app password rather than a registered
+                app, so there is nothing here for a client id and secret to
+                say.
 
         Returns:
             The new pair. Save them.

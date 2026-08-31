@@ -50,7 +50,7 @@ from socialchimp.platform import (
     LoginRequest,
 )
 from socialchimp.registry import get_platform_class
-from socialchimp.tokens import TokenManager
+from socialchimp.tokens import MakeLock, TokenManager
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -59,9 +59,10 @@ if TYPE_CHECKING:
     import httpx
 
     from socialchimp.features import Limits
-    from socialchimp.models import AppCredentials, Connection, Post, RawData
+    from socialchimp.models import AppCredentials, Connection, Post, RawData, Token
     from socialchimp.platform import LoginStep, Platform
     from socialchimp.storage import Storage
+    from socialchimp.tokens import GetNewToken
 
 __all__ = [
     "Account",
@@ -544,6 +545,7 @@ class SocialChimp:
         *,
         platforms: Mapping[str, Platform] | None = None,
         token_manager: TokenManager | None = None,
+        make_lock: MakeLock | None = None,
         http: HttpClient | None = None,
     ) -> None:
         """Set up one app's use of socialchimp.
@@ -556,9 +558,16 @@ class SocialChimp:
                 arguments, so this is where a platform that needs settings of
                 its own goes - and where a test puts a fake.
             token_manager: Renews tokens. Left out, one is made for each
-                network, which is what you want unless you run more than one
-                process: pass your own, built with a `make_lock` that every
-                process shares, and it is used for every network.
+                network, which is what you want almost always. Pass your own
+                only if you need to change how renewal works entirely - and
+                note that yours has to look up app credentials itself, which
+                `make_lock` saves you from.
+            make_lock: Makes the lock held while a token is renewed. Pass one
+                that every process shares - built on Redis, say - if you run
+                more than one web or queue worker. The default only holds
+                inside one process, so without this two workers can renew the
+                same connection at once, and on the networks that replace the
+                refresh token each time that disconnects the account.
             http: Sends requests for `Account.direct`. Left out, one client
                 is made for each network and server, and closed by `aclose`.
                 One you pass in is yours to close.
@@ -566,6 +575,7 @@ class SocialChimp:
         self.storage = storage
         self._platforms: dict[str, Platform] = dict(platforms or {})
         self._one_token_manager = token_manager
+        self._make_lock = make_lock
         self._token_managers: dict[str, TokenManager] = {}
         self._http = http
         self._http_made: dict[tuple[str, str], HttpClient] = {}
@@ -593,6 +603,33 @@ class SocialChimp:
             self._platforms[name] = ready
         return ready
 
+    def _renewal_for(self, name: str) -> GetNewToken:
+        """Bind your app's credentials into one platform's `refresh`.
+
+        Most networks will not renew a token without them - Google, Meta and
+        X all sign the renewal with a client id and secret. A platform is
+        never given your storage, so the credentials are looked up here and
+        handed down, exactly the way they are handed down for a sign-in.
+
+        Args:
+            name: Which network, for example `"youtube"`.
+
+        Returns:
+            Something `TokenManager` can call with a connection and nothing
+            else, which is the shape it asks for.
+        """
+        platform = self.platform_for(name)
+
+        async def renew(connection: Connection) -> Token:
+            # Read on every renewal rather than once. Credentials saved or
+            # replaced after this client was built are picked up without a
+            # restart, which matters because rotating an app secret is the
+            # sort of thing done in a hurry.
+            app = await self.storage.get_app(name, connection.host)
+            return await platform.refresh(connection, app)
+
+        return renew
+
     def tokens_for(self, name: str) -> TokenManager:
         """Return the token manager for one network.
 
@@ -609,7 +646,18 @@ class SocialChimp:
 
         manager = self._token_managers.get(name)
         if manager is None:
-            manager = TokenManager(self.storage, self.platform_for(name).refresh)
+            # make_lock is only passed on when given, so the default
+            # stays whatever TokenManager decides rather than being
+            # duplicated here and drifting from it.
+            manager = (
+                TokenManager(self.storage, self._renewal_for(name))
+                if self._make_lock is None
+                else TokenManager(
+                    self.storage,
+                    self._renewal_for(name),
+                    make_lock=self._make_lock,
+                )
+            )
             self._token_managers[name] = manager
         return manager
 

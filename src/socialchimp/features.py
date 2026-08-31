@@ -309,6 +309,7 @@ class Limits:
     text_counted_in: TextCount = TextCount.CHARACTERS
     max_images: int | None = None
     max_image_bytes: int | None = None
+    max_title_length: int | None = None
     max_videos: int | None = None
     max_video_bytes: int | None = None
     posts_left_today: int | None = None

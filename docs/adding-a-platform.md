@@ -14,7 +14,8 @@ One class, built with no arguments, that never holds anything belonging to a
 single account. One instance serves every account your app has.
 
 Everything it needs for a particular account arrives as an argument: your
-app's credentials on the `LoginRequest`, the account on the `Connection`.
+app's credentials on the `LoginRequest` and on `refresh`, the account on the
+`Connection`. A platform never reaches into your storage for any of it.
 
 Read [`src/socialchimp/platforms/mastodon.py`](../src/socialchimp/platforms/mastodon.py)
 and [`bluesky.py`](../src/socialchimp/platforms/bluesky.py) alongside this
@@ -48,8 +49,8 @@ class MyPlatform:
     async def finish_login(self, request, callback, remember=None) -> LoginStep:
         """Carry on once the person comes back."""
 
-    async def refresh(self, connection) -> Token:
-        """Get a fresh token."""
+    async def refresh(self, connection, app=None) -> Token:
+        """Get a fresh token. `app` is your app's credentials."""
 
     async def publish(self, connection, post) -> PostResult:
         """Publish a post."""
@@ -72,6 +73,21 @@ an error.
 `SCHEDULE` off and let socialchimp refuse with a clear message. Do not
 approximate. A library that quietly does something else is a library nobody
 can trust with a customer's account.
+
+**Renewing a token is given your app's credentials.** Google, Meta and X all
+sign a renewal with a client id and secret, and a platform has nowhere else
+to get them - so `refresh` is handed them the same way a sign-in is.
+socialchimp reads them out of your storage and passes them down. A network
+that does not need them takes the argument and ignores it, the way Mastodon
+and Bluesky do; a network that does need them raises `ConfigError` naming
+`Storage.save_app` when none arrive.
+
+**Big files are read a piece at a time.** `Media.size` says how many bytes
+there are without opening the whole file, and `Media.piece(start, length)`
+reads one piece off disk. Use both rather than `Media.read()` anywhere a
+video could be large - YouTube, TikTok and Facebook all take video in
+pieces, and reading it whole turns a four gigabyte upload into four
+gigabytes of memory.
 
 **`limits()` is looked up while running for a reason.** A Mastodon server's
 post length is set by whoever runs it. Instagram counts down how many posts
@@ -113,6 +129,12 @@ posting.
 Add `make_connection()` and `make_transport()` to unlock the checks that need
 a working platform. Leave them out and those skip with a line telling you
 which method to add.
+
+Add `make_post(text)` if your network wants more on a post than words -
+YouTube refuses any video without a title, so nothing it will look at can be
+built out of text alone. The checks that measure length build their posts
+through it, so they measure the length rather than whatever else was
+missing.
 
 **These are a floor, not a ceiling.** They prove your platform is shaped
 right. Only your own tests prove it talks to your network correctly.

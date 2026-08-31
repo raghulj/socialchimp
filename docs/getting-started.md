@@ -240,14 +240,15 @@ replace the refresh token every time it is used - the loser of a race ends up
 holding a token the network has already thrown away, and that account is
 disconnected until the person signs in again.
 
-The default lock only works inside one process. If you run several, pass one
-they share:
+The default lock only holds inside one process. If you run a web worker and a
+queue worker, or several of either, give socialchimp a lock they all share:
 
 ```python
-from socialchimp import TokenManager
-
-TokenManager(storage, platform.refresh, make_lock=my_redis_lock_for)
+sc = SocialChimp(storage=storage, make_lock=my_redis_lock_for)
 ```
+
+`make_lock` is called once per connection with its id, and must return
+something that works with `async with`. Anything else about it is up to you.
 
 ## Doing something socialchimp does not cover
 

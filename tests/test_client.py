@@ -155,6 +155,7 @@ class FakePlatform:
         self.asked_limits: list[Connection] = []
         self.deleted: list[tuple[Connection, str]] = []
         self.refreshed: list[Connection] = []
+        self.refreshed_with: list[AppCredentials | None] = []
         self.started: list[LoginRequest] = []
         self.finished: list[tuple[LoginRequest, Mapping[str, str]]] = []
         self.remembered: list[RawData | None] = []
@@ -189,8 +190,13 @@ class FakePlatform:
             connection=a_connection(connection_id="conn-new", platform=self.name)
         )
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         self.refreshed.append(connection)
+        self.refreshed_with.append(app)
         return a_token(access_token=NEW_ACCESS)
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
@@ -352,8 +358,32 @@ class SlowPlatform(FakePlatform):
     pause = 0.05
 
 
+class NeedsCredentials(FakePlatform):
+    """A network that will not renew a token without your app's credentials.
+
+    Google, Meta and X are all like this, which is why `refresh` is handed
+    them at all.
+    """
+
+    name = "needs-credentials"
+
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
+        if app is None:
+            message = (
+                "needs-credentials cannot renew a token without your app's "
+                "id and secret. Save them with Storage.save_app."
+            )
+            raise ConfigError(message)
+        return await super().refresh(connection, app)
+
+
 FAKES: dict[str, type[FakePlatform]] = {
     "fake": FakePlatform,
+    "needs-credentials": NeedsCredentials,
     "deleter": DeletingPlatform,
     "quiet-deleter": QuietDeleter,
     "lying-deleter": LyingDeleter,
@@ -1027,6 +1057,68 @@ class TestPostingToManyAccounts:
 
 
 class TestKeepingTokensFresh:
+    async def test_a_renewal_is_handed_your_apps_credentials(self) -> None:
+        # Google, Meta and X all sign a renewal with the client id and
+        # secret. A platform is never given your storage, so the client
+        # looks them up and passes them down.
+        storage = await storage_holding(expiring_soon())
+        await storage.save_app(an_app())
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").connection()
+
+        assert made("fake").refreshed_with == [an_app()]
+
+    async def test_credentials_saved_later_are_picked_up_without_a_restart(
+        self,
+    ) -> None:
+        # Read on every renewal rather than once, because rotating an app
+        # secret is done in a hurry and restarting every worker is not.
+        storage = await storage_holding(expiring_soon())
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").connection()
+
+        await storage.save_app(an_app())
+        # Put the tired token back, so there is a second renewal to watch.
+        await storage.save_connection(expiring_soon())
+        await sc.account("conn-1").connection()
+
+        assert made("fake").refreshed_with == [None, an_app()]
+
+    async def test_a_platform_that_needs_credentials_and_has_none_says_so(
+        self,
+    ) -> None:
+        # The wrong answer here is an AttributeError three frames inside the
+        # platform, or a TokenExpiredError telling somebody to sign in again
+        # when the real problem is an app that was never saved.
+        storage = await storage_holding(
+            expiring_soon(connection_id="conn-n", platform="needs-credentials")
+        )
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as refused:
+            await sc.account("conn-n").connection()
+
+        assert "Storage.save_app" in str(refused.value)
+
+    async def test_the_credentials_looked_up_are_the_ones_for_that_server(
+        self,
+    ) -> None:
+        # Mastodon has a different app per server, so a connection's host is
+        # part of which credentials belong to it.
+        storage = await storage_holding(
+            expiring_soon(connection_id="conn-p", platform="per-server")
+        )
+        elsewhere = an_app("per-server", "somewhere.else")
+        await storage.save_app(elsewhere)
+        await storage.save_app(an_app("per-server"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-p").connection()
+
+        assert made("per-server").refreshed_with == [an_app("per-server")]
+
     async def test_the_token_manager_you_pass_in_is_asked_every_time(self) -> None:
         storage = await storage_holding(
             a_connection(),
@@ -1083,3 +1175,35 @@ class TestClosing:
         await sc.aclose()
 
         assert [http.is_closed for http in made_here] == [True]
+
+
+class TestASharedLockForSeveralProcesses:
+    async def test_the_lock_you_pass_is_the_one_used_for_every_network(
+        self,
+    ) -> None:
+        # Apps running a web worker and a queue worker need a lock both can
+        # see. Without this they each hold their own, and on the networks
+        # that replace the refresh token every time, whichever loses the
+        # race is left holding a token the network already threw away.
+        made_for: list[str] = []
+
+        def make_lock(connection_id: str) -> asyncio.Lock:
+            made_for.append(connection_id)
+            return asyncio.Lock()
+
+        storage = await storage_holding(expiring_soon())
+
+        async with SocialChimp(storage=storage, make_lock=make_lock) as sc:
+            await sc.fresh_connection("conn-1")
+
+        assert made_for == ["conn-1"]
+
+    async def test_without_one_the_default_lock_is_used(self) -> None:
+        storage = await storage_holding(expiring_soon())
+
+        async with SocialChimp(storage=storage) as sc:
+            # Renewing still works; the lock is simply one that holds only
+            # inside this process.
+            connection = await sc.fresh_connection("conn-1")
+
+        assert connection.token.access_token

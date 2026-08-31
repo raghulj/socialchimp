@@ -72,9 +72,9 @@ We are building these in the order below. The first four are the priority.
 |---|----------|----------------|--------|
 | 1 | Mastodon | Only network where we can create the app automatically. No approval needed, so anyone can try the library in five minutes. | **Done** |
 | 2 | Bluesky | No signup portal. Short-lived tokens, so it proves our token refresh works. | **Done** |
-| 3 | Facebook Pages | Highest demand. Doing the Meta login work here makes Instagram and Threads much cheaper. | Not started |
-| 4 | Instagram | Posting is two steps: build the post, wait, then publish it. First network that needs the job model. | Not started |
-| 5 | YouTube | Video and Shorts. Big uploads sent in pieces. | Not started |
+| 3 | Facebook Pages | Highest demand. Doing the Meta login work here makes Instagram and Threads much cheaper. | **Done** |
+| 4 | Instagram | Posting is two steps: build the post, wait, then publish it. First network that needs the job model. | **Done** |
+| 5 | YouTube | Video and Shorts. Big uploads sent in pieces. | **Done** |
 | 6 | TikTok | Also uploads in pieces, with different rules. Tells us when publishing finished. | Not started |
 | 7 | X / Twitter | Wide demand. Media upload still uses the older endpoint. | Not started |
 | 8 | Pinterest | Every pin needs a board, so it proves we handle "where does this post go". | Not started |
@@ -122,17 +122,27 @@ In the order in the table above. Each one:
 - [x] Getting started
 - [x] Adding a platform
 - [x] Runnable examples, type-checked so they cannot drift
-- [ ] One page per platform
+- [x] One page covering every network
 
 ---
 
 ## Settling the platform contract
 
 Writing each real network has exposed something the contract could not show
-on its own. Four so far: somewhere to carry a secret between the two halves
+on its own. Six so far: somewhere to carry a secret between the two halves
 of signing in, app credentials arriving as an argument instead of platforms
-reading storage, platforms saying where their API lives, and a sign-in step
-for networks with no page to send anyone to.
+reading storage, platforms saying where their API lives, a sign-in step for
+networks with no page to send anyone to, those same app credentials reaching
+`refresh` as well as a sign-in, and a way to read a large file a piece at a
+time.
+
+The last two came from YouTube and Facebook independently saying the same
+thing: neither can renew a token without a client id and secret, and
+`refresh` was only ever handed the connection. YouTube worked around it with
+a constructor argument, Facebook refused to renew at all, and two workarounds
+for one gap is the contract telling us where it is wrong. `Media.size` and
+`Media.piece` came the same way - YouTube had written both privately, and
+TikTok and Facebook video both need them next.
 
 That is the right thing to happen at two platforms and the wrong thing to
 happen at six, because every change breaks platforms other people wrote.

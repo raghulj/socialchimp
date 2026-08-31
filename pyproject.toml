@@ -49,6 +49,9 @@ testing = ["pytest>=8.3"]
 # messages, pip install "socialchimp[mastodon]", actually works.
 mastodon = []
 bluesky = []
+facebook = []
+instagram = []
+youtube = []
 django = ["django>=4.2"]
 fastapi = ["fastapi>=0.110"]
 flask = ["flask>=3.0"]
@@ -67,6 +70,9 @@ Issues = "https://github.com/raghulj/socialchimp/issues"
 [project.entry-points."socialchimp.platforms"]
 mastodon = "socialchimp.platforms.mastodon:MastodonPlatform"
 bluesky = "socialchimp.platforms.bluesky:BlueskyPlatform"
+facebook = "socialchimp.platforms.facebook:FacebookPlatform"
+instagram = "socialchimp.platforms.instagram:InstagramPlatform"
+youtube = "socialchimp.platforms.youtube:YouTubePlatform"
 
 [dependency-groups]
 dev = [

@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 
 from socialchimp import (
+    AppCredentials,
     ConfigError,
     Connection,
     Feature,
@@ -62,7 +63,11 @@ class FakePlatform:
     ) -> LoginStep:
         return Finished(connection=_a_connection())
 
-    async def refresh(self, connection: Connection) -> Token:
+    async def refresh(
+        self,
+        connection: Connection,
+        app: AppCredentials | None = None,
+    ) -> Token:
         return Token(access_token="new")
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
