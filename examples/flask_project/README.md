@@ -17,6 +17,10 @@ production. So every one of them is on a page here rather than averaged away.
 uv run --with flask python -m examples.flask_project.check_it_runs
 ```
 
+Flask and socialchimp, and nothing else: `pip install "socialchimp[flask]"`.
+No credentials, no accounts, and no pytest - the fakes it runs against live
+in `socialchimp.testing` and need nothing beyond socialchimp itself.
+
 That builds the whole app against `socialchimp.testing.FakePlatform` - a
 network that works without a network - and walks a sign-in of each of the
 four shapes, a post to four accounts with two of them refusing for two

@@ -8,8 +8,10 @@ It is here to be read as much as run. New to socialchimp? Start with the
 [tutorial](../../docs/tutorial.md); this is the same ideas as a working
 project rather than as snippets.
 
-There is nothing to install beyond socialchimp and Django, no build step, no
-CSS framework, and no credentials needed to see it work.
+Django and socialchimp, and nothing else: `pip install "socialchimp[django]"`.
+No build step, no CSS framework, and no credentials needed to see it work.
+The 12 tests run on Django's own test runner rather than pytest, against the
+fakes in `socialchimp.testing`, which need nothing beyond socialchimp itself.
 
 ```bash
 uv run python examples/django_project/manage.py migrate

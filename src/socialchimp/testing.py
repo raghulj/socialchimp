@@ -29,10 +29,15 @@ Three doubles come with it, for tests of your own rather than of a platform:
 - `RecordingTransport` - answers httpx requests from a table of replies and
   keeps each request it was given.
 
-This lives behind an extra, because pytest is not something an app should
-have to install to post a picture:
+The three doubles need nothing but socialchimp itself. Only `PlatformChecks`
+wants pytest, because failing and skipping a check is what pytest is for, and
+it asks for it the first time a check actually runs:
 
     pip install "socialchimp[testing]"
+
+A program that only builds an app against `FakePlatform` - the sample
+projects in this repository do exactly that - does not want that extra, and
+importing the doubles here does not go looking for a test framework.
 """
 
 from __future__ import annotations
@@ -43,15 +48,16 @@ import inspect
 import json
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NoReturn, Protocol
 
 import httpx
-import pytest
 
 from socialchimp.errors import (
+    ConfigError,
     InvalidPostError,
     NotFoundError,
     NotSupportedError,
@@ -99,6 +105,65 @@ __all__ = [
     "RecordingTransport",
     "StorageCall",
 ]
+
+# What to say when the checks want pytest and it is not there. A bare
+# ModuleNotFoundError leaves somebody guessing which of their dependencies
+# asked for a test framework, and the answer is only ever this one thing.
+_NO_PYTEST: Final = (
+    "PlatformChecks runs on pytest, and pytest is not installed here. "
+    'Install it with: pip install "socialchimp[testing]"\n'
+    "\n"
+    "The doubles in this module - FakePlatform, RecordingStorage and "
+    "RecordingTransport - need nothing beyond socialchimp itself, so an app "
+    "using only those does not need that extra."
+)
+
+
+class _Pytest(Protocol):
+    """The three things these checks ask of pytest, and nothing else.
+
+    Naming them is what keeps the lazy import below type-checked: the pytest
+    module stands in for this protocol, so `fail` and `skip` keep `NoReturn`
+    and every check that ends in one still narrows the way it did when the
+    import was at the top of the file.
+    """
+
+    def fail(self, reason: str) -> NoReturn:
+        """End the running check, saying what the platform got wrong."""
+        ...
+
+    def skip(self, reason: str) -> NoReturn:
+        """End the running check, saying why there was nothing to check."""
+        ...
+
+    def raises(
+        self, expected_exception: type[BaseException]
+    ) -> AbstractContextManager[object]:
+        """Expect the block inside to raise that error."""
+        ...
+
+
+def _pytest() -> _Pytest:
+    """Hand back pytest, importing it the first time something asks.
+
+    This is why `import pytest` is not at the top of this file. The three
+    doubles here are for building an app, not only for testing one, and an
+    app that posts a picture should not have to install a test framework to
+    import a fake network.
+
+    Returns:
+        The pytest module.
+
+    Raises:
+        ConfigError: If pytest is not installed, saying what to install.
+    """
+    try:
+        import pytest
+    except ModuleNotFoundError as missing:
+        raise ConfigError(_NO_PYTEST) from missing
+
+    return pytest
+
 
 # The methods every platform provides as `async def`. `registry` keeps the
 # same five for its own early warning, privately - copying five names is
@@ -229,7 +294,7 @@ def _must_be_a_plain_function(platform: object, name: str) -> None:
     if not _method_is_wrong(platform, name, wants_async=False):
         return
 
-    pytest.fail(
+    _pytest().fail(
         f"{type(platform).__name__} is missing {name}, or has it as an "
         f"`async def`. It runs before every single request, and the token "
         f"has already been renewed by the time it does, so it is a plain "
@@ -1181,6 +1246,18 @@ class PlatformChecks:
     checker looks at what your methods take and return.
     """
 
+    def __init_subclass__(cls) -> None:
+        """Ask for pytest here, where saying what to install still helps.
+
+        Subclassing is the only way anyone uses these checks, and it happens
+        as the test file is imported - before pytest would collect a thing.
+        Asking now means somebody without the extra reads one line naming
+        the command to run, rather than a stack whose last line is a fake or
+        a skip failing for a reason that has nothing to do with a platform.
+        """
+        super().__init_subclass__()
+        _pytest()
+
     def make_platform(self) -> Platform:
         """Build the platform to check. Every subclass writes this one.
 
@@ -1255,7 +1332,7 @@ class PlatformChecks:
 
         attached = _something_to_attach(features)
         if not attached:
-            pytest.skip(
+            _pytest().skip(
                 f"{self.platform.name} says it can post neither text, "
                 f"pictures nor video, so there is no post to build. Say what "
                 f"it can post in features, or write make_post."
@@ -1298,7 +1375,7 @@ class PlatformChecks:
         """
         found = self._connection
         if found is None:
-            pytest.skip(
+            _pytest().skip(
                 f"{type(self).__name__} has no make_connection, so the "
                 f"checks that need an account cannot run. Add one returning "
                 f"a Connection your transport will answer for."
@@ -1314,7 +1391,7 @@ class PlatformChecks:
         """
         watcher = self._watcher
         if watcher is None:
-            pytest.skip(
+            _pytest().skip(
                 f"{type(self).__name__} has no make_transport, so there is "
                 f"no way to see what went to the wire. Add one returning a "
                 f"RecordingTransport, and pass self.transport to your "
@@ -1332,14 +1409,14 @@ class PlatformChecks:
             if _method_is_wrong(platform, method, wants_async=True)
         ]
         if wrong:
-            pytest.fail(
+            _pytest().fail(
                 f"{type(platform).__name__} is missing, or has as a plain "
                 f"function, {', '.join(wrong)}. A platform provides "
                 f"{', '.join(_MUST_HAVE)}, and every one is `async def`."
             )
 
         if not isinstance(platform, Platform):
-            pytest.fail(
+            _pytest().fail(
                 f"{type(platform).__name__} has those methods but is still "
                 f"not a platform. It also needs `name`, the word people ask "
                 f"for it by, `features`, what it can do, and `api_base` and "
@@ -1354,7 +1431,7 @@ class PlatformChecks:
         name: object = self.platform.name
 
         if not isinstance(name, str) or not _ENTRY_POINT_NAME.match(name):
-            pytest.fail(
+            _pytest().fail(
                 f"name is {name!r}. It is how a package registers this "
                 f"platform, how an app asks for it, and how the extra that "
                 f"installs it is spelled, so it has to be lowercase letters, "
@@ -1367,13 +1444,13 @@ class PlatformChecks:
         features: object = self.platform.features
 
         if not isinstance(features, Feature):
-            pytest.fail(
+            _pytest().fail(
                 f"features is {features!r}, which is not a Feature. Build it "
                 f"from the flags: Feature.POST_TEXT | Feature.POST_IMAGE."
             )
 
         if not features & _WAYS_TO_POST:
-            pytest.fail(
+            _pytest().fail(
                 f"{self.platform.name} says it cannot post text, pictures or "
                 f"video. Publishing is the one thing every platform is for, "
                 f"so at least one of POST_TEXT, POST_IMAGE and POST_VIDEO "
@@ -1408,7 +1485,7 @@ class PlatformChecks:
             # what checks the rest, and running it is on you.
             if wrong or not isinstance(platform, claim.protocol):
                 shape = "async def" if claim.wants_async else "a plain def"
-                pytest.fail(
+                _pytest().fail(
                     f"{platform.name} lists {claim.feature.name} in features "
                     f"but {', '.join(wrong) or 'nothing'} backs it up. Add "
                     f"{' and '.join(claim.methods)} as {shape}, or take "
@@ -1428,7 +1505,7 @@ class PlatformChecks:
         address: object = platform.api_base(connection)
 
         if not isinstance(address, str) or not address.startswith("https://"):
-            pytest.fail(
+            _pytest().fail(
                 f"api_base() returned {address!r}. Every path is joined onto "
                 f"it, so it has to be a whole address starting with "
                 f'"https://" - "https://graph.facebook.com/v21.0", not '
@@ -1436,7 +1513,7 @@ class PlatformChecks:
             )
 
         if address.endswith("/"):
-            pytest.fail(
+            _pytest().fail(
                 f"api_base() returned {address!r}, which ends in a slash. "
                 f"The paths joined onto it start with one already, so this "
                 f"sends every request to an address with two."
@@ -1454,7 +1531,7 @@ class PlatformChecks:
             isinstance(name, str) and isinstance(value, str)
             for name, value in headers.items()
         ):
-            pytest.fail(
+            _pytest().fail(
                 f"auth_headers() returned {headers!r}. It goes straight onto "
                 f"the request, so it has to be a mapping of header names to "
                 f'header values, both text: {{"Authorization": "Bearer ..."}}.'
@@ -1473,7 +1550,7 @@ class PlatformChecks:
         try:
             step = await platform.start_login(LoginRequest(redirect_uri=_A_REDIRECT))
         except SocialChimpError as refused:
-            pytest.skip(
+            _pytest().skip(
                 f"{platform.name} will not start a login without your app's "
                 f"credentials, so there is no first step to look at: {refused}"
             )
@@ -1484,7 +1561,7 @@ class PlatformChecks:
             return
 
         if not step.fields:
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} asks for details but names no fields, so "
                 f"there is nothing for an app to draw. Say what to ask for, "
                 f"or send the person to a sign-in page instead."
@@ -1492,7 +1569,7 @@ class PlatformChecks:
 
         for asked in step.fields:
             if not asked.name or not asked.label:
-                pytest.fail(
+                _pytest().fail(
                     f"{platform.name} asks for {asked!r}. Every field needs "
                     f"a name, which is where the answer comes back under, "
                     f"and a label, which is what the person reads next to "
@@ -1515,7 +1592,7 @@ class PlatformChecks:
         """
         platform = self.platform
         if Feature.NEEDS_NO_APP not in platform.features:
-            pytest.skip(
+            _pytest().skip(
                 f"{platform.name} does not list Feature.NEEDS_NO_APP, so it "
                 f"has an app like every other network and refusing a login "
                 f"without one is the right answer."
@@ -1524,7 +1601,7 @@ class PlatformChecks:
         try:
             await platform.start_login(LoginRequest(redirect_uri=_A_REDIRECT))
         except SocialChimpError as refused:
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} lists Feature.NEEDS_NO_APP but would not "
                 f"start a login without an app: {type(refused).__name__}: "
                 f"{refused}. The flag says there is nothing to register, so "
@@ -1556,7 +1633,7 @@ class PlatformChecks:
         if _method_is_wrong(
             platform, "check_state", wants_async=True
         ) or not isinstance(platform, CanCheckState):
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} has a check_state, but not one socialchimp "
                 f"can use. It is `async def check_state(self, connection, "
                 f"post_id)`. Anything else - a plain def, something that is "
@@ -1580,7 +1657,7 @@ class PlatformChecks:
             )
         ]
         if len(positional) != _CHECK_STATE_ARGUMENTS:
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name}.check_state takes {len(positional)} things "
                 f"where it should take two: the connection and the post id, "
                 f"in that order. socialchimp passes both by position, so any "
@@ -1607,7 +1684,7 @@ class PlatformChecks:
         if _method_is_wrong(
             platform, "resume_login", wants_async=True
         ) or not isinstance(platform, CanResumeLogin):
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} has a resume_login, but not one socialchimp "
                 f"can use. It is `async def resume_login(self, request, *, "
                 f"resume_token, account_id, remember=None)`. Anything else - "
@@ -1623,7 +1700,7 @@ class PlatformChecks:
 
         missing = [name for name in _RESUME_ARGUMENTS if name not in taken]
         if missing:
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name}.resume_login does not take "
                 f"{', '.join(missing)}. socialchimp passes all of "
                 f"{', '.join(_RESUME_ARGUMENTS)} by name, so an argument "
@@ -1637,7 +1714,7 @@ class PlatformChecks:
         limits: object = await self.platform.limits(connection)
 
         if not isinstance(limits, Limits):
-            pytest.fail(
+            _pytest().fail(
                 f"limits() returned {limits!r}, which is not a Limits. "
                 f"Return Limits(...), leaving out anything the network does "
                 f"not tell you."
@@ -1650,7 +1727,7 @@ class PlatformChecks:
             if value is None:
                 continue
             if not isinstance(value, int) or value <= 0:
-                pytest.fail(
+                _pytest().fail(
                     f"limits().{shape.name} is {value!r}. A number here is "
                     f"a real limit and has to be positive; `None` is how you "
                     f"say you do not know. Zero means the opposite of "
@@ -1666,19 +1743,19 @@ class PlatformChecks:
 
         limits = await platform.limits(connection)
         if limits.max_text_length is None:
-            pytest.skip(
+            _pytest().skip(
                 f"{platform.name} declares no max_text_length, so there is "
                 f"no limit here to break."
             )
 
         before = len(sent)
-        with pytest.raises(InvalidPostError):
+        with _pytest().raises(InvalidPostError):
             await platform.publish(
                 connection, self.make_post("x" * (limits.max_text_length + 1))
             )
 
         if len(sent) != before:
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} sent {len(sent) - before} request(s) while "
                 f"refusing a post that breaks its own limit. Check the post "
                 f"first - `socialchimp.features.check_post` does exactly "
@@ -1703,7 +1780,7 @@ class PlatformChecks:
 
         counted: object = limits.text_counted_in
         if not isinstance(counted, TextCount):
-            pytest.fail(
+            _pytest().fail(
                 f"limits().text_counted_in is {counted!r}, which is not a "
                 f"TextCount. Say how this network counts the length of a "
                 f"post - TextCount.CHARACTERS, GRAPHEMES, UTF8_BYTES or "
@@ -1712,7 +1789,7 @@ class PlatformChecks:
 
         allowed = limits.max_text_length
         if allowed is None:
-            pytest.skip(
+            _pytest().skip(
                 f"{platform.name} declares no max_text_length, so there is "
                 f"nothing here to count."
             )
@@ -1728,7 +1805,7 @@ class PlatformChecks:
             await platform.publish(connection, self.make_post(fits))
         except InvalidPostError:
             if len(sent) == before:
-                pytest.fail(
+                _pytest().fail(
                     f"{platform.name} says its limit of {allowed} is counted "
                     f"in {counted.in_words}, then refused a post of "
                     f"{measure_text(fits, counted)} {counted.in_words} "
@@ -1757,7 +1834,7 @@ class PlatformChecks:
             refused = problem
 
         if len(sent) != before:
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} sent a post of "
                 f"{measure_text(too_long, counted)} {counted.in_words} to "
                 f"the network, having said it allows {allowed}. Check the "
@@ -1769,7 +1846,7 @@ class PlatformChecks:
 
         if not isinstance(refused, InvalidPostError):
             answered = type(refused).__name__ if refused is not None else "nothing"
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} answered a post of "
                 f"{measure_text(too_long, counted)} {counted.in_words}, over "
                 f"its own limit of {allowed}, with {answered}. A post that "
@@ -1789,7 +1866,7 @@ class PlatformChecks:
         """
         platform = self.platform
         if Feature.POST_TEXT in platform.features:
-            pytest.skip(
+            _pytest().skip(
                 f"{platform.name} lists Feature.POST_TEXT, so a post of "
                 f"words is one it should take."
             )
@@ -1801,7 +1878,7 @@ class PlatformChecks:
         except NotSupportedError:
             return
         except Exception as error:
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} does not list Feature.POST_TEXT, so a post "
                 f"of words alone should raise NotSupportedError, naming what "
                 f"to attach instead. It raised {type(error).__name__}: "
@@ -1809,7 +1886,7 @@ class PlatformChecks:
                 f"explain to a person."
             )
 
-        pytest.fail(
+        _pytest().fail(
             f"{platform.name} does not list Feature.POST_TEXT but took a "
             f"post of words anyway. Whatever it did with them, it was not "
             f"what the caller asked for - raise NotSupportedError instead."
@@ -1819,7 +1896,7 @@ class PlatformChecks:
         """A platform without SCHEDULE says so, rather than posting now."""
         platform = self.platform
         if Feature.SCHEDULE in platform.features:
-            pytest.skip(
+            _pytest().skip(
                 f"{platform.name} lists Feature.SCHEDULE, so there is "
                 f"nothing here to refuse."
             )
@@ -1832,14 +1909,14 @@ class PlatformChecks:
         except NotSupportedError:
             return
         except Exception as error:
-            pytest.fail(
+            _pytest().fail(
                 f"{platform.name} does not list Feature.SCHEDULE, so a post "
                 f"with publish_at should raise NotSupportedError. It raised "
                 f"{type(error).__name__}: {error}. NotSupportedError is the "
                 f"one an app can catch and explain to a person."
             )
 
-        pytest.fail(
+        _pytest().fail(
             f"{platform.name} does not list Feature.SCHEDULE but took a post "
             f"with publish_at anyway. Publishing now instead of later is the "
             f"kind of quiet wrong answer this library exists to avoid - "
@@ -1854,7 +1931,7 @@ class PlatformChecks:
         limits = await platform.limits(connection)
         refusable = _posts_it_should_refuse(platform.features, limits)
         if not refusable:
-            pytest.skip(
+            _pytest().skip(
                 f"{platform.name} declares no limits and rules nothing out, "
                 f"so there is nothing it can refuse without a network."
             )
@@ -1865,7 +1942,7 @@ class PlatformChecks:
             except SocialChimpError:
                 continue
             except Exception as error:
-                pytest.fail(
+                _pytest().fail(
                     f"{platform.name} raised {type(error).__name__}: "
                     f"{error}. Every error a platform raises is a "
                     f"SocialChimpError, so an app catches one thing rather "
@@ -1876,7 +1953,7 @@ class PlatformChecks:
         """`fetch_updates` gives back Updates, each with a real timestamp."""
         platform = self.platform
         if not isinstance(platform, CanReadUpdates):
-            pytest.skip(
+            _pytest().skip(
                 f"{platform.name} has no fetch_updates, so socialchimp will "
                 f"not check it on a timer. Nothing to check here."
             )
@@ -1885,7 +1962,7 @@ class PlatformChecks:
         updates: object = await platform.fetch_updates(connection, None)
 
         if isinstance(updates, str | bytes) or not isinstance(updates, Sequence):
-            pytest.fail(
+            _pytest().fail(
                 f"fetch_updates returned {updates!r}. It has to be a "
                 f"sequence - a list or a tuple - so the poller can walk it "
                 f"and work out what is new."
@@ -1893,7 +1970,7 @@ class PlatformChecks:
 
         for item in updates:
             if not isinstance(item, Update) or item.created_at.tzinfo is None:
-                pytest.fail(
+                _pytest().fail(
                     f"fetch_updates returned {item!r}. Every item is an "
                     f"Update with a timezone on created_at. Build them with "
                     f"`Update.from_network(...)`, which does both for you - "

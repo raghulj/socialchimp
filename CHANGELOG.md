@@ -4,6 +4,26 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.3.1 - 2026-08-31
+
+### Fixed
+
+- **`socialchimp.testing` no longer imports pytest.** `from
+  socialchimp.testing import FakePlatform` raised `ModuleNotFoundError: No
+  module named 'pytest'` on an install without the `testing` extra, because
+  the import sat at the top of the module. Only `PlatformChecks` ever wanted
+  it. `FakePlatform`, `RecordingStorage`, `RecordingTransport` and
+  `StorageCall` are for building an app as much as for testing one - the
+  sample projects in `examples/` build a whole app against `FakePlatform`
+  and nothing else - so a fake social network no longer asks for a test
+  framework.
+
+  pytest is now imported the first time a check fails or skips, and
+  subclassing `PlatformChecks` without it raises a `ConfigError` naming
+  `pip install "socialchimp[testing]"` rather than a bare
+  `ModuleNotFoundError`. Nothing changes for anyone who has pytest, and the
+  extra still installs it.
+
 ## 0.3.0 - 2026-08-31
 
 ### Read this first: `Dispatcher.deliver` raises now, and stops losing updates
