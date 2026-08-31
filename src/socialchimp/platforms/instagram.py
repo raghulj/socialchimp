@@ -124,7 +124,6 @@ there are none left.
 from __future__ import annotations
 
 import re
-import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
@@ -134,7 +133,6 @@ import httpx
 
 from socialchimp.errors import (
     AuthError,
-    ConfigError,
     InvalidPostError,
     NotSupportedError,
     PlatformError,
@@ -169,13 +167,19 @@ from socialchimp.platforms._meta import (
     app_must_be_made_by_hand,
     changes_in,
     check_meta_signature,
+    check_state,
+    code_from,
     credentials_or_refuse,
+    first_update,
     long_lived_token,
     meta_errors,
     pages_of,
+    quota_left,
     required_text,
     sign_in_url,
+    state_for,
     swap_code_for_token,
+    where_to_post,
 )
 
 if TYPE_CHECKING:
@@ -276,9 +280,6 @@ _THROWN_AWAY: Final = "EXPIRED"
 _COULD_NOT_FETCH_THE_FILE: Final = 9004
 _VIDEO_FORMAT_IT_WILL_NOT_TAKE: Final = 2_207_026
 _NOBODY_KNOWS: Final = 24
-
-# Long enough that nobody can guess one, short enough to sit in a URL.
-_STATE_BYTES: Final = 24
 
 # What Instagram calls a change it pushes to us, and what we call it.
 # `story_insights` is missing on purpose: it is a bundle of numbers about a
@@ -466,62 +467,6 @@ async def _ask(graph: Graph, method: str, path: str, **kwargs: object) -> RawDat
 # ---------------------------------------------------------------------------
 
 
-def _check_state(request: LoginRequest, callback: Mapping[str, str]) -> None:
-    """Check the value that came back is the one we sent.
-
-    This is what stops somebody handing your app a login they started
-    themselves and having it saved against one of your users.
-
-    Args:
-        request: The request used to start the login.
-        callback: The query values Meta sent back.
-
-    Raises:
-        AuthError: If both sides have a state and they are different.
-    """
-    returned = callback.get("state", "")
-    if request.state is not None and returned and returned != request.state:
-        message = (
-            "The state Instagram sent back did not match the one we sent. "
-            "This login did not start here, so nothing has been saved. Start "
-            "a new one."
-        )
-        raise AuthError(message)
-
-
-def _code_from(callback: Mapping[str, str]) -> str:
-    """Pull the login code out of what Meta sent back.
-
-    Args:
-        callback: The query values Meta sent back.
-
-    Returns:
-        The code to swap for a token.
-
-    Raises:
-        AuthError: If the person said no, or if there is no code.
-    """
-    refused = callback.get("error")
-    if refused:
-        said = callback.get("error_description", "")
-        detail = f" It said: {said}" if said else ""
-        message = (
-            f"Instagram did not sign this person in ({refused}). Usually they "
-            f"pressed cancel on the approval page.{detail}"
-        )
-        raise AuthError(message)
-
-    code = callback.get("code")
-    if not code:
-        message = (
-            "Instagram sent no code back, so there is nothing to swap for a "
-            "token. Check you are passing the whole query string from your "
-            "redirect address."
-        )
-        raise AuthError(message)
-    return code
-
-
 @dataclass(frozen=True, slots=True)
 class _InstagramAccount:
     """One Instagram business account, and the Page token to act as it.
@@ -641,7 +586,7 @@ class _Attachment:
     alt_text: str | None = None
 
 
-def _account_of(connection: Connection) -> str:
+def _instagram_account_of(connection: Connection) -> str:
     """Work out which Instagram account a connection posts to.
 
     Args:
@@ -653,21 +598,12 @@ def _account_of(connection: Connection) -> str:
     Raises:
         ConfigError: If the connection names no account at all.
     """
-    found = connection.extra.get("instagram_id")
-    if isinstance(found, str) and found:
-        return found
-    # Every connection this file builds sets both, and the account id is the
-    # Instagram id too. A connection from somewhere else may only have that.
-    if connection.account_id:
-        return connection.account_id
-
-    message = (
-        f"The connection {connection.id!r} names no Instagram account, so "
-        f"there is nowhere to post. A connection made by signing in carries "
-        f"the account id in extra['instagram_id']; one built by hand needs it "
-        f"set, or needs account_id filled in."
+    return where_to_post(
+        connection,
+        key="instagram_id",
+        what="Instagram account",
+        platform=PLATFORM_NAME,
     )
-    raise ConfigError(message)
 
 
 def _checked_options(options: RawData) -> bool:
@@ -811,50 +747,6 @@ def _what_it_allows(posts_left_today: int | None = None) -> Limits:
     )
 
 
-def _whole_number(value: object) -> int | None:
-    """Read a value that should be a count.
-
-    Args:
-        value: Whatever arrived under that key.
-
-    Returns:
-        The number, or `None` for anything that is not one. `True` is not a
-        number here, whatever Python thinks.
-    """
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return None
-
-
-def _quota_in(reply: RawData) -> int | None:
-    """Read how many posts are left out of Instagram's answer.
-
-    Args:
-        reply: What Instagram answered.
-
-    Returns:
-        How many are left, or `None` when the answer was not one we can read.
-        Never a guess: a made-up number here would refuse posts Instagram
-        would have taken.
-    """
-    entries = reply.get("data")
-    first = entries[0] if isinstance(entries, list) and entries else None
-    if not isinstance(first, dict):
-        return None
-
-    config = first.get("config")
-    allowed = (
-        _whole_number(config.get("quota_total")) if isinstance(config, dict) else None
-    )
-    used = _whole_number(first.get("quota_usage"))
-    if allowed is None or used is None:
-        return None
-
-    # Meta has been known to count past its own total. That means none left,
-    # not a negative number of posts.
-    return max(allowed - used, 0)
-
-
 async def _posts_left_today(graph: Graph, account_id: str) -> int | None:
     """Ask Instagram how many posts are left in the last 24 hours.
 
@@ -879,7 +771,7 @@ async def _posts_left_today(graph: Graph, account_id: str) -> int | None:
         f"/{account_id}/content_publishing_limit",
         params={"fields": "config,quota_usage"},
     )
-    return _quota_in(reply)
+    return quota_left(reply)
 
 
 # ---------------------------------------------------------------------------
@@ -1199,7 +1091,7 @@ class InstagramPlatform:
             ConfigError: If the connection names no Instagram account.
             SocialChimpError: If Instagram refuses the question.
         """
-        account_id = _account_of(connection)
+        account_id = _instagram_account_of(connection)
 
         async with self._graph(connection.token.access_token) as graph:
             try:
@@ -1229,7 +1121,7 @@ class InstagramPlatform:
             platform=PLATFORM_NAME,
             what="start a sign-in",
         )
-        state = request.state or secrets.token_urlsafe(_STATE_BYTES)
+        state = state_for(request)
 
         return SendToNetwork(
             url=sign_in_url(
@@ -1282,8 +1174,8 @@ class InstagramPlatform:
             platform=PLATFORM_NAME,
             what="finish a sign-in",
         )
-        _check_state(request, callback)
-        code = _code_from(callback)
+        check_state(request, callback, platform=PLATFORM_NAME)
+        code = code_from(callback, platform=PLATFORM_NAME)
 
         async with self._graph() as graph:
             short = await swap_code_for_token(
@@ -1503,7 +1395,7 @@ class InstagramPlatform:
                 watching. That is not a failure - see `_stopped_waiting`.
             SocialChimpError: If Instagram refuses any of the three steps.
         """
-        account_id = _account_of(connection)
+        account_id = _instagram_account_of(connection)
 
         # Everything that can be judged without asking Instagram is judged
         # first, so a mistake costs no request and no part of the hourly
@@ -1856,13 +1748,4 @@ class InstagramPlatform:
             PlatformError: If the body is not one of Meta's messages, or
                 carries no change at all.
         """
-        found = self.read_updates(body)
-        if not found:
-            message = (
-                "This message from Instagram carries no change we can read, "
-                "so there is no update to hand back. Meta sends shapes we "
-                "have no interest in; call read_updates instead, which "
-                "answers with an empty list rather than raising."
-            )
-            raise PlatformError(message, platform=PLATFORM_NAME)
-        return found[0]
+        return first_update(self.read_updates(body), platform=PLATFORM_NAME)

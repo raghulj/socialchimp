@@ -1,15 +1,23 @@
 """The parts of Meta that Facebook, Instagram and Threads all share.
 
-Meta runs three networks socialchimp cares about, and they are the same
-network wearing three hats. They share one sign-in page, one way of swapping
-a code for a token, one way of turning a short token into a long one, one
+Meta runs three networks socialchimp cares about. Facebook and Instagram are
+the same network wearing two hats: one sign-in page, one way of swapping a
+code for a token, one way of turning a short token into a long one, one
 address for their API, one set of error codes, one pair of rate-limit
 headers, and one way of signing the requests they push to you.
 
-So all of that is written once, here, and Facebook, Instagram and Threads
-each add only what is actually theirs. This module is private - the leading
-underscore says so - because it is a place for us to share code, not a thing
-to build against. Its shape will move as Instagram and Threads land.
+So all of that is written once, here, and each network adds only what is
+actually its own. This module is private - the leading underscore says so -
+because it is a place for us to share code, not a thing to build against.
+
+**Threads shares less of this than you would expect.** It has its own app id
+and secret, its own sign-in page on threads.net, its own API host at
+graph.threads.net, and its own shape of pushed message - so `GRAPH_API`,
+`SIGN_IN_PAGE`, `swap_code_for_token`, `long_lived_token` and `changes_in`
+are all Facebook-and-Instagram only. What Threads does share is everything
+below that is about Meta rather than about one network: the error codes, the
+rate-limit headers, the signature on a pushed request, the way a state and a
+login code are checked, and the shape of the daily posting allowance.
 
 ## You have to make the app by hand
 
@@ -60,6 +68,7 @@ rather than after.
 from __future__ import annotations
 
 import json
+import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
@@ -84,7 +93,9 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from socialchimp.errors import SocialChimpError
-    from socialchimp.models import AppCredentials
+    from socialchimp.events import Update
+    from socialchimp.models import AppCredentials, Connection
+    from socialchimp.platform import LoginRequest
 
 __all__ = [
     "DEVELOPER_PORTAL",
@@ -93,6 +104,7 @@ __all__ = [
     "PAGE_FIELDS",
     "SIGNATURE_HEADER",
     "SIGN_IN_PAGE",
+    "STATE_BYTES",
     "Change",
     "Graph",
     "MetaPage",
@@ -100,16 +112,22 @@ __all__ = [
     "app_must_be_made_by_hand",
     "changes_in",
     "check_meta_signature",
+    "check_state",
+    "code_from",
     "credentials_or_refuse",
+    "first_update",
     "long_lived_token",
     "meta_errors",
     "page_by_id",
     "pages_of",
+    "quota_left",
     "required_text",
     "sign_in_url",
+    "state_for",
     "swap_code_for_token",
     "token_from",
     "usage_from_headers",
+    "where_to_post",
 ]
 
 GRAPH_VERSION: Final = "v21.0"
@@ -163,6 +181,12 @@ MOST_PAGES_TO_READ: Final = 10
 
 At a hundred a time that is a thousand pages, which is far more than anyone
 manages. It is here so a paging bug on either side cannot spin forever.
+"""
+
+STATE_BYTES: Final = 24
+"""How much randomness goes into a state nobody was given one for.
+
+Long enough that nobody can guess one, short enough to sit in a URL.
 """
 
 # Meta's error codes, grouped by what a person would have to do about them.
@@ -315,6 +339,127 @@ def sign_in_url(
     return f"{page}?{query}"
 
 
+def state_for(request: LoginRequest) -> str:
+    """Work out the state to send out with a sign-in.
+
+    Args:
+        request: The request the sign-in is starting from.
+
+    Returns:
+        Whatever the caller chose, or a fresh random one when they left it
+        out. The value comes straight back from the network, which is how
+        your app tells one person's half-finished sign-in from another's.
+    """
+    return request.state or secrets.token_urlsafe(STATE_BYTES)
+
+
+def check_state(
+    request: LoginRequest,
+    callback: Mapping[str, str],
+    *,
+    platform: str,
+) -> None:
+    """Check the value that came back is the one we sent.
+
+    This is what stops somebody handing your app a login they started
+    themselves and having it saved against one of your users.
+
+    Args:
+        request: The request used to start the login.
+        callback: The query values the network sent back.
+        platform: Which of Meta's networks sent them, for the message.
+
+    Raises:
+        AuthError: If both sides have a state and they are different. A
+            callback with no state at all is left alone: Meta only sends one
+            back when one went out, and missing is not the same as wrong.
+    """
+    returned = callback.get("state", "")
+    if request.state is not None and returned and returned != request.state:
+        message = (
+            f"The state {platform} sent back did not match the one we sent. "
+            f"This login did not start here, so nothing has been saved. Start "
+            f"a new one."
+        )
+        raise AuthError(message)
+
+
+def code_from(callback: Mapping[str, str], *, platform: str) -> str:
+    """Pull the login code out of what the network sent back.
+
+    Args:
+        callback: The query values the network sent back.
+        platform: Which of Meta's networks sent them, for the message.
+
+    Returns:
+        The code to swap for a token.
+
+    Raises:
+        AuthError: If the person said no, or if there is no code.
+    """
+    refused = callback.get("error")
+    if refused:
+        said = callback.get("error_description", "")
+        detail = f" It said: {said}" if said else ""
+        message = (
+            f"{platform} did not sign this person in ({refused}). Usually they "
+            f"pressed cancel on the approval page.{detail}"
+        )
+        raise AuthError(message)
+
+    code = callback.get("code")
+    if not code:
+        message = (
+            f"{platform} sent no code back, so there is nothing to swap for a "
+            f"token. Check you are passing the whole query string from your "
+            f"redirect address."
+        )
+        raise AuthError(message)
+    return code
+
+
+def where_to_post(
+    connection: Connection,
+    *,
+    key: str,
+    what: str,
+    platform: str,
+) -> str:
+    """Work out which page or account a connection publishes to.
+
+    Every Meta network posts to something other than the person who signed
+    in - a Facebook page, an Instagram business account, a Threads profile -
+    and every one of them writes that id onto the connection the same way.
+
+    Args:
+        connection: The account to look at.
+        key: Where a sign-in wrote the id, under `Connection.extra`.
+        what: What kind of thing it is, for the message.
+        platform: Which of Meta's networks, for the message.
+
+    Returns:
+        The network's id for the thing being posted to.
+
+    Raises:
+        ConfigError: If the connection names none.
+    """
+    found = connection.extra.get(key)
+    if isinstance(found, str) and found:
+        return found
+    # Every connection a sign-in here builds sets both, and the account id is
+    # the same id. A connection from somewhere else may only have that one.
+    if connection.account_id:
+        return connection.account_id
+
+    message = (
+        f"The connection {connection.id!r} names no {what}, so there is "
+        f"nowhere to post. A connection made by signing in to {platform} "
+        f"carries the id in extra[{key!r}]; one built by hand needs that set, "
+        f"or needs account_id filled in."
+    )
+    raise ConfigError(message)
+
+
 def required_text(reply: RawData, key: str, *, platform: str, when: str) -> str:
     """Read a value Meta always sends, and complain plainly if it did not.
 
@@ -380,6 +525,67 @@ def token_from(reply: RawData, *, platform: str, when: str) -> Token:
         access_token=access,
         expires_at=_now() + timedelta(seconds=float(seconds)),
     )
+
+
+# ---------------------------------------------------------------------------
+# How many posts are left today
+# ---------------------------------------------------------------------------
+
+
+def _whole_number(value: object) -> int | None:
+    """Read a value that should be a count.
+
+    Args:
+        value: Whatever arrived under that key.
+
+    Returns:
+        The number, or `None` for anything that is not one. `True` is not a
+        number here, whatever Python thinks.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def quota_left(
+    reply: RawData,
+    *,
+    used: str = "quota_usage",
+    allowed_in: str = "config",
+) -> int | None:
+    """Read how much of a daily allowance is left out of Meta's answer.
+
+    Instagram and Threads both count posts over a rolling 24 hours and both
+    answer in the same shape: a list of one, holding how many have been used
+    and an object holding how many are allowed. Threads counts replies as
+    well, under names of their own, which is why the two keys are arguments.
+
+    Args:
+        reply: What the network answered.
+        used: The key holding how many have been used.
+        allowed_in: The key holding the object with `quota_total` in it.
+
+    Returns:
+        How many are left, or `None` when the answer was not one we can read.
+        Never a guess: a made-up number here would refuse posts the network
+        would have taken.
+    """
+    entries = reply.get("data")
+    first = entries[0] if isinstance(entries, list) and entries else None
+    if not isinstance(first, dict):
+        return None
+
+    config = first.get(allowed_in)
+    allowed = (
+        _whole_number(config.get("quota_total")) if isinstance(config, dict) else None
+    )
+    spent = _whole_number(first.get(used))
+    if allowed is None or spent is None:
+        return None
+
+    # Meta has been known to count past its own total. That means none left,
+    # not a negative number of posts.
+    return max(allowed - spent, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1178,3 +1384,34 @@ def changes_in(body: bytes, *, platform: str) -> list[Change]:
                 )
             )
     return found
+
+
+def first_update(found: list[Update], *, platform: str) -> Update:
+    """Take the one update a `read_update` is expected to hand back.
+
+    Every Meta network can send several things in one message and every one
+    of them offers a `read_updates` that hands back all of them. This is the
+    other half: the single-update method, and the same refusal when there is
+    nothing in the message to give.
+
+    Args:
+        found: Whatever `read_updates` made of the message.
+        platform: Which of Meta's networks sent it, for the message.
+
+    Returns:
+        The first update.
+
+    Raises:
+        PlatformError: If the message carried none. That is not unusual -
+            Meta sends shapes we have no interest in - which is why the
+            message points at `read_updates`, whose answer is an empty list.
+    """
+    if not found:
+        message = (
+            f"This message from {platform} carries no change we can read, so "
+            f"there is no update to hand back. It sends shapes we have no "
+            f"interest in; call read_updates instead, which answers with an "
+            f"empty list rather than raising."
+        )
+        raise PlatformError(message, platform=platform)
+    return found[0]

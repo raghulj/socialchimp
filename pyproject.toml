@@ -51,6 +51,10 @@ mastodon = []
 bluesky = []
 facebook = []
 instagram = []
+pinterest = []
+threads = []
+tiktok = []
+x = []
 youtube = []
 django = ["django>=4.2"]
 fastapi = ["fastapi>=0.110"]
@@ -72,6 +76,10 @@ mastodon = "socialchimp.platforms.mastodon:MastodonPlatform"
 bluesky = "socialchimp.platforms.bluesky:BlueskyPlatform"
 facebook = "socialchimp.platforms.facebook:FacebookPlatform"
 instagram = "socialchimp.platforms.instagram:InstagramPlatform"
+pinterest = "socialchimp.platforms.pinterest:PinterestPlatform"
+threads = "socialchimp.platforms.threads:ThreadsPlatform"
+tiktok = "socialchimp.platforms.tiktok:TikTokPlatform"
+x = "socialchimp.platforms.x:XPlatform"
 youtube = "socialchimp.platforms.youtube:YouTubePlatform"
 
 [dependency-groups]

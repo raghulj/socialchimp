@@ -91,6 +91,16 @@ class UpdateKind(Enum):
     POST_FAILED = "post_failed"
     """A post the network was still working on will never go live."""
 
+    POST_DELETED = "post_deleted"
+    """A post was removed, by its author or by a moderator."""
+
+    POST_DRAFTED = "post_drafted"
+    """The network put the post in somebody's drafts for them to finish.
+
+    TikTok can do this instead of posting straight away. Nothing is wrong,
+    and nothing more will happen until a person taps a button.
+    """
+
     REACTION_ADDED = "reaction_added"
     """Someone liked, favourited or reacted to a post."""
 

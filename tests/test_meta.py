@@ -12,6 +12,8 @@ import respx
 
 from socialchimp import (
     AuthError,
+    ConfigError,
+    Connection,
     InvalidPostError,
     NotAllowedError,
     NotFoundError,
@@ -19,28 +21,38 @@ from socialchimp import (
     PlatformError,
     RateLimitError,
     SignatureError,
+    Token,
+    Update,
 )
 from socialchimp.http import HttpClient, Retries
+from socialchimp.platform import LoginRequest
 from socialchimp.platforms import _meta
 from socialchimp.platforms._meta import (
     DEVELOPER_PORTAL,
     GRAPH_API,
     GRAPH_VERSION,
     SIGN_IN_PAGE,
+    STATE_BYTES,
     Graph,
     Usage,
     app_must_be_made_by_hand,
     changes_in,
     check_meta_signature,
+    check_state,
+    code_from,
+    first_update,
     long_lived_token,
     meta_errors,
     page_by_id,
     pages_of,
+    quota_left,
     required_text,
     sign_in_url,
+    state_for,
     swap_code_for_token,
     token_from,
     usage_from_headers,
+    where_to_post,
 )
 
 PLATFORM = "facebook"
@@ -986,3 +998,230 @@ class TestReadingWhatMetaPushed:
         body = json.dumps({"entry": [entry]}).encode()
 
         assert changes_in(body, platform=PLATFORM)[0].raw == entry
+
+
+# ---------------------------------------------------------------------------
+# The two halves of a sign-in that every Meta network does the same way
+# ---------------------------------------------------------------------------
+
+
+def a_login(*, state: str | None = "abc123") -> LoginRequest:
+    """A login request, with or without a state on it."""
+    return LoginRequest(redirect_uri="https://app.example/callback", state=state)
+
+
+class TestMakingAState:
+    def test_it_keeps_the_state_you_gave_it(self) -> None:
+        assert state_for(a_login()) == "abc123"
+
+    def test_it_makes_one_when_you_did_not(self) -> None:
+        made = state_for(a_login(state=None))
+
+        assert made
+        assert made != state_for(a_login(state=None))
+
+    def test_it_is_long_enough_that_nobody_guesses_one(self) -> None:
+        # token_urlsafe packs three bytes into four characters, so 24 bytes
+        # is 32 characters of it.
+        assert len(state_for(a_login(state=None))) >= STATE_BYTES
+
+
+class TestCheckingTheStateThatCameBack:
+    def test_the_state_we_sent_coming_back_is_fine(self) -> None:
+        check_state(a_login(), {"state": "abc123"}, platform=PLATFORM)
+
+    def test_somebody_elses_login_is_refused(self) -> None:
+        with pytest.raises(AuthError, match="did not start here"):
+            check_state(a_login(), {"state": "not-ours"}, platform=PLATFORM)
+
+    def test_the_refusal_names_the_network_that_sent_it(self) -> None:
+        with pytest.raises(AuthError, match="instagram"):
+            check_state(a_login(), {"state": "not-ours"}, platform="instagram")
+
+    def test_a_login_started_without_a_state_has_nothing_to_check(self) -> None:
+        check_state(a_login(state=None), {"state": "anything"}, platform=PLATFORM)
+
+    def test_a_callback_that_carries_no_state_is_left_alone(self) -> None:
+        # Meta only sends back a state when one was sent out, and a missing
+        # one is not the same as a wrong one.
+        check_state(a_login(), {}, platform=PLATFORM)
+
+
+class TestPullingTheCodeOut:
+    def test_it_hands_back_the_code(self) -> None:
+        assert code_from({"code": "the-code"}, platform=PLATFORM) == "the-code"
+
+    def test_somebody_who_pressed_cancel_is_not_a_mystery(self) -> None:
+        with pytest.raises(AuthError, match="pressed cancel"):
+            code_from({"error": "access_denied"}, platform=PLATFORM)
+
+    def test_it_repeats_what_the_network_said_about_the_refusal(self) -> None:
+        with pytest.raises(AuthError, match="Permissions error"):
+            code_from(
+                {
+                    "error": "access_denied",
+                    "error_description": "Permissions error",
+                },
+                platform=PLATFORM,
+            )
+
+    def test_a_callback_with_no_code_says_what_to_pass(self) -> None:
+        with pytest.raises(AuthError, match="whole query string"):
+            code_from({"state": "abc123"}, platform=PLATFORM)
+
+    @pytest.mark.parametrize("platform", ["facebook", "instagram", "threads"])
+    def test_every_refusal_names_the_network(self, platform: str) -> None:
+        with pytest.raises(AuthError, match=platform):
+            code_from({}, platform=platform)
+
+
+# ---------------------------------------------------------------------------
+# Which account a connection posts to
+# ---------------------------------------------------------------------------
+
+
+def a_connection(**extra: object) -> Connection:
+    """A connection with whatever was put in `extra` and nothing else."""
+    return Connection(
+        id="facebook:1",
+        platform=PLATFORM,
+        host=None,
+        account_id="",
+        account_name="Ada's Cakes",
+        token=Token(access_token=PAGE_TOKEN),
+        extra=dict(extra),
+    )
+
+
+class TestWorkingOutWhereToPost:
+    def test_it_reads_the_id_a_sign_in_wrote_down(self) -> None:
+        found = where_to_post(
+            a_connection(page_id=PAGE_ID),
+            key="page_id",
+            what="Facebook page",
+            platform=PLATFORM,
+        )
+
+        assert found == PAGE_ID
+
+    def test_a_connection_built_by_hand_can_use_its_account_id(self) -> None:
+        by_hand = Connection(
+            id="facebook:1",
+            platform=PLATFORM,
+            host=None,
+            account_id=PAGE_ID,
+            account_name="Ada's Cakes",
+            token=Token(access_token=PAGE_TOKEN),
+        )
+
+        assert (
+            where_to_post(
+                by_hand, key="page_id", what="Facebook page", platform=PLATFORM
+            )
+            == PAGE_ID
+        )
+
+    @pytest.mark.parametrize("extra", [{}, {"page_id": ""}, {"page_id": 7}])
+    def test_a_connection_naming_nowhere_says_which_key_to_set(
+        self,
+        extra: dict[str, Any],
+    ) -> None:
+        with pytest.raises(ConfigError) as refused:
+            where_to_post(
+                a_connection(**extra),
+                key="page_id",
+                what="Facebook page",
+                platform=PLATFORM,
+            )
+
+        said = str(refused.value)
+        assert "Facebook page" in said
+        assert "page_id" in said
+
+
+# ---------------------------------------------------------------------------
+# Requests Meta sends us
+# ---------------------------------------------------------------------------
+
+
+def an_update(update_id: str = "1") -> Update:
+    """One update, already read out of a pushed message."""
+    return Update.from_network(
+        update_id=update_id,
+        kind_name="comment_created",
+        platform=PLATFORM,
+        connection_id=f"{PLATFORM}:{PAGE_ID}",
+        created_at=NOW,
+    )
+
+
+class TestTakingTheFirstUpdate:
+    def test_it_hands_back_the_first_of_a_batch(self) -> None:
+        assert (
+            first_update([an_update("1"), an_update("2")], platform=PLATFORM).id == "1"
+        )
+
+    def test_a_message_with_nothing_in_it_says_to_use_read_updates(self) -> None:
+        with pytest.raises(PlatformError, match="read_updates"):
+            first_update([], platform=PLATFORM)
+
+    def test_the_refusal_names_the_network(self) -> None:
+        with pytest.raises(PlatformError, match="threads"):
+            first_update([], platform="threads")
+
+
+# ---------------------------------------------------------------------------
+# How many posts are left today
+# ---------------------------------------------------------------------------
+
+
+class TestHowManyPostsAreLeftToday:
+    def test_it_takes_what_is_used_away_from_what_is_allowed(self) -> None:
+        reply = {"data": [{"quota_usage": 4, "config": {"quota_total": 100}}]}
+
+        assert quota_left(reply) == 96
+
+    def test_it_can_read_a_second_allowance_under_its_own_names(self) -> None:
+        # Threads counts replies separately from posts, in the same reply.
+        reply = {
+            "data": [
+                {
+                    "quota_usage": 4,
+                    "config": {"quota_total": 250},
+                    "reply_quota_usage": 30,
+                    "reply_config": {"quota_total": 1_000},
+                }
+            ]
+        }
+
+        assert quota_left(reply) == 246
+        assert (
+            quota_left(reply, used="reply_quota_usage", allowed_in="reply_config")
+            == 970
+        )
+
+    def test_counting_past_the_total_means_none_left_rather_than_less(self) -> None:
+        reply = {"data": [{"quota_usage": 120, "config": {"quota_total": 100}}]}
+
+        assert quota_left(reply) == 0
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            {},
+            {"data": []},
+            {"data": "not a list"},
+            {"data": ["not an object"]},
+            {"data": [{"quota_usage": 4}]},
+            {"data": [{"config": {"quota_total": 100}}]},
+            {"data": [{"quota_usage": 4, "config": "not an object"}]},
+            {"data": [{"quota_usage": True, "config": {"quota_total": 100}}]},
+            {"data": [{"quota_usage": 4, "config": {"quota_total": "lots"}}]},
+        ],
+    )
+    def test_an_answer_we_cannot_read_is_not_a_guess(
+        self,
+        reply: dict[str, Any],
+    ) -> None:
+        # A made-up number here would refuse posts the network would take.
+        assert quota_left(reply) is None

@@ -75,10 +75,10 @@ We are building these in the order below. The first four are the priority.
 | 3 | Facebook Pages | Highest demand. Doing the Meta login work here makes Instagram and Threads much cheaper. | **Done** |
 | 4 | Instagram | Posting is two steps: build the post, wait, then publish it. First network that needs the job model. | **Done** |
 | 5 | YouTube | Video and Shorts. Big uploads sent in pieces. | **Done** |
-| 6 | TikTok | Also uploads in pieces, with different rules. Tells us when publishing finished. | Not started |
-| 7 | X / Twitter | Wide demand. Media upload still uses the older endpoint. | Not started |
-| 8 | Pinterest | Every pin needs a board, so it proves we handle "where does this post go". | Not started |
-| 9 | Threads | Same two-step posting as Instagram, but its own separate app and login. | Not started |
+| 6 | TikTok | Also uploads in pieces, with different rules. Tells us when publishing finished. | **Done** |
+| 7 | X / Twitter | Wide demand. Media upload still uses the older endpoint. | **Done** |
+| 8 | Pinterest | Every pin needs a board, so it proves we handle "where does this post go". | **Done** |
+| 9 | Threads | Same two-step posting as Instagram, but its own separate app and login. | **Done** |
 | - | Discord, Telegram, LinkedIn, Reddit, Tumblr | After the nine above. | Not started |
 
 ---

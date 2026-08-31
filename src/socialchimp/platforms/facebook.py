@@ -96,7 +96,6 @@ here where it does not on Mastodon or Bluesky.
 from __future__ import annotations
 
 import json
-import secrets
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
@@ -104,10 +103,8 @@ import httpx
 
 from socialchimp.errors import (
     AuthError,
-    ConfigError,
     InvalidPostError,
     NotSupportedError,
-    PlatformError,
     TokenExpiredError,
 )
 from socialchimp.events import Update
@@ -139,14 +136,19 @@ from socialchimp.platforms._meta import (
     app_must_be_made_by_hand,
     changes_in,
     check_meta_signature,
+    check_state,
+    code_from,
     credentials_or_refuse,
+    first_update,
     long_lived_token,
     meta_errors,
     page_by_id,
     pages_of,
     required_text,
     sign_in_url,
+    state_for,
     swap_code_for_token,
+    where_to_post,
 )
 
 if TYPE_CHECKING:
@@ -208,9 +210,6 @@ SOONEST_SCHEDULE_SECONDS: Final = 10 * 60
 LATEST_SCHEDULE_SECONDS: Final = 75 * 24 * 60 * 60
 """Facebook will not schedule anything more than 75 days ahead."""
 
-# Long enough that nobody can guess one, short enough to sit in a URL.
-_STATE_BYTES: Final = 24
-
 # What Facebook calls a change on a page, and what we call it. Anything
 # missing from here is passed through as Facebook's own words and lands as
 # `UpdateKind.UNKNOWN`, so a kind nobody has seen yet still reaches your app.
@@ -270,90 +269,6 @@ def _app_on(request: LoginRequest) -> tuple[str, str]:
         what="sign somebody in",
     )
     return app.client_id, app.client_secret
-
-
-def _check_state(request: LoginRequest, callback: Mapping[str, str]) -> None:
-    """Check the value that came back is the one we sent.
-
-    This is what stops somebody handing your app a login they started
-    themselves and having it saved against one of your users.
-
-    Args:
-        request: The request used to start the login.
-        callback: The query values Facebook sent back.
-
-    Raises:
-        AuthError: If both sides have a state and they are different.
-    """
-    returned = callback.get("state", "")
-    if request.state is not None and returned and returned != request.state:
-        message = (
-            "The state Facebook sent back did not match the one we sent. "
-            "This login did not start here, so nothing has been saved. Start "
-            "a new one."
-        )
-        raise AuthError(message)
-
-
-def _code_from(callback: Mapping[str, str]) -> str:
-    """Pull the login code out of what Facebook sent back.
-
-    Args:
-        callback: The query values Facebook sent back.
-
-    Returns:
-        The code to swap for a token.
-
-    Raises:
-        AuthError: If the person said no, or if there is no code.
-    """
-    refused = callback.get("error")
-    if refused:
-        said = callback.get("error_description", "")
-        detail = f" It said: {said}" if said else ""
-        message = (
-            f"Facebook did not sign this person in ({refused}). Usually they "
-            f"pressed cancel on the approval page.{detail}"
-        )
-        raise AuthError(message)
-
-    code = callback.get("code")
-    if not code:
-        message = (
-            "Facebook sent no code back, so there is nothing to swap for a "
-            "token. Check you are passing the whole query string from your "
-            "redirect address."
-        )
-        raise AuthError(message)
-    return code
-
-
-def _page_of(connection: Connection) -> str:
-    """Work out which page a connection posts to.
-
-    Args:
-        connection: The account to look at.
-
-    Returns:
-        The page's id.
-
-    Raises:
-        ConfigError: If the connection names no page at all.
-    """
-    page_id = connection.extra.get("page_id")
-    if isinstance(page_id, str) and page_id:
-        return page_id
-    # Every connection this file builds sets both, and the account id is a
-    # page id too. A connection from somewhere else may only have that one.
-    if connection.account_id:
-        return connection.account_id
-
-    message = (
-        f"The connection {connection.id!r} names no Facebook page, so there "
-        f"is nowhere to post. A connection made by signing in carries the "
-        f"page id in extra['page_id']; one built by hand needs it set."
-    )
-    raise ConfigError(message)
 
 
 def _checked_options(options: RawData) -> dict[str, str]:
@@ -728,7 +643,7 @@ class FacebookPlatform:
             ConfigError: If the request carries no app credentials.
         """
         client_id, _ = _app_on(request)
-        state = request.state or secrets.token_urlsafe(_STATE_BYTES)
+        state = state_for(request)
 
         return SendToNetwork(
             url=sign_in_url(
@@ -776,8 +691,8 @@ class FacebookPlatform:
             SocialChimpError: If Facebook refuses any of the three steps.
         """
         client_id, client_secret = _app_on(request)
-        _check_state(request, callback)
-        code = _code_from(callback)
+        check_state(request, callback, platform=PLATFORM_NAME)
+        code = code_from(callback, platform=PLATFORM_NAME)
 
         async with self._graph() as graph:
             short = await swap_code_for_token(
@@ -983,7 +898,12 @@ class FacebookPlatform:
                 here, such as replying, or carrying a video over a gigabyte.
             SocialChimpError: If Facebook refuses the post.
         """
-        page_id = _page_of(connection)
+        page_id = where_to_post(
+            connection,
+            key="page_id",
+            what="Facebook page",
+            platform=PLATFORM_NAME,
+        )
         # Everything that can be judged without asking Facebook is judged
         # first, so a mistake costs no request and no part of the hourly
         # allowance.
@@ -1294,16 +1214,7 @@ class FacebookPlatform:
             PlatformError: If the body is not one of Facebook's messages, or
                 carries no change at all.
         """
-        found = self.read_updates(body)
-        if not found:
-            message = (
-                "This message from Facebook carries no change we can read, "
-                "so there is no update to hand back. Facebook sends shapes we "
-                "have no interest in; call read_updates instead, which "
-                "answers with an empty list rather than raising."
-            )
-            raise PlatformError(message, platform=PLATFORM_NAME)
-        return found[0]
+        return first_update(self.read_updates(body), platform=PLATFORM_NAME)
 
 
 def _add_timing(form: dict[str, Any], when: int | None) -> None:

@@ -10,7 +10,8 @@ things about it that surprise people.
 | Facebook Pages | yes | by hand, reviewed | yes | yes | small only | yes | yes |
 | YouTube | yes | by hand, reviewed | **no** | no | yes | yes | on a timer |
 | Instagram | yes | by hand, reviewed | **no** | yes | yes | no | yes |
-| TikTok, X, Pinterest, Threads | not yet | | | | | | |
+| TikTok | yes | by hand, audited | **no** | no | yes | no | yes |
+| X, Pinterest, Threads | not yet | | | | | | |
 
 "On a timer" means the network has no way to tell us when something happens,
 so socialchimp checks instead. Your code gets the same updates either way.
@@ -129,6 +130,78 @@ makes the other much quicker.
 - **Captions**: 2,200 characters, up to 30 hashtags.
 - **No scheduling, and no deleting** — neither exists in the API.
 - **Webhooks work**: comments, mentions, live comments, story insights.
+
+## TikTok
+
+**You create the app by hand** at
+[developers.tiktok.com](https://developers.tiktok.com/), add Login Kit and the
+Content Posting API to it, and add your redirect address. TikTok calls the two
+values the client key and the client secret; the client key goes in
+`AppCredentials.client_id`.
+
+**Then read the next paragraph, because it is the one people lose a day to.**
+
+- **Until TikTok has audited your app, everything it posts is private.** An
+  unaudited app may post for at most **5 people in any 24 hours**, and every
+  single thing it posts is forced to `SELF_ONLY` — visible to the account
+  owner and to nobody else. Not their followers, not the For You page, not a
+  friend they send the link to. You may ask for `PUBLIC_TO_EVERYONE`, TikTok
+  will answer that it worked, the video will be there when the person looks at
+  their own profile, and the rest of the world will never see it. There is no
+  bug to find. Submit the app for TikTok's compliance audit — usually a week or
+  two — before you promise anybody a public video, and until then tell your
+  users their posts are private.
+- **There are two places a post can go, and you choose.**
+  `options={"send_to": "drafts"}` puts the video in the person's TikTok inbox
+  and they finish it and publish it themselves in the app.
+  `options={"send_to": "profile"}` posts straight to their profile.
+  **The drafts are the default**, because they need only the `video.upload`
+  permission — `video.publish` is a separate and harder ask — and because
+  nothing reaches anybody's profile without a person tapping a button. Say
+  `"profile"` when you mean it.
+- **The drafts carry no caption.** TikTok's inbox takes the file and nothing
+  else; the person writes the words themselves. So a drafts post with
+  `Post.text` on it is **refused** rather than having your caption quietly
+  disappear. Clear the text, or send it to the profile.
+- **There is no text-only post.** Every post is a video; a post without one is
+  refused.
+- **Post options** (profile posts only): `send_to`, `privacy_level`,
+  `disable_comment`, `disable_duet`, `disable_stitch`,
+  `video_cover_timestamp_ms`, `brand_content_toggle`, `brand_organic_toggle`.
+  `Post.text` becomes the caption — TikTok's API calls it the title, but it is
+  the words under the video, and there is no second field.
+- **A video with no `privacy_level` goes up as `SELF_ONLY`**, because putting
+  someone's video in front of the world by accident cannot be undone.
+- **The caption limit of 2,200 is not 2,200 characters.** TikTok counts the way
+  Java does, where an emoji is two, so 1,101 thumbs-up is over the line.
+  socialchimp counts the same way TikTok does.
+- **You get `PostState.PROCESSING` for a profile post**, because TikTok keeps
+  encoding and moderating after it takes the bytes — ask again later with
+  `check_state`. A drafts post comes back `PostState.WAITING_FOR_PERSON`: the
+  network has finished, and nothing else happens until somebody opens the app,
+  so there is nothing to wait for.
+- **Webhooks work**, for `post.publish.complete`,
+  `post.publish.publicly_available`, `post.publish.inbox_delivered` (which
+  arrives as `UpdateKind.POST_DRAFTED`) and `post.publish.failed`. Verify with
+  the platform's `check_signature` on the raw bytes of the request, before
+  anything parses them. **TikTok retries for 72 hours and delivers at least
+  once, so the same message arriving twice is normal** — give `Dispatcher` a
+  `SeenUpdates` and the second copy is dropped for you.
+- **Using a refresh token destroys it.** TikTok hands back a new one every
+  time, so save both halves of what `refresh` returns. An access token lasts a
+  day and a refresh token a year.
+- **Files are sent in pieces**, so a large video does not have to fit in
+  memory. Up to 4 GB.
+- **The daily posting cap belongs to the creator, not to your app** — about 15
+  posts in 24 hours, shared across every app they use. It comes back as a
+  `RateLimitError`, but waiting a few seconds is the wrong move; only tomorrow
+  helps.
+- **No scheduling** — TikTok's API has no way to ask for it.
+- **No deleting** — there is no call for it.
+- **No photo carousels yet.** TikTok can post up to 35 pictures, but through a
+  different call that fetches each one from a public web address on a domain
+  you have proved is yours. A post with pictures on it is refused with a
+  message saying so.
 
 ---
 

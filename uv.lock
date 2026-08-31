@@ -1081,7 +1081,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.3" },
 ]
-provides-extras = ["testing", "mastodon", "bluesky", "facebook", "instagram", "youtube", "django", "fastapi", "flask"]
+provides-extras = ["testing", "mastodon", "bluesky", "facebook", "instagram", "pinterest", "threads", "tiktok", "x", "youtube", "django", "fastapi", "flask"]
 
 [package.metadata.requires-dev]
 dev = [

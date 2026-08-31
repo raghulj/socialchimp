@@ -85,6 +85,15 @@ class PostState(Enum):
     PROCESSING = auto()
     """The network is still working on it, usually a video being encoded."""
 
+    WAITING_FOR_PERSON = auto()
+    """The network has finished, and now somebody has to tap a button.
+
+    TikTok can put a video in a person's drafts rather than posting it, so
+    they can add their own caption and publish it themselves. Nothing is
+    wrong and nothing more will happen on its own, so do not sit and wait
+    for this one to change.
+    """
+
     FAILED = auto()
     """The network gave up on it."""
 
