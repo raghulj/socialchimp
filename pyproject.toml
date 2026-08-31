@@ -48,6 +48,7 @@ testing = ["pytest>=8.3"]
 # empty - but the extra exists so that the command we print in error
 # messages, pip install "socialchimp[mastodon]", actually works.
 mastodon = []
+bluesky = []
 django = ["django>=4.2"]
 fastapi = ["fastapi>=0.110"]
 flask = ["flask>=3.0"]
@@ -65,6 +66,7 @@ Issues = "https://github.com/raghulj/socialchimp/issues"
 # that is not installed yet.
 [project.entry-points."socialchimp.platforms"]
 mastodon = "socialchimp.platforms.mastodon:MastodonPlatform"
+bluesky = "socialchimp.platforms.bluesky:BlueskyPlatform"
 
 [dependency-groups]
 dev = [
@@ -112,7 +114,7 @@ show_missing = true
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
-files = ["src", "tests"]  # examples are added here once they exist
+files = ["src", "tests", "examples"]
 strict = true
 warn_unreachable = true
 warn_no_return = true

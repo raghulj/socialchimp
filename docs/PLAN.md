@@ -71,7 +71,7 @@ We are building these in the order below. The first four are the priority.
 | # | Platform | Why it is here | Status |
 |---|----------|----------------|--------|
 | 1 | Mastodon | Only network where we can create the app automatically. No approval needed, so anyone can try the library in five minutes. | **Done** |
-| 2 | Bluesky | No signup portal. Short-lived tokens, so it proves our token refresh works. | Not started |
+| 2 | Bluesky | No signup portal. Short-lived tokens, so it proves our token refresh works. | **Done** |
 | 3 | Facebook Pages | Highest demand. Doing the Meta login work here makes Instagram and Threads much cheaper. | Not started |
 | 4 | Instagram | Posting is two steps: build the post, wait, then publish it. First network that needs the job model. | Not started |
 | 5 | YouTube | Video and Shorts. Big uploads sent in pieces. | Not started |
@@ -119,7 +119,29 @@ In the order in the table above. Each one:
 - [ ] Django, FastAPI, Flask: ready-made routes and storage examples
 
 ### Step 6 - Docs and examples
-- [ ] Getting started, one page per platform, a runnable example app
+- [x] Getting started
+- [x] Adding a platform
+- [x] Runnable examples, type-checked so they cannot drift
+- [ ] One page per platform
+
+---
+
+## Settling the platform contract
+
+Writing each real network has exposed something the contract could not show
+on its own. Four so far: somewhere to carry a secret between the two halves
+of signing in, app credentials arriving as an argument instead of platforms
+reading storage, platforms saying where their API lives, and a sign-in step
+for networks with no page to send anyone to.
+
+That is the right thing to happen at two platforms and the wrong thing to
+happen at six, because every change breaks platforms other people wrote.
+
+So: **the contract is free to move until Instagram is done** (number 4 in
+the list, and the one most likely to need something new, since it publishes
+in two steps). After that it is fixed, and changes to it need a version bump
+and a note in the release. Until then, `docs/adding-a-platform.md` says
+plainly that a platform written today may need small changes.
 
 ---
 

@@ -2,9 +2,12 @@
 
 One simple way to connect your app to social networks.
 
-> **Status: early.** Being built in the open. The shared pieces are landing
-> first, then Mastodon, then the rest. See [docs/PLAN.md](docs/PLAN.md) for
+> **Status: early.** Being built in the open. **Mastodon and Bluesky work
+> today**; the rest are on their way. See [docs/PLAN.md](docs/PLAN.md) for
 > what is done and what is next.
+>
+> The way platforms are written is still settling, so if you write your own
+> platform now, expect it to need small changes for a release or two.
 
 ---
 
@@ -75,9 +78,11 @@ is yours.
 
 ## Documentation
 
-- [Plan](docs/PLAN.md) - what we are building and in what order
-- Getting started - *coming soon*
-- Adding a platform - *coming soon*
+- [Getting started](docs/getting-started.md) - from nothing to a post
+- [Adding a platform](docs/adding-a-platform.md) - a network we do not
+  support yet
+- [Plan](docs/PLAN.md) - what is built and what is coming
+- [Examples](examples/) - runnable programs
 
 ## Contributing
 
