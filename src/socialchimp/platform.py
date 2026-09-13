@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         Connection,
         Post,
         PostResult,
+        PostStats,
         RawData,
         Token,
     )
@@ -42,6 +43,7 @@ __all__ = [
     "CanCreateApp",
     "CanDeletePosts",
     "CanReadPushedUpdates",
+    "CanReadStats",
     "CanReadUpdates",
     "CanResumeLogin",
     "ChooseAccount",
@@ -423,6 +425,40 @@ class CanDeletePosts(Protocol):
         Args:
             connection: The account that published it.
             post_id: The network's identifier for the post.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadStats(Protocol):
+    """Extra for networks that say how a published post is doing.
+
+    Mastodon counts replies, favourites and boosts, and hands all three back
+    on the post itself. Plenty of networks keep nothing an app can read, and
+    a few keep numbers behind a permission most apps never ask for - so this
+    is an extra rather than something every platform has.
+
+    A platform with this also lists `Feature.READ_STATS`, because that flag
+    is what socialchimp reads before calling. `Account.read_stats` is what
+    your app calls; it checks the flag first and refuses plainly where a
+    network keeps no numbers.
+    """
+
+    async def read_stats(self, connection: Connection, post_id: str) -> PostStats:
+        """Ask the network how a post is doing.
+
+        Called with both arguments by position, so the order matters and
+        the names do not.
+
+        Args:
+            connection: The account the post belongs to, with a token that
+                works right now.
+            post_id: The network's identifier for the post, which is what
+                `publish` handed back.
+
+        Returns:
+            The numbers that network keeps. Anything it does not count comes
+            back as `None` rather than as a zero.
         """
         ...
 

@@ -15,8 +15,9 @@ Three things are worth knowing before you read on.
 **Nothing is hidden.** `account.direct` sends whatever request you like to
 the same network as the same account. Tokens, retries and rate limits still
 apply; only the request is yours. The things only some networks can do are
-here rather than behind the platform: `account.check_state` and
-`account.fetch_updates` for one account, and `answer_setup_check`,
+here rather than behind the platform: `account.check_state`,
+`account.fetch_updates` and `account.read_stats` for one account, and
+`answer_setup_check`,
 `check_signature` and `read_updates` on the client for the requests a network
 pushes to you, which arrive before you know whose account they are about.
 
@@ -55,6 +56,7 @@ from socialchimp.platform import (
     CanCreateApp,
     CanDeletePosts,
     CanReadPushedUpdates,
+    CanReadStats,
     CanReadUpdates,
     CanResumeLogin,
     Finished,
@@ -72,7 +74,14 @@ if TYPE_CHECKING:
 
     from socialchimp.events import Update
     from socialchimp.features import Limits
-    from socialchimp.models import AppCredentials, Connection, Post, RawData, Token
+    from socialchimp.models import (
+        AppCredentials,
+        Connection,
+        Post,
+        PostStats,
+        RawData,
+        Token,
+    )
     from socialchimp.platform import LoginStep, Platform
     from socialchimp.storage import Storage
     from socialchimp.tokens import GetNewToken
@@ -606,6 +615,33 @@ class Account:
         if not isinstance(platform, CanDeletePosts):
             raise _missing_method(platform, "delete_post")
         await platform.delete_post(connection, post_id)
+
+    async def read_stats(self, post_id: str) -> PostStats:
+        """Read how one of this account's posts is doing.
+
+        The token is renewed first, the same as every other call here, so
+        this is safe to put on a timer.
+
+        Args:
+            post_id: The network's identifier for the post, which is what
+                `post()` handed back.
+
+        Returns:
+            The numbers that network keeps about it. Anything it does not
+            count comes back as `None` rather than as a zero.
+
+        Raises:
+            NotSupportedError: If this network keeps no numbers an app can
+                read.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.READ_STATS, "reading a post's numbers back")
+        if not isinstance(platform, CanReadStats):
+            raise _missing_method(platform, "read_stats")
+        return await platform.read_stats(connection, post_id)
 
 
 class SocialChimp:

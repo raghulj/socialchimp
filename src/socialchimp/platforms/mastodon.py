@@ -67,6 +67,13 @@ anything. That is a real property of Mastodon, not something missing here.
 
 Anything else is refused before we send it, with a message listing what is
 accepted.
+
+## Reading a post's numbers
+
+`read_stats` hands back the three numbers Mastodon keeps about a status -
+replies, favourites and boosts - in a single request. There is no reach, no
+impressions and no click count anywhere in Mastodon's API, so nothing here
+reports them.
 """
 
 from __future__ import annotations
@@ -106,6 +113,7 @@ from socialchimp.models import (
     Post,
     PostResult,
     PostState,
+    PostStats,
     RawData,
     Token,
 )
@@ -466,7 +474,8 @@ class MastodonPlatform:
     """Everything socialchimp does with Mastodon.
 
     Registering an app on each server it meets, signing people in,
-    publishing, and reading what has happened since.
+    publishing, reading what has happened since, and reading how a post that
+    went out is doing.
 
         mastodon = MastodonPlatform()
 
@@ -499,6 +508,7 @@ class MastodonPlatform:
         | Feature.REPLY
         | Feature.DELETE_POST
         | Feature.READ_POSTS
+        | Feature.READ_STATS
     )
 
     def __init__(
@@ -983,6 +993,52 @@ class MastodonPlatform:
         server = _host_of(connection)
         async with self._client(server, connection.token.access_token) as http:
             await http.delete(f"/api/v1/statuses/{post_id}")
+
+    async def read_stats(self, connection: Connection, post_id: str) -> PostStats:
+        """Read how a published post is doing.
+
+        Mastodon keeps three numbers about a status - replies, favourites
+        and boosts - and hands all three back on the status itself, so this
+        is one request rather than one per number.
+
+        There is no reach, no impressions and no click count anywhere in
+        Mastodon's API. Those are missing here rather than reported as zero,
+        because a zero somebody can chart is worse than a gap they can see.
+
+        A server on an older version, or a fork, can leave a count out. That
+        number comes back as `None`, which is not the same as `0`.
+
+        Args:
+            connection: The account that published it.
+            post_id: Mastodon's id for the post, which is what `publish`
+                handed back.
+
+        Returns:
+            Its replies, favourites and boosts, under socialchimp's own
+            names for them: `comments`, `likes` and `shares`.
+
+        Raises:
+            ConfigError: If the connection has no server on it.
+            NotFoundError: If there is no such post. Mastodon answers the
+                same way for a post that was deleted and one that never
+                existed, so this is also what a post taken down looks like.
+            AuthError: If the token has been revoked. Mastodon's tokens do
+                not expire on their own, so this means somebody revoked it
+                and the person has to connect their account again.
+            RateLimitError: If the server is asking us to slow down.
+            PlatformError: If the reply arrives without an id.
+        """
+        server = _host_of(connection)
+        async with self._client(server, connection.token.access_token) as http:
+            reply = await http.json("GET", f"/api/v1/statuses/{post_id}")
+
+        return PostStats(
+            id=_text(reply, "id", "read a post's numbers"),
+            likes=_number(reply, "favourites_count", None),
+            comments=_number(reply, "replies_count", None),
+            shares=_number(reply, "reblogs_count", None),
+            raw=reply,
+        )
 
     # Mastodon can also hold a socket open and tell us the moment something
     # happens (`/api/v1/streaming`). That would go alongside this method, as

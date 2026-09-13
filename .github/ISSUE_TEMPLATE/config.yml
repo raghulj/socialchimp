@@ -1,0 +1,13 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://raghulj.github.io/socialchimp/
+    about: The tutorial, what each network can do, and the API reference.
+  - name: What each network needs before it works
+    url: https://raghulj.github.io/socialchimp/platforms/
+    about: >
+      Several networks review your app before it can post. Worth reading
+      before reporting that posting does not work.
+  - name: Report a security problem
+    url: https://github.com/raghulj/socialchimp/security/advisories/new
+    about: Privately, not as a public issue.

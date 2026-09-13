@@ -60,6 +60,7 @@ from socialchimp.models import (
     Post,
     PostResult,
     PostState,
+    PostStats,
     RawData,
     Token,
     require_timezone,
@@ -75,7 +76,7 @@ from socialchimp.storage import (
 )
 from socialchimp.tokens import TokenManager
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
     "Account",
@@ -100,6 +101,7 @@ __all__ = [
     "Post",
     "PostResult",
     "PostState",
+    "PostStats",
     "RateLimitError",
     "RawData",
     "RunInThread",
