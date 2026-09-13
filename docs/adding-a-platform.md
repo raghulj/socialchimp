@@ -223,11 +223,12 @@ From here:
 
 - **Adding something is a minor release.** A new `Feature`, a new
   `UpdateKind`, a new optional `Can...` extra, a new field on `Limits` with a
-  default. Your platform keeps working and does not need touching. Two
+  default. Your platform keeps working and does not need touching. Three
   releases have done exactly this: 0.2.0 added the `CanCheckState`,
-  `CanAnswerSetupCheck` and `CanReadPushedUpdates` extras, and 0.3.0 added
-  `Feature.NEEDS_NO_APP` for a network with no app to register. A platform
-  written against 0.1.0 needed no changes for either.
+  `CanAnswerSetupCheck` and `CanReadPushedUpdates` extras, 0.3.0 added
+  `Feature.NEEDS_NO_APP` for a network with no app to register, and 0.4.0
+  added the `CanReadStats` extra. A platform written against 0.1.0 needed no
+  changes for any of them.
 - **Changing or removing something is a major release**, and comes with a
   note saying what to do about it.
 - **Anything named with a leading underscore is ours**, including
@@ -238,7 +239,7 @@ library. Every release from 0.1 through the current line has only added to
 it, so:
 
 ```toml
-dependencies = ["socialchimp>=0.1,<0.4"]
+dependencies = ["socialchimp>=0.1,<0.5"]
 ```
 
 Run `PlatformChecks` in your own tests and a change that affects you shows up

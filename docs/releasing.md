@@ -95,7 +95,7 @@ button, even if a bad commit gets onto `main`.
    ```
 
    This is a merge commit, not a squash - `git log` on `main` should show
-   one merge per release, each tagged, as it has for 0.1.0 through 0.3.1.
+   one merge per release, each tagged, as it has for 0.1.0 through 0.4.0.
 
 6. **Publish the GitHub release.** That is what starts the upload:
 
