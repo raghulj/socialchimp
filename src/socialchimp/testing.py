@@ -82,6 +82,7 @@ from socialchimp.platform import (
     CanCheckState,
     CanCreateApp,
     CanDeletePosts,
+    CanReadStats,
     CanReadUpdates,
     CanResumeLogin,
     ChooseAccount,
@@ -263,6 +264,7 @@ _CLAIMS: Final[tuple[_Claim, ...]] = (
         wants_async=False,
     ),
     _Claim(Feature.DELETE_POST, CanDeletePosts, ("delete_post",), wants_async=True),
+    _Claim(Feature.READ_STATS, CanReadStats, ("read_stats",), wants_async=True),
 )
 
 

@@ -40,8 +40,9 @@ the code, this page is not.
 
 `SocialChimp` ties these together. `sc.account(connection_id)` returns an
 `Account` bound to one connection; `account.post(...)`, `account.limits()`,
-`account.check_state(...)`, `account.fetch_updates(...)` and
-`account.delete_post(...)` are what an app calls day to day.
+`account.check_state(...)`, `account.fetch_updates(...)`,
+`account.read_stats(...)` and `account.delete_post(...)` are what an app
+calls day to day.
 
 ## The four sign-in shapes
 

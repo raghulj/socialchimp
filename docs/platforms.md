@@ -71,6 +71,11 @@ registered on mastodon.social means nothing on fosstodon.org.
 
 - **Post options**: `visibility` (`public`, `unlisted`, `private`, `direct`),
   `spoiler_text`, `sensitive`, `language`
+- **A post's numbers can be read back** with `await
+  account.read_stats(post_id)`: replies, favourites and boosts, as
+  `comments`, `likes` and `shares`. Mastodon publishes no reach, no
+  impressions and no click count, so those are missing rather than zero.
+  A post that has been deleted answers `NotFoundError`.
 - **Tokens never expire.** Nothing to renew.
 - **The post length is set by whoever runs the server** — 500 by default,
   5,000 on plenty of them. Read it with `await account.limits()` rather than

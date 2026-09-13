@@ -24,6 +24,7 @@ from socialchimp import (
     Post,
     PostResult,
     PostState,
+    PostStats,
     RawData,
     SignatureError,
     SocialChimpError,
@@ -307,6 +308,28 @@ class PollingPlatform(FakePlatform):
         return [an_update(connection.id)]
 
 
+class CountingPlatform(FakePlatform):
+    """A platform whose posts have numbers to read, the way Mastodon's do."""
+
+    name = "counter"
+    features = FakePlatform.features | Feature.READ_STATS
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.counted: list[tuple[Connection, str]] = []
+
+    async def read_stats(self, connection: Connection, post_id: str) -> PostStats:
+        self.counted.append((connection, post_id))
+        return PostStats(id=post_id, likes=12, comments=3, shares=5)
+
+
+class LyingCounter(FakePlatform):
+    """Says its posts' numbers can be read, but has no method for it."""
+
+    name = "lying-counter"
+    features = FakePlatform.features | Feature.READ_STATS
+
+
 class PushingPlatform(FakePlatform):
     """A platform that sends us requests, the way every Meta network does."""
 
@@ -349,6 +372,12 @@ def made_checker() -> CheckingPlatform:
 def made_asker() -> PollingPlatform:
     platform = made("asker")
     assert isinstance(platform, PollingPlatform)
+    return platform
+
+
+def made_counter() -> CountingPlatform:
+    platform = made("counter")
+    assert isinstance(platform, CountingPlatform)
     return platform
 
 
@@ -491,6 +520,8 @@ FAKES: dict[str, type[FakePlatform]] = {
     "choosy": ChoosyPlatform,
     "checker": CheckingPlatform,
     "asker": PollingPlatform,
+    "counter": CountingPlatform,
+    "lying-counter": LyingCounter,
     "pusher": PushingPlatform,
     "fixed": FixedAddressPlatform,
     "per-server": PerServerPlatform,
@@ -1018,6 +1049,48 @@ class TestAskingWhatHasHappened:
             await sc.account("conn-1").fetch_updates()
 
         assert "fake" in str(refused.value)
+
+
+class TestReadingAPostsNumbers:
+    async def test_an_account_can_read_its_posts_numbers(self) -> None:
+        storage = await storage_holding(a_connection(platform="counter"))
+        sc = SocialChimp(storage)
+
+        found = await sc.account("conn-1").read_stats("post-9")
+
+        assert found.likes == 12
+        assert found.comments == 3
+        assert found.shares == 5
+        assert made_counter().counted[0][1] == "post-9"
+
+    async def test_reading_them_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="counter"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_stats("post-9")
+
+        asked, _ = made_counter().counted[0]
+        assert asked.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_keeps_no_numbers_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").read_stats("post-9")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_that_claims_numbers_but_cannot_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-counter"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").read_stats("post-9")
+
+        assert "read_stats" in str(broken.value)
 
 
 class TestRequestsANetworkSendsUs:

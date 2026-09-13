@@ -15,6 +15,14 @@ anything holding a secret hides it from `repr()`. See
 
 ::: socialchimp.models.PostState
 
+## PostStats
+
+How a published post is doing, in one shape for every network. What
+`account.read_stats(...)` hands back. Every number may be `None`, which
+means the network does not count that - never that it counted zero.
+
+::: socialchimp.models.PostStats
+
 ## Media
 
 ::: socialchimp.models.Media

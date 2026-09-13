@@ -23,6 +23,8 @@ before calling it.
 
 ::: socialchimp.platform.CanDeletePosts
 
+::: socialchimp.platform.CanReadStats
+
 ::: socialchimp.platform.CanReadUpdates
 
 ::: socialchimp.platform.CanCheckSignature
