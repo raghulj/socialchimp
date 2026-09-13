@@ -34,6 +34,7 @@ __all__ = [
     "Post",
     "PostResult",
     "PostState",
+    "PostStats",
     "RawData",
     "Token",
     "require_timezone",
@@ -552,3 +553,37 @@ class PostResult:
     def is_done(self) -> bool:
         """Whether the post is live. False while a network is still working."""
         return self.state is PostState.DONE
+
+
+@dataclass(frozen=True, slots=True)
+class PostStats:
+    """How a published post is doing.
+
+    Every number may be `None`, which means "this network does not count
+    that" - never "zero". A post nobody has liked and a network that keeps
+    no likes are two different answers, and only one of them is a number.
+
+    Networks all use their own words for these: Mastodon counts favourites
+    and boosts, X counts likes and reposts. They arrive here under one set
+    of names, so an app does not learn a vocabulary per network.
+
+    Only the numbers a network really publishes are here. Reach,
+    impressions and clicks are deliberately missing: most networks do not
+    give them out at all, and a field that could never be filled in reads
+    like one that is always zero.
+
+    Attributes:
+        id: The network's identifier for the post these numbers are about -
+            the same one `PostResult.id` carried.
+        likes: How many people liked, favourited or reacted to it.
+        comments: How many replies it has.
+        shares: How many times it was passed on - boosted, reposted,
+            reblogged, whichever word that network uses.
+        raw: The network's untouched reply, for any number we did not model.
+    """
+
+    id: str
+    likes: int | None = None
+    comments: int | None = None
+    shares: int | None = None
+    raw: RawData = field(default_factory=dict, repr=False)

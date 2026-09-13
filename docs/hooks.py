@@ -61,6 +61,7 @@ from socialchimp.platform import (
     CanCheckState,
     CanCreateApp,
     CanDeletePosts,
+    CanReadStats,
     CanReadUpdates,
     CanResumeLogin,
 )
@@ -240,8 +241,9 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
     """List which optional extras this platform actually satisfies.
 
     Mirrors exactly what `SocialChimp` itself checks before calling one of
-    these - two of them (`create_app`, `delete_post`) are gated on a
-    `Feature` flag as well as the method existing, because a network that
+    these - three of them (`create_app`, `delete_post`, `read_stats`) are
+    gated on a `Feature` flag as well as the method existing, because a
+    network that
     cannot do a thing may still carry a method that only exists to explain
     that in a clear error rather than an `AttributeError`. Facebook's
     `create_app` is exactly this: present, and always refuses, because Meta
@@ -255,7 +257,7 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
     Returns:
         The names of the extras from `socialchimp.platform` this platform
         satisfies, in a fixed order shared with `/networks.json`'s own
-        listing of the seven extras.
+        listing of the eight extras.
     """
     satisfied: list[str] = []
     if Feature.CREATE_APP in features and isinstance(instance, CanCreateApp):
@@ -272,6 +274,8 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
         satisfied.append("CanAnswerSetupCheck")
     if Feature.DELETE_POST in features and isinstance(instance, CanDeletePosts):
         satisfied.append("CanDeletePosts")
+    if Feature.READ_STATS in features and isinstance(instance, CanReadStats):
+        satisfied.append("CanReadStats")
     return satisfied
 
 

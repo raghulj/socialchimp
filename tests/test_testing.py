@@ -240,6 +240,10 @@ class LiesAboutDeleting(Bare):
     features = Feature.POST_TEXT | Feature.DELETE_POST
 
 
+class LiesAboutStats(Bare):
+    features = Feature.POST_TEXT | Feature.READ_STATS
+
+
 class LimitsIsADict(Methods):
     name = "limitsisadict"
     features = Feature.POST_TEXT
@@ -707,6 +711,12 @@ class TestTheClaimsCheck:
 
         assert "DELETE_POST" in message
         assert "delete_post" in message
+
+    async def test_claiming_read_stats_without_the_method_fails(self) -> None:
+        message = await failure_from(checks_for(LiesAboutStats()), self.name)
+
+        assert "READ_STATS" in message
+        assert "read_stats" in message
 
 
 class TestTheAddressCheck:

@@ -25,6 +25,7 @@ from socialchimp import (
     PlatformError,
     Post,
     PostState,
+    PostStats,
     RateLimitError,
     Token,
     UpdateKind,
@@ -34,6 +35,7 @@ from socialchimp.http import Retries
 from socialchimp.platform import (
     CanCreateApp,
     CanDeletePosts,
+    CanReadStats,
     CanReadUpdates,
     LoginRequest,
     Platform,
@@ -73,6 +75,15 @@ A_STATUS: dict[str, Any] = {
     "id": "110001",
     "url": f"https://{HOST}/@ada/110001",
     "content": "<p>Hello</p>",
+}
+
+# The same post once people have replied to it, favourited it and boosted it.
+# Those three counts are every number Mastodon keeps about a status.
+A_BUSY_STATUS: dict[str, Any] = {
+    **A_STATUS,
+    "replies_count": 3,
+    "favourites_count": 12,
+    "reblogs_count": 5,
 }
 
 
@@ -161,11 +172,13 @@ class TestWhatItSaysItCanDo:
         creates: CanCreateApp = platform
         deletes: CanDeletePosts = platform
         reads: CanReadUpdates = platform
+        counts: CanReadStats = platform
 
         assert isinstance(checked, Platform)
         assert isinstance(creates, CanCreateApp)
         assert isinstance(deletes, CanDeletePosts)
         assert isinstance(reads, CanReadUpdates)
+        assert isinstance(counts, CanReadStats)
         assert platform.name == "mastodon"
 
     def test_it_lists_the_features_mastodon_really_has(
@@ -181,6 +194,7 @@ class TestWhatItSaysItCanDo:
             Feature.REPLY,
             Feature.DELETE_POST,
             Feature.READ_POSTS,
+            Feature.READ_STATS,
         ):
             assert feature in platform.features
 
@@ -190,7 +204,6 @@ class TestWhatItSaysItCanDo:
     ) -> None:
         # No per-account webhook exists, so we check on a timer instead.
         assert Feature.PUSH_UPDATES not in platform.features
-        assert Feature.READ_STATS not in platform.features
 
 
 class TestWhereTheServerIs:
@@ -1188,6 +1201,145 @@ class TestReadingUpdates:
             )
 
             assert await platform.fetch_updates(account, None) == []
+
+
+class TestReadingAPostsNumbers:
+    async def test_it_reads_the_numbers_back(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            route = network.get("/api/v1/statuses/110001").mock(
+                return_value=httpx.Response(200, json=A_BUSY_STATUS)
+            )
+
+            found = await platform.read_stats(account, "110001")
+
+        assert route.calls.last.request.headers["authorization"] == "Bearer user-token"
+        assert found == PostStats(
+            id="110001",
+            comments=3,
+            likes=12,
+            shares=5,
+            raw=A_BUSY_STATUS,
+        )
+
+    async def test_a_post_nobody_has_touched_reads_as_zero(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        # Zero is a real answer, and has to stay one. Reading it as "we do
+        # not know" would make a brand new post and a server that does not
+        # count look the same.
+        quiet = {**A_STATUS, "replies_count": 0, "favourites_count": 0}
+
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.get("/api/v1/statuses/110001").mock(
+                return_value=httpx.Response(200, json=quiet)
+            )
+
+            found = await platform.read_stats(account, "110001")
+
+        assert found.comments == 0
+        assert found.likes == 0
+        # This one really was left out, and that is not the same as zero.
+        assert found.shares is None
+
+    async def test_a_number_a_server_leaves_out_is_not_guessed_at(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.get("/api/v1/statuses/110001").mock(
+                return_value=httpx.Response(
+                    200, json={**A_STATUS, "favourites_count": "lots"}
+                )
+            )
+
+            found = await platform.read_stats(account, "110001")
+
+        assert found.comments is None
+        assert found.likes is None
+        assert found.shares is None
+
+    async def test_a_post_that_is_gone_says_so(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        # Mastodon answers 404 once a status is deleted, which is the same
+        # answer it gives for one that never existed.
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.get("/api/v1/statuses/110001").mock(
+                return_value=httpx.Response(404, json={"error": "Record not found"})
+            )
+
+            with pytest.raises(NotFoundError, match="no such post"):
+                await platform.read_stats(account, "110001")
+
+    async def test_a_token_that_stopped_working_says_so(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        # Mastodon tokens do not expire on their own, but a person can
+        # revoke one, and then every request answers 401.
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.get("/api/v1/statuses/110001").mock(
+                return_value=httpx.Response(401, json={"error": "The access token"})
+            )
+
+            with pytest.raises(AuthError, match="connect their account again"):
+                await platform.read_stats(account, "110001")
+
+    async def test_it_passes_on_how_long_to_wait(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.get("/api/v1/statuses/110001").mock(
+                return_value=httpx.Response(
+                    429, headers={"Retry-After": "42"}, json={"error": "Slow down"}
+                )
+            )
+
+            with pytest.raises(RateLimitError) as complaint:
+                await platform.read_stats(account, "110001")
+
+        assert complaint.value.retry_after == 42.0
+
+    async def test_it_says_so_when_the_reply_has_no_post_id(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.get("/api/v1/statuses/110001").mock(
+                return_value=httpx.Response(200, json={"favourites_count": 1})
+            )
+
+            with pytest.raises(PlatformError, match="id"):
+                await platform.read_stats(account, "110001")
+
+    async def test_it_asks_which_server_a_connection_is_on(
+        self,
+        platform: MastodonPlatform,
+    ) -> None:
+        homeless = Connection(
+            id="conn-3",
+            platform="mastodon",
+            host=None,
+            account_id="3",
+            account_name="@nobody",
+            token=Token(access_token="tok"),
+        )
+
+        with pytest.raises(ConfigError, match="which server"):
+            await platform.read_stats(homeless, "110001")
 
 
 class TestWhenMastodonSaysNo:

@@ -16,6 +16,7 @@ from socialchimp import (
     Post,
     PostResult,
     PostState,
+    PostStats,
     SocialChimpError,
     Token,
 )
@@ -250,6 +251,22 @@ class TestPostResult:
         result = PostResult(id="1", url=None, state=PostState.PROCESSING)
 
         assert result.is_done is False
+
+
+class TestPostStats:
+    def test_a_number_nobody_told_us_is_not_a_zero(self) -> None:
+        stats = PostStats(id="1")
+
+        assert stats.likes is None
+        assert stats.comments is None
+        assert stats.shares is None
+
+    def test_zero_is_kept_as_zero(self) -> None:
+        # A post nobody has liked and a network that does not count likes
+        # are two different answers, and only one of them is a number.
+        stats = PostStats(id="1", likes=0)
+
+        assert stats.likes == 0
 
 
 class TestContentType:

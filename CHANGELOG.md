@@ -4,6 +4,37 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## Unreleased
+
+### Added
+
+- **Mastodon can tell you how a post is doing.**
+  `await account.read_stats(post_id)` reads a published status back and
+  hands you a `PostStats`: its replies, favourites and boosts, under
+  socialchimp's own names for them - `comments`, `likes` and `shares`. One
+  request, to `GET /api/v1/statuses/:id`.
+
+  A number a server does not send - an older one, or a fork - comes back as
+  `None`, which is not the same as `0`. Reach, impressions and clicks have
+  no field at all, because Mastodon publishes none of them and a field that
+  can never be filled in reads like one that is always zero.
+
+  **Mastodon now lists `Feature.READ_STATS`, which it did not before.** Code
+  that checks that flag before calling gets `True` where it used to get
+  `False`. Nothing that already worked behaves differently - the flag was
+  false because there was no method behind it, and now there is one.
+
+  New public names: `PostStats` from `socialchimp`, `CanReadStats` from
+  `socialchimp.platform`, and `Account.read_stats`. Every other network
+  still leaves `READ_STATS` off, and `account.read_stats` refuses there with
+  a `NotSupportedError` naming the network rather than returning empty
+  numbers.
+
+  If you write your own platform: listing `Feature.READ_STATS` now means you
+  must have `read_stats` to back it up, and `PlatformChecks` checks that, the
+  same as it already did for `CREATE_APP` and `DELETE_POST`. A platform that
+  does not list the flag is unaffected.
+
 ## 0.3.1 - 2026-08-31
 
 ### Fixed
