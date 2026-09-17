@@ -244,8 +244,8 @@ is the one that will not.
 #### `ChooseAccount` - "which one?"
 
 A pause. The person has approved your app, but the network needs to know
-which account inside it you mean. Facebook asks which Page, Instagram which
-business account, YouTube which channel. It comes back from `finish_login`.
+which account inside it you mean. Facebook asks which Page, YouTube which
+channel. It comes back from `finish_login`.
 
 ```python
 step.options  # (AccountChoice(id=..., name=..., kind="page"), ...)

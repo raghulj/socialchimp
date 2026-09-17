@@ -9,10 +9,9 @@ the four right once and adding the tenth network is a row in a table.
 2. **Ask them for details.** Bluesky has no sign-in page anywhere - people
    use an app password - so `start_login` answers `AskForDetails`: a list of
    boxes to show. Nobody goes anywhere, and `state` is never used.
-3. **Ask which account.** Facebook, Instagram and YouTube stop half way to
-   ask which Page, which business account, which channel. `finish_login`
-   answers `ChooseAccount`, and `sc.choose(...)` is a third request to this
-   app.
+3. **Ask which account.** Facebook and YouTube stop half way to ask which
+   Page, which channel. `finish_login` answers `ChooseAccount`, and
+   `sc.choose(...)` is a third request to this app.
 4. **Done.** `Finished`, and the connection is already saved through
    `ConnectionStorage.save_connection`. There is nothing here to write.
 
@@ -470,8 +469,8 @@ def _fields_for(platform: str) -> tuple[LoginField, ...]:
 def choose(request: HttpRequest, platform: str) -> HttpResponse:
     """Carry on after the person picked which account to use.
 
-    The third request of three. Facebook, Instagram and YouTube all get
-    here; the other six never do.
+    The third request of three. Facebook and YouTube get here; the other
+    seven never do.
 
     Args:
         request: The request.
@@ -535,7 +534,7 @@ def _after_coming_back(
         case Finished():
             return _finished(request, platform, step)
 
-        # Shape 3: the pause. Facebook, Instagram, YouTube.
+        # Shape 3: the pause. Facebook, YouTube.
         case ChooseAccount():
             return _choose_account(request, platform, network, step)
 

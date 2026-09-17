@@ -9,7 +9,7 @@ things about it that surprise people.
 | Bluesky | yes | not needed | yes | yes | no | no | on a timer |
 | Facebook Pages | yes | by hand, reviewed | yes | yes | small only | yes | yes |
 | YouTube | yes | by hand, reviewed | **no** | no | yes | yes | on a timer |
-| Instagram | yes | by hand, reviewed | **no** | yes | yes | no | yes |
+| Instagram | yes | by hand, **its own app id** | **no** | yes | yes | no | yes |
 | TikTok | yes | by hand, audited | **no** | no | yes | no | yes |
 | Threads | yes | by hand, **its own app id** | yes | yes | yes | no | yes |
 | X | yes | by hand, **paid plan** | yes | yes | yes | no | on a timer |
@@ -163,9 +163,18 @@ users can sign in.
 ## Instagram
 
 **You create the app by hand** at
-[developers.facebook.com](https://developers.facebook.com/apps), the same as
-Facebook Pages, with the same review and business verification. Doing one
-makes the other much quicker.
+[developers.facebook.com](https://developers.facebook.com/apps), and add the
+Instagram API setup to it. This is **not** the Facebook app - it is a separate
+one, with its own app id and secret, sitting in the "Instagram > API setup
+with Instagram login" section of the dashboard. Using the Facebook app's
+credentials here gets past the sign-in page - Meta accepts the redirect - and
+then fails at the token swap with a message that does not say why. Save the
+Instagram pair under the platform name `instagram` and use that.
+
+Unlike Facebook Pages, which sign in through Facebook Login, Instagram uses
+"Business Login for Instagram" - its own sign-in page, at
+`instagram.com/oauth/authorize`, not `facebook.com`. No Facebook Page is
+involved anywhere, and signing in never asks which account.
 
 - **Only Business and Creator accounts can publish.** A personal account never
   can, through any API. socialchimp says so plainly instead of letting a
@@ -189,6 +198,12 @@ makes the other much quicker.
 - **Captions**: 2,200 characters, up to 30 hashtags.
 - **No scheduling, and no deleting** — neither exists in the API.
 - **Webhooks work**: comments, mentions, live comments, story insights.
+- **Refresh is real, unlike the Facebook-linked flow.** One request, no app
+  secret, and the token is good for another sixty days. Meta's own
+  documentation names no minimum token age before it allows this - unlike
+  Threads' documented 24 hours - so socialchimp uses a rule of its own rather
+  than guess: it only asks once 30 days or less remain, and hands back the
+  same token unchanged if you call `refresh` earlier than that.
 
 ## TikTok
 
@@ -285,17 +300,19 @@ Almost nothing else about it lives where the rest of Meta lives:
 - **Signing in is not Facebook Login.** People approve at `threads.net`, and
   the code is swapped at `graph.threads.net`. The API is there too, not on
   `graph.facebook.com`.
-- **It never asks which account.** Facebook asks which page and Instagram
-  which business account; a Threads sign-in is one profile, so `finish_login`
-  finishes rather than handing you a `ChooseAccount`.
-- **Renewal actually works here, unlike the rest of Meta.** Facebook and
-  Instagram hand out no refresh token at all — a token is extended by trading
-  it in while it still works, or the person signs in again. Threads has a real
+- **It never asks which account.** Facebook asks which page; a Threads
+  sign-in is one profile, so `finish_login` finishes rather than handing you a
+  `ChooseAccount`.
+- **Renewal actually works here, unlike the Facebook-linked flow.** Facebook
+  hands out no refresh token at all — a token is extended by trading it in
+  while it still works, or the person signs in again. Threads has a real
   refresh endpoint: one request, no app secret, and the sixty-day clock starts
   again. A job that runs once a month keeps a connection alive indefinitely.
   The one rule is that a **token has to be 24 hours old** before it will renew
   one; asking sooner raises `RateLimitError` with the wait on `retry_after`,
-  and nothing is wrong with the token.
+  and nothing is wrong with the token. (Instagram has a real refresh too now -
+  see the Instagram section above - though Meta documents no minimum age for
+  it the way it does here.)
 - **Threads fetches the picture itself, from a web address**, exactly as
   Instagram does. `Media.from_url(...)` works and a local file is refused with
   an explanation.

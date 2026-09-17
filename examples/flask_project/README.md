@@ -63,7 +63,7 @@ character.
 | Mastodon | socialchimp registers it, per server | redirect | yes | yes | on a timer |
 | Bluesky | nothing to register | handle + app password | yes | no | on a timer |
 | Facebook Pages | by hand, **reviewed** | redirect, then asks which Page | yes | yes | pushed |
-| Instagram | by hand, **reviewed** | redirect, then asks which account | **no** | no | pushed |
+| Instagram | by hand, **reviewed** | redirect | **no** | no | pushed |
 | YouTube | by hand, **reviewed** | redirect, then asks which channel | **no** | yes | on a timer |
 | TikTok | by hand, **audited** | redirect | **no** | no | pushed |
 | Threads | by hand, **its own app id and secret** | redirect | yes | no | pushed |
@@ -124,7 +124,7 @@ each.
    anybody, so `start_login` answers with the fields to ask for instead of a
    link. Show one box per field, hide the ones marked `secret`, and never log
    them.
-3. **A pause to ask which one.** Facebook, Instagram and YouTube.
+3. **A pause to ask which one.** Facebook and YouTube.
    `finish_login` answers `ChooseAccount` instead of finishing, and a third
    request to `sc.choose(...)` finishes the job. It asks even when there is
    only one Page, on purpose - two code paths, one of which almost never

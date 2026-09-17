@@ -187,10 +187,9 @@ def can_register_the_app(name: str) -> bool:
 def asks_which_account(name: str) -> bool:
     """Say whether signing in here pauses to ask which account to use.
 
-    Facebook asks which Page, Instagram which business account, YouTube
-    which channel. A platform that can be resumed part way through a
-    sign-in is exactly the set that asks, so this reads that off the
-    platform rather than keeping a list of three names.
+    Facebook asks which Page, YouTube which channel. A platform that can be
+    resumed part way through a sign-in is exactly the set that asks, so this
+    reads that off the platform rather than keeping a list of names.
 
     Args:
         name: Which network.

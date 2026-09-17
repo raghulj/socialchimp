@@ -61,12 +61,11 @@ Match on the type you get back rather than assuming which one:
   `Feature.NEEDS_NO_APP`, and one that does not is refused without stored
   app credentials exactly as before.
 - **`ChooseAccount`** - a pause. The person approved your app, but the
-  network has several things it could mean (a Facebook page, an Instagram
-  business account, a YouTube channel) and `.options` lists them. Show the
-  choice, then call `sc.choose(...)` with the id they picked and
-  `.resume_token` handed straight back - treat that token as a secret, the
-  same as `SendToNetwork.remember`, because on some networks it carries the
-  actual credentials.
+  network has several things it could mean (a Facebook page, a YouTube channel)
+  and `.options` lists them. Show the choice, then call `sc.choose(...)` with
+  the id they picked and `.resume_token` handed straight back - treat that
+  token as a secret, the same as `SendToNetwork.remember`, because on some
+  networks it carries the actual credentials.
 - **`Finished`** - done. `.connection` is what you save.
 
 `sc.create_app(...)` is a separate, earlier step some networks need before

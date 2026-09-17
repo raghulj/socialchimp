@@ -7,8 +7,7 @@ works with every network including the ones it has not added yet.
 
     SendToNetwork   send them to the network and wait  (six of the nine)
     AskForDetails   there is nowhere to send them      (Bluesky)
-    ChooseAccount   which Page, channel, account?      (Facebook, Instagram,
-                                                        YouTube)
+    ChooseAccount   which Page, channel?               (Facebook, YouTube)
     Finished        done, and already saved for you
 
 Mastodon needs one thing before any of that: an app registered on that

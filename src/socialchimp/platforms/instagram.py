@@ -1,62 +1,97 @@
-"""Instagram: the first network where publishing is not one call.
+"""Instagram: signed in on its own, no Facebook Page anywhere.
 
-Everywhere socialchimp has been so far, you send a post and it is up. Here
-you build the post, wait for Instagram to finish making it, and then publish
-it - three calls where there was one. That shape is why `PostResult` carries
-a state at all, and Threads and TikTok work the same way.
+Meta ships two different ways to talk to an Instagram Business or Creator
+account. The older one signs in through Facebook Login and only works for an
+account linked to a Facebook Page. This is the other one - "Business Login
+for Instagram", part of what Meta calls "Instagram API with Instagram
+Login" - which signs in directly against Instagram and never asks about a
+Page at all.
 
-The parts of this that are really parts of Meta - the sign-in, the token
-swap, the error codes, the signature on a pushed request - live in
-`_meta.py`, shared with Facebook. Only what is genuinely Instagram's is here.
+Publishing is the same three-call shape either way - build a container, wait
+for it, publish it - because that part is genuinely Instagram's, not
+Facebook's. What changes here is everything about getting a token: the
+sign-in page, the host every request goes to, the app credentials, and the
+scopes.
 
-## Only a Business or Creator account can post
+The parts that really are shared with the rest of Meta - the signature on a
+pushed request, how a state and a login code are checked, the shape of
+Meta's own error codes - still come from `_meta.py`. Nothing here talks to
+`graph.facebook.com` at all.
 
-This is the surprise that catches nearly everybody. A personal Instagram
-account cannot be posted to through any API, by anyone, ever - not with the
-right permissions, not with a reviewed app. The account has to be a
-**Business or Creator** account, and it has to be linked to a Facebook Page.
+## A different app id, found in a different place
 
-Both of those are free and take a minute in the Instagram app, under
-Settings, Account type and tools. Until they are done, the account simply
-does not appear when we ask Meta which accounts a person can post to, so
-`finish_login` says exactly that rather than letting a confusing permission
-error turn up later.
+Adding "Instagram API setup with Instagram login" to a Meta app makes an
+**Instagram App ID and Instagram App Secret**, sitting in their own section
+of the dashboard - not the Facebook App ID shown at the top of the page, and
+not Threads' pair either. Meta's own documentation puts it plainly: apps
+using this product "will use the Instagram app ID displayed on the
+Instagram > API setup with Instagram login section of the dashboard." Using
+the Facebook pair here gets past the sign-in page - Meta accepts the
+redirect - and then fails at the token swap with a message that mentions
+none of this.
 
-## You have to make the app by hand, and wait
+`SEPARATE_APP` is the sentence that says so, on every refusal where the
+wrong pair is a plausible cause.
 
-There is no `create_app` here, and `Feature.CREATE_APP` is off. Meta has no
-call for it. You:
+## No Facebook Page, anywhere
 
-1. Create the app yourself at https://developers.facebook.com/apps.
-2. Wait for Meta to review it.
-3. Get your business verified, which means sending Meta documents about the
-   company behind the app.
+The old flow asks which Facebook Page a person manages and looks for an
+Instagram account attached to it, because that is the only way Facebook
+Login can find one. This flow signs in directly as the Instagram account, so
+there is no Page to ask about, no `pages_show_list` permission, and no
+`instagram_business_account` field to read off anything. A personal
+Instagram account still cannot use this - Meta's own sign-in refuses one
+before we ever see it - but a Business or Creator account no longer needs a
+Page linked to it to be reached this way.
 
-Until steps 2 and 3 are done, everything works for people who have a role on
-the app in the portal and fails for everybody else.
+## Three different hosts, none of them Facebook's
 
-The permissions are also not the ones written in most tutorials.
-`instagram_basic` and `instagram_content_publish` stopped working in January
-2025 and were replaced by `instagram_business_basic` and
-`instagram_business_content_publish`. See `DEFAULT_SCOPES`.
+- People approve your app at `https://www.instagram.com/oauth/authorize`.
+- The code is swapped for a token at `https://api.instagram.com/oauth/access_token`,
+  on its own host, separate from every other request.
+- Everything else - making the token last, renewing it, publishing, reading
+  limits, reading the account back - goes to `https://graph.instagram.com`,
+  which is versioned the same way `graph.facebook.com` is.
 
-## Signing someone in takes three steps
+`_meta.GRAPH_API` and `_meta.SIGN_IN_PAGE` do not apply here, and neither do
+`_meta.swap_code_for_token` or `_meta.long_lived_token` - the hosts, the
+grant names, and which host each address lives on are all different.
 
-The same shape as Facebook, because it is the same sign-in:
+## Signing in never stops to ask which account
 
-1. `start_login` gives you an address. Send the person's browser there.
-2. They come back with a code. `finish_login` swaps it for a token, makes
-   that token last, asks Meta which of their Pages have an Instagram
-   business account attached, and answers with `ChooseAccount`.
-3. When they pick one, `resume_login` gives you the connection to save.
+Facebook Login can cover several Pages, each with its own Instagram account,
+which is why the old flow paused with `ChooseAccount`. Signing in directly
+against Instagram is signing in as one account - there is nothing to choose
+between - so `finish_login` finishes the job outright, the same as
+`ThreadsPlatform` does.
 
-A Page with no Instagram account on it is left out of the list, because
-picking it could never lead to a post. If none of them have one, that is the
-Business-or-Creator problem above and the refusal says so.
+The account's id comes back on the very first reply, in the code-exchange
+response's `user_id` field - Instagram hands it out before we have even made
+the token last, which is a nicer contract than asking again later. A second
+request, once the long-lived token is ready, reads the username to show a
+person.
 
-The token saved on the connection is the **Page's** token, and a Page token
-taken from a long-lived person's token does not expire. That is why
-`refresh` usually has nothing to do.
+## The permissions are Instagram's own
+
+    instagram_business_basic
+    instagram_business_content_publish
+    instagram_business_manage_comments
+    instagram_business_manage_messages
+
+No `pages_show_list`, no `business_management` - both of those exist to find
+an account through a Page, and there is no Page here to find one through.
+
+## Renewal that is real, on a timer of our own choosing
+
+Like Threads, Instagram Login hands out a genuine refresh: one request, no
+app secret, another sixty days. Unlike Threads, Meta's own documentation for
+this product names no minimum token age before it will do that - it only
+says a token is "valid for 60 days and can be refreshed before they expire."
+Rather than guess at an undocumented server-side rule, `refresh` uses a rule
+of its own: it does nothing at all while more than `REFRESH_AFTER_SECONDS`
+(thirty days) remain, and only then asks Meta for another sixty. Called
+early, it hands back the token you already had rather than spending a
+request or risking a refusal for a precondition nobody has documented.
 
 ## Publishing, step by step
 
@@ -64,67 +99,34 @@ taken from a long-lived person's token does not expire. That is why
     2. GET  /{container}?fields=...   -> wait until it says FINISHED
     3. POST /{account}/media_publish  -> the post is live
 
-A **container** is Instagram's word for a half-made post: it has your file
-and your caption, and nobody can see it. Step 3 is what turns one into a
-post. A container is thrown away after 24 hours if nothing publishes it.
-
-Step 2 only happens where it is needed. Instagram has to fetch and re-encode
-a **video**, which takes anywhere from seconds to minutes, so we look once a
-minute for up to five - Meta's own advice - and both numbers are settings.
-A picture is ready by the time Instagram answers step 1, so checking it
-would cost a request against your hourly allowance and tell you nothing; if
-a picture cannot be fetched, step 3 says so instead.
-
-A carousel is the same three steps with more of the first: every picture or
-video becomes its own container, then a parent container names them all, then
-the parent is published. Two to ten items.
-
-**If the waiting runs out we say we do not know.** Instagram often finishes a
-minute after we have stopped looking, and telling somebody their post failed
-when it is about to go live is the worse mistake of the two.
+Identical to the Facebook-linked flow, because this part belongs to
+Instagram rather than to whichever login got you a token: the same waiting,
+the same carousel shape, the same caption and hashtag limits, the same daily
+allowance, the same error codes for a file Instagram could not fetch or a
+video in the wrong format. See `docs/platforms.md` for the numbers.
 
 ## Instagram fetches your file; it will not take an upload
 
-There is no upload here at all. You give Instagram a web address and it goes
-and gets the file itself, which means:
+Exactly as before: there is no upload here. Instagram is given a web address
+and fetches the file itself.
 
 - `Media.from_url("https://...")` works, and is the only thing that does.
 - `Media.from_file` and `Media.from_bytes` are **refused**, with a message
-  saying to put the file somewhere public first. Pretending to upload by
-  quietly hosting the file somewhere would be a worse answer than a clear no.
-
-Because no bytes ever pass through us, `Media.size` and `Media.piece` do not
-come into it, and neither does a file-size limit of ours - what Instagram
-will accept is between Instagram and your web server.
-
-## How many posts are left today
-
-Instagram counts posts over a rolling 24 hours and will tell you how many are
-left: `GET /{account}/content_publishing_limit`. That number is **read, never
-written down**, because Meta's own documentation gives it as 25, 50 and 100
-in three different places. Whatever it really is today, Instagram knows and
-we ask. It lands on `Limits.posts_left_today`, and `check_post` refuses when
-there are none left.
+  saying to put the file somewhere public first.
 
 ## What Instagram cannot do here
 
-- **No text-only post.** `Feature.POST_TEXT` is off. Every post is a picture
-  or a video, so a post with neither is refused rather than turned into
-  something else.
-- **No scheduling.** `Feature.SCHEDULE` is off. Instagram's own app can
-  schedule; its API cannot, and a post with `publish_at` is refused rather
-  than quietly going out now.
-- **No deleting.** There is no call for it. Someone has to remove the post in
-  the Instagram app.
-- **No reading posts back yet.** `GET /{account}/media` exists and this does
-  not use it. Insights need a Business account, and some of the numbers need
-  a hundred followers, which is worth knowing before you build on them.
+- **No text-only post.** Every post is a picture or a video.
+- **No scheduling.** Instagram's API has none.
+- **No deleting.** There is no call for it.
+- **No app registration.** `create_app` says so, and names where the
+  Instagram App ID and Secret actually live.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 
@@ -133,9 +135,11 @@ import httpx
 
 from socialchimp.errors import (
     AuthError,
+    ConfigError,
     InvalidPostError,
     NotSupportedError,
     PlatformError,
+    SocialChimpError,
     TokenExpiredError,
 )
 from socialchimp.events import Update
@@ -157,41 +161,28 @@ from socialchimp.models import (
     RawData,
     Token,
 )
-from socialchimp.platform import (
-    AccountChoice,
-    ChooseAccount,
-    Finished,
-    LoginRequest,
-    SendToNetwork,
-)
+from socialchimp.platform import Finished, LoginRequest, SendToNetwork
 from socialchimp.platforms._meta import (
-    GRAPH_API,
-    Change,
+    DEVELOPER_PORTAL,
     Graph,
-    MetaPage,
     Usage,
-    app_must_be_made_by_hand,
     changes_in,
     check_meta_signature,
     check_state,
     code_from,
-    credentials_or_refuse,
     first_update,
-    long_lived_token,
     meta_errors,
-    pages_of,
     quota_left,
     required_text,
     sign_in_url,
     state_for,
-    swap_code_for_token,
+    token_from,
     where_to_post,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from socialchimp.errors import SocialChimpError
     from socialchimp.http import Retries
     from socialchimp.models import AppCredentials
 
@@ -199,40 +190,90 @@ __all__ = ["InstagramPlatform", "instagram_errors"]
 
 PLATFORM_NAME: Final = "instagram"
 
+IG_LOGIN_HOST: Final = "https://api.instagram.com"
+"""Where the code Instagram sends back is swapped for a token.
+
+Its own host, separate from everywhere else this file talks to. Sending this
+one request to `graph.instagram.com` instead gets you a 404.
+"""
+
+IG_VERSION: Final = "v21.0"
+"""Which version of Instagram's Graph API this talks to.
+
+Kept the same as the version pinned for Facebook and Instagram's older flow
+in `_meta.GRAPH_VERSION`, so the two age together.
+"""
+
+IG_GRAPH_HOST: Final = "https://graph.instagram.com"
+"""Where a token is made to last and later renewed. No version in front of
+either address - only the ordinary requests below are versioned."""
+
+IG_GRAPH_API: Final = f"{IG_GRAPH_HOST}/{IG_VERSION}"
+"""Where every ordinary request goes: publishing, limits, reading the
+account back. Not `graph.facebook.com` - a token from this sign-in only
+works against Instagram's own host."""
+
+SIGN_IN_PAGE: Final = "https://www.instagram.com/oauth/authorize"
+"""The page people approve your app on.
+
+Not Facebook's dialog. Facebook Login will not sign anybody in to this
+product, and this page will not sign anybody in to the Facebook-linked one.
+"""
+
+SWAP_PATH: Final = "/oauth/access_token"
+"""Where a code is swapped for a token that lasts about an hour. A POST, on
+`IG_LOGIN_HOST`."""
+
+MAKE_IT_LAST_PATH: Final = "/access_token"
+"""Where an hour-long token is traded for one good for sixty days. A GET, on
+`IG_GRAPH_HOST`, unversioned."""
+
+RENEW_PATH: Final = "/refresh_access_token"
+"""Where a long-lived token gets another sixty days. A GET, on
+`IG_GRAPH_HOST`, unversioned, and a real renewal - see `refresh`."""
+
+ACCOUNT_FIELDS: Final = "user_id,username"
+"""What to ask about the account once the long-lived token is ready.
+
+The account's id itself is already known by this point, from the
+code-exchange reply - this is only to read a username worth showing someone.
+"""
+
 DEFAULT_SCOPES: Final = (
     "instagram_business_basic",
     "instagram_business_content_publish",
     "instagram_business_manage_comments",
-    "pages_show_list",
-    "business_management",
+    "instagram_business_manage_messages",
 )
-"""The permissions posting to an Instagram business account needs.
+"""The permissions this sign-in asks for.
 
 - `instagram_business_basic` - read the account: who it is, what it has
-  posted.
+  posted. Needed by every other call, including renewal.
 - `instagram_business_content_publish` - make and publish a post.
 - `instagram_business_manage_comments` - read the comments Instagram pushes
   to you, and answer them.
-- `pages_show_list` - see the Pages the person manages, which is how we find
-  the Instagram account attached to one.
-- `business_management` - needed for accounts owned by a business rather than
-  by a person, which is most accounts worth posting to.
+- `instagram_business_manage_messages` - Instagram's own name for reading
+  and answering the account's messages. Not wired up here yet; asked for
+  because Meta will not offer it later if it was left out at sign-in.
 
-The first three used to be called `instagram_basic`,
-`instagram_content_publish` and `instagram_manage_comments`. **Those names
-stopped working in January 2025** and a sign-in that asks for them is refused
-outright, which is worth knowing because most of the tutorials still use
-them.
-
-Every one of these needs Meta's review before it works for anybody but you.
+There is no `pages_show_list` and no `business_management` here. Both exist
+to find an Instagram account through a Facebook Page, and there is no Page
+in this flow to find one through.
 """
 
-ACCOUNT_FIELDS: Final = "id,name,access_token,instagram_business_account{id,username}"
-"""What to ask Meta about each Page a person manages.
+SEPARATE_APP: Final = (
+    "Adding Instagram API setup with Instagram login to a Meta app makes an "
+    "Instagram App ID and an Instagram App Secret, in their own section of "
+    "the dashboard - not the Facebook App ID shown at the top of the page, "
+    "and not Threads' pair either. Use the Instagram App ID and the "
+    "Instagram App Secret here. The wrong pair gets past the sign-in page "
+    "and is then refused at the token swap, with a message that mentions "
+    "none of this."
+)
+"""The sentence that saves somebody an afternoon.
 
-The last part is the one that matters: `instagram_business_account` is only
-there when the Page has an Instagram Business or Creator account linked to
-it. A Page without it is a Page we can never post to.
+Put on every refusal where the wrong app id is a plausible cause, because by
+the time Instagram answers it is far too late to guess.
 """
 
 POST_OPTIONS: Final = ("carousel",)
@@ -275,6 +316,21 @@ HOW_LONG_TO_WAIT: Final = 300.0
 Giving up is not the same as failing. See `_stopped_waiting`.
 """
 
+TOKEN_LIFE_SECONDS: Final = 60 * 24 * 60 * 60
+"""How long a long-lived Instagram token is good for: sixty days."""
+
+REFRESH_AFTER_SECONDS: Final = 30 * 24 * 60 * 60
+"""How much life a token has left before `refresh` bothers Meta about it.
+
+Meta's own documentation for this product names no minimum age before it
+will renew a token - unlike Threads, which is explicit about twenty-four
+hours. Rather than guess at a rule nobody has written down, this is a
+policy of ours: do nothing while more than thirty days remain of the sixty,
+and only then ask. Called earlier than that, `refresh` hands back the token
+you already had rather than spending a request against an undocumented
+precondition.
+"""
+
 # What Instagram calls a container it has finished with, one it gave up on,
 # and one it threw away. Anything else - IN_PROGRESS, or a word Meta adds
 # next year - means keep looking.
@@ -307,8 +363,8 @@ _A_HASHTAG: Final = re.compile(r"#\w+")
 def _now() -> datetime:
     """Return the current moment.
 
-    Kept as its own function so tests can say how long the waiting took
-    without sitting through it.
+    Kept as its own function so tests can say how old a token is, and how
+    long the waiting took, without sitting through either.
 
     Returns:
         Now, with a timezone.
@@ -423,7 +479,7 @@ def instagram_errors(response: httpx.Response) -> SocialChimpError:
     """Turn an unhappy reply from Instagram into a socialchimp error.
 
     Instagram's own codes are looked at first, then Meta's shared ones, which
-    are the same on all three of its networks. See `_meta.meta_errors` for
+    are the same on every one of Meta's networks. See `_meta.meta_errors` for
     what those mean.
 
     Args:
@@ -444,7 +500,7 @@ async def _ask(graph: Graph, method: str, path: str, **kwargs: object) -> RawDat
     Args:
         graph: The conversation to send it through.
         method: `"GET"`, `"POST"` and so on.
-        path: Joined onto Meta's address.
+        path: Joined onto Instagram's address.
         **kwargs: Anything `HttpClient.request` takes.
 
     Returns:
@@ -458,10 +514,11 @@ async def _ask(graph: Graph, method: str, path: str, **kwargs: object) -> RawDat
     except PlatformError as refused:
         # Meta hides a refusal inside a perfectly happy 200 often enough that
         # `Graph` reads every body, and it names what it finds using the
-        # codes all three networks share. Those do not include Instagram's
-        # own, so a 9004 arriving that way comes out as "no better name for
-        # that code yet" unless we look again here. Anything Meta could name
-        # is already a different class of error and never reaches this.
+        # codes every one of its networks shares. Those do not include
+        # Instagram's own, so a 9004 arriving that way comes out as "no
+        # better name for that code yet" unless we look again here. Anything
+        # Meta could name is already a different class of error and never
+        # reaches this.
         better = _instagram_error(refused.raw)
         if better is None:
             raise
@@ -469,106 +526,107 @@ async def _ask(graph: Graph, method: str, path: str, **kwargs: object) -> RawDat
 
 
 # ---------------------------------------------------------------------------
-# Signing in
+# Your app, which is not the app on the Facebook-linked flow
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _InstagramAccount:
-    """One Instagram business account, and the Page token to act as it.
-
-    Attributes:
-        id: Instagram's identifier for the account. This is what a post is
-            addressed to, and what a pushed update names.
-        username: The @name, without the @. What to show a person.
-        page_id: The Facebook Page it is attached to.
-        page_name: What that Page is called.
-        token: The Page's token, which is what posting uses. Not the
-            person's. Kept out of `repr` so it does not reach a log.
-    """
-
-    id: str
-    username: str
-    page_id: str
-    page_name: str
-    token: str = field(repr=False)
-
-
-def _account_on(page: MetaPage) -> _InstagramAccount | None:
-    """Read the Instagram account attached to one Page, if there is one.
+def _app_or_refuse(request: LoginRequest, *, what: str) -> AppCredentials:
+    """Insist on your Instagram app's id and secret, and say which pair to use.
 
     Args:
-        page: One Page, as Meta described it.
+        request: The request being started or finished.
+        what: What we were about to do, for the message.
 
     Returns:
-        The account, or `None` when this Page has none. A Page with no
-        Instagram account on it can never be posted to, so offering it would
-        mean somebody picks it and the sign-in fails at the last step.
+        The credentials.
+
+    Raises:
+        ConfigError: If there are none, saying where to get the right ones.
     """
-    linked = page.raw.get("instagram_business_account")
-    if not isinstance(linked, dict):
-        return None
+    if request.app is None:
+        message = (
+            f"instagram needs your app's id and secret to {what}, and none "
+            f"arrived. Make the app by hand at {DEVELOPER_PORTAL}, add "
+            f"Instagram API setup with Instagram login to it, then save the "
+            f"pair with Storage.save_app under the platform name "
+            f"'instagram'. {SEPARATE_APP}"
+        )
+        raise ConfigError(message)
+    return request.app
 
-    account_id = linked.get("id")
-    if not (isinstance(account_id, str) and account_id):
-        return None
 
-    username = linked.get("username")
-    return _InstagramAccount(
-        id=account_id,
-        # An account always has a username, but showing the id is better than
-        # showing nothing if one ever arrives without.
-        username=username if isinstance(username, str) and username else account_id,
-        page_id=page.id,
-        page_name=page.name,
-        token=page.token,
+def _app_must_be_made_by_hand() -> NotSupportedError:
+    """Build the error for somebody who asked us to register an app.
+
+    Returns:
+        The error to raise. Returned rather than raised so the type checker
+        follows what happens next at the place it is used.
+    """
+    return NotSupportedError(
+        platform=PLATFORM_NAME,
+        what="registering an app for you",
+        suggestion=(
+            f"Meta has no call for it. Make the app by hand at "
+            f"{DEVELOPER_PORTAL}, add Instagram API setup with Instagram "
+            f"login to it, and save the id and secret with "
+            f"Storage.save_app. {SEPARATE_APP} Meta also has to review the "
+            f"app before it works for anybody but you, and the account "
+            f"signing in has to be a Business or Creator account - a "
+            f"personal Instagram account cannot use this sign-in at all."
+        ),
     )
 
 
-async def _accounts_of(graph: Graph) -> tuple[_InstagramAccount, ...]:
-    """List the Instagram accounts one person can post to.
+def _probably_the_wrong_app(refused: SocialChimpError) -> AuthError:
+    """Say that a refused token swap is often the wrong app id.
 
-    Instagram has no "which accounts do you have" call of its own. You ask
-    Meta which Pages the person manages and which of those have an Instagram
-    account attached, which is why signing in needs `pages_show_list`.
+    Instagram answers a wrong app id with whatever code it feels like, and
+    none of its messages mention the two pairs, so this adds the sentence
+    that does. Meta's own words are kept on the end and on `raw`.
 
     Args:
-        graph: A conversation carrying that person's token.
-
-    Returns:
-        The accounts, in Meta's own order, leaving out every Page that has no
-        Instagram account on it.
-
-    Raises:
-        SocialChimpError: If Meta refuses to list the Pages.
-    """
-    pages = await pages_of(graph, fields=ACCOUNT_FIELDS)
-    found = (_account_on(page) for page in pages)
-    return tuple(account for account in found if account is not None)
-
-
-def _nobody_can_post() -> AuthError:
-    """Build the error for a person with no Instagram account we can use.
-
-    This is the single most common surprise on Instagram, so the message says
-    all of it rather than leaving somebody to work it out from a permission
-    error later.
+        refused: What Instagram answered, already named by `meta_errors`.
 
     Returns:
         The error to raise.
     """
-    return AuthError(
-        "This person signed in, but none of their Facebook Pages has an "
-        "Instagram account we can post to. Posting through any Instagram API "
-        "needs two things that are free and take a minute each in the "
-        "Instagram app: the account has to be a Business or Creator account "
-        "rather than a personal one, and it has to be linked to a Facebook "
-        "Page. A personal account cannot be posted to by anybody, however "
-        "the app is set up. Both are under Settings, then Account type and "
-        "tools. Once that is done, ask them to connect their account again - "
-        "and to tick the Page on Meta's own picker while they do.",
-        platform=PLATFORM_NAME,
+    message = (
+        f"instagram would not swap this sign-in for a token. The usual "
+        f"reason is the app id. {SEPARATE_APP} It said: {refused}"
     )
+    return AuthError(message, platform=PLATFORM_NAME, raw=refused.raw)
+
+
+def _account_id_from(reply: RawData) -> str:
+    """Read the account's id out of the code-exchange reply.
+
+    Instagram hands this back as `user_id`, and as a JSON number rather than
+    a string - the one place in this whole file that is true, which is why
+    `_meta.required_text` cannot be used for it.
+
+    Args:
+        reply: What Instagram answered when the code was swapped.
+
+    Returns:
+        The id, as a string.
+
+    Raises:
+        PlatformError: If there is no usable id in the reply.
+    """
+    found = reply.get("user_id")
+    if isinstance(found, bool):
+        pass
+    elif isinstance(found, int):
+        return str(found)
+    elif isinstance(found, str) and found:
+        return found
+
+    message = (
+        "instagram left 'user_id' out of its reply when we asked it to sign "
+        "someone in. That should not happen. The whole reply is on this "
+        "error."
+    )
+    raise PlatformError(message, platform=PLATFORM_NAME, raw=reply)
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +768,8 @@ def _check_hashtags(caption: str) -> None:
     Raises:
         InvalidPostError: If there are more than Instagram allows. Going over
             does not get the post refused - Instagram takes it and then shows
-            it to nobody, which is far harder to notice than an error.
+            it to nobody, which is worse than a refusal, so this is checked
+            here.
     """
     found = len(_A_HASHTAG.findall(caption))
     if found > MOST_HASHTAGS:
@@ -754,7 +813,7 @@ async def _posts_left_today(graph: Graph, account_id: str) -> int | None:
 
     The number is asked for rather than written down here on purpose. Meta's
     own pages give it as 25, 50 and 100 in three different places, and it has
-    moved more than once. Whatever it is today, Instagram knows.
+    moved more than once. Whatever it is today, Instagram knows and we ask.
 
     Args:
         graph: A conversation carrying the account's token.
@@ -851,71 +910,84 @@ def _stopped_waiting(container_id: str, waited: float) -> PlatformError:
 
 
 # ---------------------------------------------------------------------------
+# Renewing
+# ---------------------------------------------------------------------------
+
+
+def _cannot_be_renewed(connection: Connection, refused: AuthError) -> TokenExpiredError:
+    """Build the error for a token Instagram will not renew at all.
+
+    Args:
+        connection: The account whose token it is.
+        refused: What Instagram answered.
+
+    Returns:
+        The error to raise.
+    """
+    message = (
+        f"Instagram will not renew the token for {connection.id!r}. A token "
+        f"that has gone sixty days without being renewed cannot be brought "
+        f"back, and neither can one the person has taken away, so there is "
+        f"nothing left to try - they have to connect their account again. "
+        f"Renewing on a timer, well inside the sixty days, is what stops "
+        f"this happening."
+    )
+    return TokenExpiredError(message, platform=PLATFORM_NAME, raw=refused.raw)
+
+
+# ---------------------------------------------------------------------------
 # Requests Instagram pushes to us
 # ---------------------------------------------------------------------------
 
 
-def _update_id(change: Change) -> str:
-    """Build an id that is the same every time this change arrives.
-
-    Meta puts no identifier of its own on a change, and promises to deliver
-    at least once - which is a promise to deliver twice sometimes. Without
-    something stable here, one comment gets answered twice.
-
-    Args:
-        change: The change to name.
-
-    Returns:
-        An id built only from what Instagram said, so a second delivery of
-        the same change produces the same one.
-    """
-    value = change.value
-    named = value.get("id") or value.get("comment_id") or value.get("media_id") or ""
-    return ":".join(
-        [
-            change.account_id,
-            change.topic,
-            str(named) or str(int(change.when.timestamp())),
-        ]
-    )
-
-
-def _update_from(change: Change) -> Update:
+def _update_from(
+    *,
+    account_id: str,
+    topic: str,
+    value: RawData,
+    when: datetime,
+    envelope: RawData,
+) -> Update:
     """Turn one change Instagram pushed into an update your app understands.
 
     Args:
-        change: One change, already unwrapped from Meta's envelope.
+        account_id: Which account it happened on.
+        topic: What Instagram calls this kind of change, such as `"comments"`.
+        value: What actually happened, in Meta's own words.
+        when: When Meta says it happened.
+        envelope: The whole untouched entry this came in.
 
     Returns:
         What happened, in socialchimp's own words. Anything we have no word
         for keeps Instagram's, and arrives as `UpdateKind.UNKNOWN`.
     """
+    named = value.get("id") or value.get("comment_id") or value.get("media_id") or ""
+    update_id = ":".join([account_id, topic, str(named) or str(int(when.timestamp()))])
+
     return Update.from_network(
-        update_id=_update_id(change),
-        kind_name=_OUR_WORD_FOR.get(change.topic, change.topic),
+        update_id=update_id,
+        kind_name=_OUR_WORD_FOR.get(topic, topic),
         platform=PLATFORM_NAME,
         # Meta names the Instagram account, not one of your connections. A
         # login here names a connection after its account, so the two line up
         # without your app keeping a table of its own.
-        connection_id=f"{PLATFORM_NAME}:{change.account_id}",
-        # Instagram puts no time on the change itself, only on the batch it
-        # arrived in, so that is the closest we have to when it happened.
-        created_at=change.when,
+        connection_id=f"{PLATFORM_NAME}:{account_id}",
+        created_at=when,
         # The change itself, so a handler reads `update.raw["text"]` rather
         # than walking the entry looking for its own change again. The entry
         # goes alongside, because the account id and the time are only out
         # there.
-        raw=change.value,
-        envelope=change.envelope,
+        raw=value,
+        envelope=envelope,
     )
 
 
 class InstagramPlatform:
-    """Everything socialchimp does with Instagram.
+    """Everything socialchimp does with Instagram, signed in on its own.
 
-    Signing people in, asking which of their Instagram accounts to use,
-    publishing a picture, a video or a carousel, and reading what Instagram
-    pushes to you.
+    Signing people in directly against Instagram - no Facebook Page, no
+    Facebook Login - renewing their tokens for real, publishing a picture, a
+    video or a carousel, and reading what Instagram pushes to you.
 
         instagram = InstagramPlatform()
         step = await instagram.start_login(request)
@@ -981,13 +1053,15 @@ class InstagramPlatform:
         """
         return self._usage
 
-    def _graph(self, token: str | None = None) -> Graph:
+    def _graph(self, token: str | None = None, *, at: str = IG_GRAPH_API) -> Graph:
         """Start a conversation with Instagram.
 
         Args:
-            token: The token to sign requests with - the Page's for posting,
-                the person's while signing in, and none at all while swapping
-                a code.
+            token: The token to sign requests with - the account's own while
+                publishing, and none at all while swapping a code.
+            at: Which host to talk to. The versioned one for ordinary
+                requests; `IG_GRAPH_HOST` for the two addresses that make a
+                token last and renew it, which carry no version.
 
         Returns:
             A conversation. Use it in an `async with` block so it closes
@@ -996,7 +1070,7 @@ class InstagramPlatform:
         headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
         return Graph(
             HttpClient(
-                GRAPH_API,
+                at,
                 platform=PLATFORM_NAME,
                 headers=headers,
                 timeout=self._timeout,
@@ -1006,6 +1080,24 @@ class InstagramPlatform:
             ),
             platform=PLATFORM_NAME,
         )
+
+    def _tokens(self) -> Graph:
+        """Start a conversation with the addresses that make a token last and renew.
+
+        Returns:
+            A conversation pointed at `IG_GRAPH_HOST` rather than the
+            versioned API, carrying no token of its own.
+        """
+        return self._graph(at=IG_GRAPH_HOST)
+
+    def _codes(self) -> Graph:
+        """Start a conversation with the address that swaps a code for a token.
+
+        Returns:
+            A conversation pointed at `IG_LOGIN_HOST`, on its own domain and
+            carrying no token of its own.
+        """
+        return self._graph(at=IG_LOGIN_HOST)
 
     def _note(self, graph: Graph) -> None:
         """Keep whatever the last reply said about the allowance.
@@ -1019,8 +1111,8 @@ class InstagramPlatform:
     def api_base(self, connection: Connection) -> str:
         """Return where Instagram's API lives.
 
-        It is Meta's own address: Instagram has no API of its own here, it is
-        a part of the Graph API. One address for everybody, unlike Mastodon.
+        Not `graph.facebook.com` - a token from this sign-in only works
+        against Instagram's own host.
 
         Args:
             connection: The account we are about to act as. Not used here.
@@ -1028,13 +1120,13 @@ class InstagramPlatform:
         Returns:
             The address, with no trailing slash.
         """
-        return GRAPH_API
+        return IG_GRAPH_API
 
     def auth_headers(self, connection: Connection) -> Mapping[str, str]:
         """Return the header that proves we may act as this account.
 
-        The token is the Facebook Page's, not the Instagram account's -
-        Instagram issues none of its own on this route.
+        The token is the account's own - there is no Facebook Page here, and
+        so no Page token standing in for it the way the older flow needed.
 
         Meta also takes a token as an `access_token` query parameter, and
         this uses the header instead: a token in a web address ends up in
@@ -1062,7 +1154,7 @@ class InstagramPlatform:
         `features` before calling anything and `Feature.CREATE_APP` is off,
         so nothing reaches here by accident - but somebody calling this
         platform directly deserves the address of the portal and a warning
-        about the review, rather than an AttributeError.
+        about the separate Instagram App ID, rather than an AttributeError.
 
         Args:
             name: Ignored.
@@ -1074,10 +1166,11 @@ class InstagramPlatform:
             Nothing. It always raises.
 
         Raises:
-            NotSupportedError: Always. The message names the portal, the app
-                review and the business verification.
+            NotSupportedError: Always. The message names the portal, the
+                Instagram App ID's own section of the dashboard, and the
+                review.
         """
-        raise app_must_be_made_by_hand(PLATFORM_NAME)
+        raise _app_must_be_made_by_hand()
 
     async def limits(self, connection: Connection) -> Limits:
         """Return what Instagram allows this account right now.
@@ -1109,13 +1202,13 @@ class InstagramPlatform:
     async def start_login(self, request: LoginRequest) -> SendToNetwork:
         """Build the address to send somebody to so they can approve your app.
 
-        Nothing is sent to Meta here. There is also nothing to remember
+        Nothing is sent to Instagram here. There is also nothing to remember
         between this call and the next: the swap at the end is signed with
         your app secret, which never leaves your server.
 
         Args:
             request: Where to send them back to, what to ask for, and your
-                app's credentials.
+                **Instagram** app's credentials.
 
         Returns:
             The address to redirect to, and the state that will come back.
@@ -1123,11 +1216,7 @@ class InstagramPlatform:
         Raises:
             ConfigError: If the request carries no app credentials.
         """
-        app = credentials_or_refuse(
-            request.app,
-            platform=PLATFORM_NAME,
-            what="start a sign-in",
-        )
+        app = _app_or_refuse(request, what="start a sign-in")
         state = state_for(request)
 
         return SendToNetwork(
@@ -1136,6 +1225,9 @@ class InstagramPlatform:
                 redirect_uri=request.redirect_uri,
                 scopes=request.scopes or DEFAULT_SCOPES,
                 state=state,
+                # Instagram's own page, on its own domain. Facebook Login
+                # will not sign anybody in to this product.
+                page=SIGN_IN_PAGE,
             ),
             state=state,
         )
@@ -1145,231 +1237,216 @@ class InstagramPlatform:
         request: LoginRequest,
         callback: Mapping[str, str],
         remember: RawData | None = None,
-    ) -> ChooseAccount:
-        """Swap the code for a token and ask which Instagram account to use.
+    ) -> Finished:
+        """Swap the code for a token, make it last, and read the account.
 
-        Three things happen here. The code becomes a token that lasts an
-        hour; that token is traded for one that lasts about sixty days, which
-        has to happen while the first still works; and Meta is asked which of
-        this person's Pages have an Instagram account attached.
-
-        This never finishes a login on its own. Even somebody with a single
-        account is asked, so your app has one path through this rather than
-        two.
+        Unlike the Facebook-linked flow this finishes the job outright.
+        There is no Page and no set of accounts to choose between - signing
+        in here is signing in as one Instagram account - so nothing here
+        answers with `ChooseAccount`.
 
         Args:
             request: The same request used to start the login.
-            callback: The query values Meta sent back. It must have `code`;
-                `state` is checked when it is there.
+            callback: The query values Instagram sent back. It must have
+                `code`; `state` is checked when it is there.
             remember: Not used. Nothing has to survive between the two calls
                 here.
 
         Returns:
-            The accounts to choose between, and a `resume_token` to hand back
-            to `resume_login`. That token is the person's own - keep it in
-            their session, not in a URL.
+            The finished connection. Save it. Its token is good for sixty
+            days and can be renewed for another sixty - see `refresh`.
 
         Raises:
             AuthError: If the person said no, if there is no code, if the
-                state that came back is not the one we sent, or if none of
-                their Pages has an Instagram account we can post to.
+                state that came back is not the one we sent, or if Instagram
+                will not make the swap - which is usually the app id.
             ConfigError: If the request carries no app credentials.
-            SocialChimpError: If Meta refuses any of the three steps.
+            SocialChimpError: If Instagram refuses for some other reason.
         """
-        app = credentials_or_refuse(
-            request.app,
-            platform=PLATFORM_NAME,
-            what="finish a sign-in",
-        )
+        app = _app_or_refuse(request, what="finish a sign-in")
         check_state(request, callback, platform=PLATFORM_NAME)
         code = code_from(callback, platform=PLATFORM_NAME)
 
-        async with self._graph() as graph:
-            short = await swap_code_for_token(
-                graph,
-                client_id=app.client_id,
-                client_secret=app.client_secret,
-                redirect_uri=request.redirect_uri,
-                code=code,
-            )
-            # Traded now rather than later because there is no later: Meta
-            # gives out no refresh token, and once the hour is up the only
-            # way back is to sign the person in again.
-            long = await long_lived_token(
-                graph,
-                client_id=app.client_id,
-                client_secret=app.client_secret,
-                token=short.access_token,
-            )
-            self._note(graph)
+        async with self._codes() as graph:
+            try:
+                short, account_id = await self._swap(
+                    graph, app, request.redirect_uri, code
+                )
+            finally:
+                self._note(graph)
+
+        async with self._tokens() as graph:
+            try:
+                # Traded now rather than later because the first token is
+                # good for about an hour, and nothing can be done with an
+                # expired one but sign the person in again.
+                long = await self._make_it_last(graph, app, short.access_token)
+            finally:
+                self._note(graph)
 
         async with self._graph(long.access_token) as graph:
-            accounts = await _accounts_of(graph)
+            profile = await graph.json(
+                "GET", f"/{account_id}", params={"fields": ACCOUNT_FIELDS}
+            )
             self._note(graph)
 
-        if not accounts:
-            raise _nobody_can_post()
-
-        return ChooseAccount(
-            options=tuple(
-                AccountChoice(
-                    id=account.id,
-                    name=account.username,
-                    kind="instagram_account",
-                )
-                for account in accounts
-            ),
-            resume_token=long.access_token,
-        )
-
-    async def resume_login(
-        self,
-        request: LoginRequest,
-        *,
-        resume_token: str,
-        account_id: str,
-        remember: RawData | None = None,
-    ) -> Finished:
-        """Finish the login with the account the person picked.
-
-        The accounts are looked up again rather than remembered, so one that
-        has been unlinked since the list was shown is caught here with a
-        message rather than saved as a connection that cannot post.
-
-        Args:
-            request: The same request the login was started with.
-            resume_token: The value from `ChooseAccount`. It carries the
-                person's own token.
-            account_id: The id of the Instagram account they picked.
-            remember: Not used.
-
-        Returns:
-            The finished connection. Save it. Its token is the Facebook
-            Page's, and that one does not expire.
-
-        Raises:
-            AuthError: If the resume token did not come back, or that account
-                is no longer one this person can post to.
-            SocialChimpError: If Meta refuses the lookup.
-        """
-        if not resume_token:
-            message = (
-                "This sign-in cannot be carried on because the resume_token "
-                "from ChooseAccount did not come back. Keep it with that "
-                "person's session and pass it to resume_login. Without it "
-                "there is no way to ask Meta for the account's token, so "
-                "start a new one."
-            )
-            raise AuthError(message, platform=PLATFORM_NAME)
-
-        async with self._graph(resume_token) as graph:
-            accounts = await _accounts_of(graph)
-            self._note(graph)
-
-        picked = next(
-            (account for account in accounts if account.id == account_id), None
-        )
-        if picked is None:
-            message = (
-                f"Instagram account {account_id!r} is not one this person can "
-                f"post to. Either it was never on the list, or it has been "
-                f"unlinked from its Facebook Page since they picked it. Show "
-                f"them the list again by starting the sign-in again."
-            )
-            raise AuthError(message, platform=PLATFORM_NAME)
+        username = profile.get("username")
+        # An account always has a username, but showing the id is better
+        # than showing nothing if one ever arrives without.
+        name = username if isinstance(username, str) and username else account_id
 
         return Finished(
             connection=Connection(
-                # Named after the Instagram account rather than the person or
-                # the Page, because that is what gets posted to - and because
-                # an update pushed to us names the account and nothing else.
-                id=f"{PLATFORM_NAME}:{picked.id}",
+                id=f"{PLATFORM_NAME}:{account_id}",
                 platform=PLATFORM_NAME,
                 host=None,
-                account_id=picked.id,
-                account_name=picked.username,
-                # A Page token taken from a long-lived person's token does not
-                # expire, so no expiry is set.
-                token=Token(access_token=picked.token),
+                account_id=account_id,
+                account_name=name,
+                token=long,
                 scopes=request.scopes or DEFAULT_SCOPES,
                 extra={
-                    "instagram_id": picked.id,
-                    "username": picked.username,
-                    "page_id": picked.page_id,
-                    "page_name": picked.page_name,
-                    "profile_url": f"https://www.instagram.com/{picked.username}",
+                    "instagram_id": account_id,
+                    "username": name,
+                    "profile_url": f"https://www.instagram.com/{name}",
                 },
             )
         )
+
+    async def _swap(
+        self,
+        graph: Graph,
+        app: AppCredentials,
+        redirect_uri: str,
+        code: str,
+    ) -> tuple[Token, str]:
+        """Swap the code Instagram sent back for a token and the account's id.
+
+        A POST with a form, on `IG_LOGIN_HOST` - its own host, separate from
+        every other request in this file.
+
+        Args:
+            graph: A conversation with `IG_LOGIN_HOST`.
+            app: Your **Instagram** app's id and secret.
+            redirect_uri: The same address the sign-in was started with.
+            code: What Instagram put on the end of your redirect address.
+
+        Returns:
+            A token that works for about an hour, and the account's id -
+            Instagram hands both back on this one reply.
+
+        Raises:
+            AuthError: If Instagram will not make the swap, whatever code it
+                used to say so.
+        """
+        try:
+            reply = await graph.json(
+                "POST",
+                SWAP_PATH,
+                data={
+                    "client_id": app.client_id,
+                    "client_secret": app.client_secret,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": redirect_uri,
+                    "code": code,
+                },
+            )
+        except SocialChimpError as refused:
+            # Whatever code Instagram used to say so: a wrong app id comes
+            # back as several of them and never mentions the two pairs.
+            raise _probably_the_wrong_app(refused) from refused
+
+        token = token_from(reply, platform=PLATFORM_NAME, when="sign someone in")
+        return token, _account_id_from(reply)
+
+    async def _make_it_last(
+        self,
+        graph: Graph,
+        app: AppCredentials,
+        token: str,
+    ) -> Token:
+        """Trade an hour-long token for one that lasts sixty days.
+
+        Args:
+            graph: A conversation with `IG_GRAPH_HOST`.
+            app: Your Instagram app's credentials. Only the secret is sent;
+                Instagram works out the app from the token.
+            token: The short-lived token to trade in.
+
+        Returns:
+            The long-lived token, good for about sixty days and renewable -
+            see `refresh`.
+
+        Raises:
+            AuthError: If Instagram will not make the trade.
+        """
+        try:
+            reply = await graph.json(
+                "GET",
+                MAKE_IT_LAST_PATH,
+                params={
+                    "grant_type": "ig_exchange_token",
+                    "client_secret": app.client_secret,
+                    "access_token": token,
+                },
+            )
+        except SocialChimpError as refused:
+            raise _probably_the_wrong_app(refused) from refused
+
+        return token_from(reply, platform=PLATFORM_NAME, when="extend a token")
 
     async def refresh(
         self,
         connection: Connection,
         app: AppCredentials | None = None,
     ) -> Token:
-        """Give the connection a token that is good for a while yet.
+        """Give the connection another sixty days, if it is worth asking yet.
 
-        A Page token taken from a long-lived person's token does not expire,
-        which is why a connection made by signing in through socialchimp has
-        no expiry at all and this hands the same token straight back without
-        asking Meta anything.
-
-        A token that does have an expiry is traded in for a fresh sixty days.
-        That trade is the whole of renewal on Meta: there is no refresh token
-        anywhere in it, so a token is extended while it still works or it is
-        gone.
+        This is a real renewal, the same shape as Threads': one request, no
+        app secret, another sixty days. What Instagram's own documentation
+        does not say is how young a token can be and still be renewed, so
+        rather than guess this uses a rule of its own - see
+        `REFRESH_AFTER_SECONDS`. Called while more than thirty days remain,
+        nothing is sent and you get back the token you already had.
 
         Args:
-            connection: The account whose token is running out.
-            app: Your app's id and secret. Meta signs the trade with both, so
-                a token with an expiry cannot be extended without them.
+            connection: The account whose token may be running out.
+            app: Your app's id and secret. Accepted because every platform's
+                `refresh` is, and not sent - Instagram works out the app from
+                the token itself.
 
         Returns:
-            The token to save.
+            The token to save: the same one, unchanged, if it still has
+            plenty of life left, or a fresh one good for another sixty days.
 
         Raises:
-            ConfigError: If the token needs extending and no credentials
-                arrived.
-            TokenExpiredError: If Meta will not make the trade, which means
-                the token has already run out or been taken away. The person
-                has to connect their account again.
-            SocialChimpError: If Meta refused for some other reason.
+            TokenExpiredError: If Instagram will not renew it, which means it
+                has already gone sixty days without renewal or the person has
+                taken your app's access away. Either way they have to connect
+                their account again.
+            SocialChimpError: If Instagram refused for some other reason.
         """
-        if connection.token.expires_at is None:
-            return connection.token
+        expires_at = connection.token.expires_at
+        if expires_at is not None:
+            still_good_for = (expires_at - _now()).total_seconds()
+            if still_good_for > REFRESH_AFTER_SECONDS:
+                return connection.token
 
-        signing = credentials_or_refuse(
-            app,
-            platform=PLATFORM_NAME,
-            what="extend a token",
-        )
-
-        # No token on the conversation itself: the one being traded goes in
-        # the query, and Meta reads the app's id and secret as who is asking.
-        async with self._graph() as graph:
+        async with self._tokens() as graph:
             try:
-                extended = await long_lived_token(
-                    graph,
-                    client_id=signing.client_id,
-                    client_secret=signing.client_secret,
-                    token=connection.token.access_token,
+                reply = await graph.json(
+                    "GET",
+                    RENEW_PATH,
+                    params={
+                        "grant_type": "ig_refresh_token",
+                        "access_token": connection.token.access_token,
+                    },
                 )
             except AuthError as refused:
-                message = (
-                    f"Meta will not extend the token for {connection.id!r}. "
-                    f"It has already run out, or the person removed your app, "
-                    f"or the Instagram account was unlinked from its Page. "
-                    f"There is no refresh token to fall back on, so the "
-                    f"person has to connect their account again - and signing "
-                    f"in through socialchimp saves the Page's own token, "
-                    f"which does not expire."
-                )
-                raise TokenExpiredError(
-                    message, platform=PLATFORM_NAME, raw=refused.raw
-                ) from refused
-            self._note(graph)
+                raise _cannot_be_renewed(connection, refused) from refused
+            finally:
+                self._note(graph)
 
-        return extended
+        return token_from(reply, platform=PLATFORM_NAME, when="renew a token")
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
         """Publish a post: build it, wait for it, then put it out.
@@ -1467,7 +1544,7 @@ class InstagramPlatform:
         """Make the half-finished post Instagram will publish, and wait for it.
 
         Args:
-            graph: A conversation signed with the Page's token.
+            graph: A conversation signed with the account's own token.
             account_id: Which Instagram account.
             post: What to publish, whose text becomes the caption.
             things: The pictures and videos, already checked.
@@ -1534,7 +1611,7 @@ class InstagramPlatform:
         the post is ready.
 
         Args:
-            graph: A conversation signed with the Page's token.
+            graph: A conversation signed with the account's own token.
             account_id: Which Instagram account.
             item: The picture or video.
             caption: The words to put on it, or `None` for a carousel item -
@@ -1580,7 +1657,7 @@ class InstagramPlatform:
         cost a request and tell us nothing.
 
         Args:
-            graph: A conversation signed with the Page's token.
+            graph: A conversation signed with the account's own token.
             container_id: The half-made post to watch.
 
         Raises:
@@ -1625,7 +1702,7 @@ class InstagramPlatform:
         """Publish a container that Instagram has finished making.
 
         Args:
-            graph: A conversation signed with the Page's token.
+            graph: A conversation signed with the account's own token.
             account_id: Which Instagram account.
             container_id: The finished half-made post.
 
@@ -1670,9 +1747,10 @@ class InstagramPlatform:
         Args:
             body: The request body, exactly as it arrived.
             headers: The request headers.
-            secret: Your **app secret** from the developer portal. Not the
-                verify token you typed into the webhook form - that one is
-                only for `answer_setup_check`.
+            secret: Your **Instagram app secret** from the developer portal -
+                the one from Instagram API setup with Instagram login, not
+                any Facebook app's, and not the verify token you typed into
+                the webhook form.
 
         Raises:
             SignatureError: If the request cannot be trusted. Answer 401 and
@@ -1727,9 +1805,18 @@ class InstagramPlatform:
         Raises:
             PlatformError: If the body is not one of Meta's messages.
         """
-        return [
-            _update_from(change) for change in changes_in(body, platform=PLATFORM_NAME)
-        ]
+        found: list[Update] = []
+        for change in changes_in(body, platform=PLATFORM_NAME):
+            found.append(
+                _update_from(
+                    account_id=change.account_id,
+                    topic=change.topic,
+                    value=change.value,
+                    when=change.when,
+                    envelope=change.envelope,
+                )
+            )
+        return found
 
     def read_update(
         self,
