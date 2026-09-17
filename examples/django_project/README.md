@@ -121,7 +121,7 @@ could not be verified, without saying why.
 | **Mastodon** | socialchimp makes it | no | redirect | yes | yes | yes | yes | on a timer |
 | **Bluesky** | none exists | no | asks for details | yes | yes | no | no | on a timer |
 | **Facebook Pages** | by hand | yes, **+ business verification** | redirect, **then asks which Page** | yes | yes | small only | yes | **yes** |
-| **Instagram** | by hand | yes, **+ business verification** | redirect, **then asks which account** | **no** | yes, **from a web address only** | yes, from a web address | no | **yes** |
+| **Instagram** | by hand | yes, **+ business verification** | redirect | **no** | yes, **from a web address only** | yes, from a web address | no | **yes** |
 | **Threads** | by hand, **its own id and secret** | yes | redirect | yes | yes, from a web address | yes, from a web address | no | **yes** |
 | **TikTok** | by hand | **audited, or every post is private** | redirect | **no** | no | yes | no | **yes** |
 | **YouTube** | by hand | yes | redirect, **then asks which channel** | **no** | no | yes | yes | on a timer |
@@ -177,7 +177,7 @@ the thread the request arrived on.
 |---|---|---|
 | Send them to the network | all but Bluesky | `SendToNetwork` — redirect, and keep `remember` |
 | Ask them for details | Bluesky | `AskForDetails` — show a box per field |
-| Ask which account | Facebook, Instagram, YouTube | `ChooseAccount`, then `sc.choose(...)` |
+| Ask which account | Facebook, YouTube | `ChooseAccount`, then `sc.choose(...)` |
 | Done | all of them, eventually | `Finished` — already saved |
 
 Two values travel between requests and neither can live in a variable:

@@ -4,6 +4,59 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.5.0 - 2026-09-17
+
+### Read this first: Instagram no longer signs in through Facebook
+
+Instagram's adapter now implements Meta's other, separate product -
+"Business Login for Instagram" - exclusively. There is no Facebook Page
+anywhere in it any more, and it is not backwards compatible with the old
+flow. If you have people already connected the old way, keep reading before
+you upgrade.
+
+- **A different, separate app id.** Facebook Login for Instagram used your
+  Facebook App ID and Secret. This flow needs an **Instagram App ID and
+  Instagram App Secret** instead, from the "Instagram > API setup with
+  Instagram login" section of the Meta App Dashboard - a different section of
+  the same dashboard, not the same pair. Add the product to your app, save
+  the new pair with `Storage.save_app` under the platform name `instagram`,
+  and update `INSTAGRAM_APP_ID`/`INSTAGRAM_APP_SECRET` wherever you keep
+  them. Using the old Facebook pair here gets past the sign-in page and then
+  fails at the token swap with a message that mentions none of this.
+- **Sign-in is Instagram's own page**, `instagram.com/oauth/authorize`, not
+  Facebook's dialog. Every request after sign-in goes to
+  `graph.instagram.com`, not `graph.facebook.com` - `api_base` reflects this.
+- **`finish_login` no longer answers `ChooseAccount`.** Signing in directly
+  as an Instagram account has nothing to choose between, so it goes straight
+  to `Finished`, the same shape as `ThreadsPlatform`. `InstagramPlatform` no
+  longer implements `CanResumeLogin`, and `resume_login` is gone.
+- **The scopes changed.** `pages_show_list` and `business_management` are
+  gone - there is no Facebook Page to find an account through any more.
+  `instagram_business_manage_messages` was added. See `DEFAULT_SCOPES`.
+- **`Connection.extra` no longer carries `page_id` or `page_name`.** There is
+  no Page in this flow, so there is nothing to put there.
+- **Refresh is real now.** The old flow had no refresh token and extended a
+  token by trading it in; this one has a genuine refresh endpoint, the same
+  shape as `ThreadsPlatform.refresh`. socialchimp calls it once a token has
+  thirty days or less left, and does nothing before that.
+- **A personal Instagram account still cannot sign in at all** - that has not
+  changed - but the account no longer needs a Facebook Page linked to it
+  either. Only that it be a Business or Creator account.
+
+Publishing itself did not change: the same container-then-publish shape, the
+same carousel, caption and hashtag limits, the same daily allowance, the same
+error codes for a file Instagram could not fetch or a video in the wrong
+format. That part belongs to Instagram's API, not to whichever login got you
+a token.
+
+**What to do about people already connected.** A `Connection` saved under
+the old flow carries a Facebook Page token, which this code no longer knows
+what to do with - `Connection.extra["instagram_id"]` still resolves to the
+right account, but publishing and refreshing both now expect a token this
+flow issued, and a Page token was never that. Send everyone through
+`start_login` again once you are on 0.5.0; there is no in-place migration,
+because the two flows use different apps.
+
 ## 0.4.0 - 2026-09-14
 
 ### Added

@@ -1,10 +1,10 @@
 """Where a half-finished sign-in waits for the person to come back.
 
 Signing in is two requests to this app with a trip through somebody else's
-website in between, and on Facebook, Instagram and YouTube it is three. The
-first request is handed things the later ones need - the secret half of a
-PKCE pair, which Mastodon server the person named, and the resume token that
-`ChooseAccount` hands out - and socialchimp cannot keep any of it for you.
+website in between, and on Facebook and YouTube it is three. The first request
+is handed things the later ones need - the secret half of a PKCE pair, which
+Mastodon server the person named, and the resume token that `ChooseAccount`
+hands out - and socialchimp cannot keep any of it for you.
 The person can be sent away by one web worker and come back to another, so
 anything held in a module variable works on your laptop and fails the day
 you run a second process.

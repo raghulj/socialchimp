@@ -36,8 +36,8 @@ neither do `swap_code_for_token` or `long_lived_token` - the paths, the
 grant names and even the HTTP methods are different.
 
 Signing in also **never stops to ask which account**. Facebook asks which
-page and Instagram which business account, because a person has many. A
-Threads sign-in is one profile, so `finish_login` finishes.
+page, because a person can manage many. A Threads sign-in is one profile, so
+`finish_login` finishes.
 
 ## Renewal that is really renewal
 

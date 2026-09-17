@@ -20,7 +20,7 @@ between networks and where people get stuck:
 |---|---|---|
 | Send them to the network | Mastodon, Facebook, Instagram, YouTube, X, Pinterest, Threads | Redirect, then handle the reply |
 | Ask them for details | Bluesky | Show a form built from the fields the platform names |
-| Ask which account | Facebook, Instagram, YouTube | Show the choices, then carry on |
+| Ask which account | Facebook, YouTube | Show the choices, then carry on |
 | Register the app for them | Mastodon | Once per server, no portal, no waiting |
 
 Each project has its own README and a `.env.example` naming every credential

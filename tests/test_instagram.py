@@ -38,21 +38,24 @@ from socialchimp.platform import (
     CanAnswerSetupCheck,
     CanCheckSignature,
     CanReadPushedUpdates,
-    CanResumeLogin,
-    ChooseAccount,
     Finished,
     LoginRequest,
     Platform,
 )
+from socialchimp.platforms import _meta
 from socialchimp.platforms import instagram as instagram_module
-from socialchimp.platforms._meta import DEVELOPER_PORTAL, GRAPH_API
+from socialchimp.platforms._meta import DEVELOPER_PORTAL
 from socialchimp.platforms.instagram import (
     DEFAULT_SCOPES,
     HOW_LONG_TO_WAIT,
     HOW_OFTEN_TO_CHECK,
+    IG_GRAPH_API,
+    IG_LOGIN_HOST,
     MAX_CAPTION_LENGTH,
     MOST_HASHTAGS,
     MOST_IN_A_CAROUSEL,
+    REFRESH_AFTER_SECONDS,
+    SIGN_IN_PAGE,
     InstagramPlatform,
     instagram_errors,
 )
@@ -60,8 +63,7 @@ from socialchimp.testing import PlatformChecks, RecordingTransport
 
 APP_ID = "1234567890"
 APP_SECRET = "app-secret"
-PAGE_ID = "111222333"
-PAGE_TOKEN = "page-token"
+ACCESS_TOKEN = "access-token"
 IG_ID = "17841400000000000"
 IG_NAME = "adascakes"
 CONTAINER = "17999000000000001"
@@ -80,25 +82,6 @@ VIDEO_URL = "https://files.example/baking.mp4"
 ONCE = Retries(attempts=1)
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
-
-# A page with an Instagram business account on it, and one without.
-PAGES: dict[str, Any] = {
-    "data": [
-        {
-            "id": PAGE_ID,
-            "name": "Ada's Cakes",
-            "access_token": PAGE_TOKEN,
-            "instagram_business_account": {"id": IG_ID, "username": IG_NAME},
-        },
-        {
-            "id": "999888",
-            "name": "Ada's Bikes",
-            "access_token": "other-page-token",
-        },
-    ]
-}
-
-NO_INSTAGRAM_ANYWHERE: dict[str, Any] = {"data": [PAGES["data"][1]]}
 
 # Four of a hundred used, so ninety-six posts are left today.
 QUOTA: dict[str, Any] = {
@@ -130,6 +113,9 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, datetime]:
 
     monkeypatch.setattr(instagram_module, "_now", lambda: moment["now"])
     monkeypatch.setattr(instagram_module, "_sleep", move_on)
+    # A token's expiry is stamped by the shared Meta code, so that clock has
+    # to stop too or every expiry test is off by however long the test took.
+    monkeypatch.setattr(_meta, "_now", lambda: moment["now"])
     return moment
 
 
@@ -150,11 +136,17 @@ def a_request(*, state: str | None = "abc123") -> LoginRequest:
 
 def an_account(
     *,
-    token: str = PAGE_TOKEN,
+    token: str = ACCESS_TOKEN,
     expires_at: datetime | None = None,
     extra: dict[str, Any] | None = None,
 ) -> Connection:
     """A connected Instagram business account."""
+    if extra is None:
+        extra = {
+            "instagram_id": IG_ID,
+            "username": IG_NAME,
+            "profile_url": f"https://www.instagram.com/{IG_NAME}",
+        }
     return Connection(
         id=f"instagram:{IG_ID}",
         platform="instagram",
@@ -163,7 +155,7 @@ def an_account(
         account_name=IG_NAME,
         token=Token(access_token=token, expires_at=expires_at),
         scopes=DEFAULT_SCOPES,
-        extra=extra if extra is not None else {"instagram_id": IG_ID},
+        extra=extra,
     )
 
 
@@ -253,11 +245,9 @@ class TestWhatItSaysItCanDo:
         platform: InstagramPlatform,
     ) -> None:
         checked: Platform = platform
-        resumes: CanResumeLogin = platform
         listens: CanCheckSignature = platform
 
         assert isinstance(checked, Platform)
-        assert isinstance(resumes, CanResumeLogin)
         assert isinstance(listens, CanCheckSignature)
         assert platform.name == "instagram"
 
@@ -276,8 +266,6 @@ class TestWhatItSaysItCanDo:
         self,
         platform: InstagramPlatform,
     ) -> None:
-        # There is no text-only post on Instagram at all. Every post carries
-        # a picture or a video.
         assert Feature.POST_TEXT not in platform.features
 
     def test_it_does_not_claim_what_instagram_cannot_do_here(
@@ -299,15 +287,15 @@ class TestWhatItSaysItCanDo:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        assert platform.api_base(account) == "https://graph.facebook.com/v21.0"
+        assert platform.api_base(account) == IG_GRAPH_API
 
-    def test_it_signs_requests_with_the_pages_own_token(
+    def test_it_signs_requests_with_the_accounts_own_token(
         self,
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
         assert platform.auth_headers(account) == {
-            "Authorization": f"Bearer {PAGE_TOKEN}"
+            "Authorization": f"Bearer {account.token.access_token}"
         }
 
     def test_its_caption_limit_is_the_one_instagram_is_known_for(self) -> None:
@@ -316,7 +304,6 @@ class TestWhatItSaysItCanDo:
         assert MOST_IN_A_CAROUSEL == 10
 
     def test_it_checks_about_once_a_minute_for_five(self) -> None:
-        # What Meta's own guide suggests.
         assert HOW_OFTEN_TO_CHECK == 60.0
         assert HOW_LONG_TO_WAIT == 300.0
 
@@ -340,7 +327,7 @@ class TestThereIsNoAppToRegister:
 
         said = str(refused.value).lower()
         assert "review" in said
-        assert "business verification" in said
+        assert "business" in said
 
     async def test_it_does_not_claim_it_can_register_an_app(
         self,
@@ -348,7 +335,7 @@ class TestThereIsNoAppToRegister:
     ) -> None:
         assert Feature.CREATE_APP not in platform.features
 
-    async def test_asking_it_to_register_sends_nothing_to_meta(
+    async def test_asking_it_to_register_sends_nothing_to_instagram(
         self,
         platform: InstagramPlatform,
     ) -> None:
@@ -373,7 +360,7 @@ class TestStartingALogin:
         step = await platform.start_login(a_request())
 
         query = httpx.URL(step.url).params
-        assert step.url.startswith("https://www.facebook.com/v21.0/dialog/oauth?")
+        assert step.url.startswith(f"{SIGN_IN_PAGE}?")
         assert query["client_id"] == APP_ID
         assert query["redirect_uri"] == REDIRECT
         assert step.state == "abc123"
@@ -387,17 +374,6 @@ class TestStartingALogin:
         asked = httpx.URL(step.url).params["scope"].split(",")
         assert asked == list(DEFAULT_SCOPES)
         assert "instagram_business_content_publish" in asked
-        assert "pages_show_list" in asked
-
-    async def test_it_does_not_ask_for_the_names_meta_retired(
-        self,
-        platform: InstagramPlatform,
-    ) -> None:
-        # `instagram_basic` and `instagram_content_publish` stopped working in
-        # January 2025, and asking for them now gets the whole sign-in refused.
-        asked = DEFAULT_SCOPES
-        assert "instagram_basic" not in asked
-        assert "instagram_content_publish" not in asked
 
     async def test_it_makes_a_state_when_you_did_not(
         self,
@@ -434,132 +410,164 @@ class TestStartingALogin:
         assert not network.calls
 
 
-def stub_the_sign_in(
-    network: respx.Router,
-    pages: dict[str, Any] = PAGES,
-) -> respx.Route:
-    """Answer the three requests finishing a login makes.
-
-    Hands back the route that lists the Pages, which is the interesting one.
-    """
-    network.get("/oauth/access_token").mock(
-        side_effect=[
-            httpx.Response(200, json={"access_token": "short", "expires_in": 3600}),
-            httpx.Response(
-                200, json={"access_token": "long-lived", "expires_in": 5_184_000}
-            ),
-        ]
-    )
-    return network.get("/me/accounts").mock(
-        return_value=httpx.Response(200, json=pages)
-    )
-
-
 class TestFinishingALogin:
-    async def test_it_asks_which_instagram_account_to_use(
+    async def test_it_swaps_the_code_makes_it_last_and_reads_the_profile(
         self,
         platform: InstagramPlatform,
+        clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
-            stub_the_sign_in(network)
-            step = await platform.finish_login(a_request(), {"code": "abc"})
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            swap = network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "short-lived", "user_id": int(IG_ID)}
+                )
+            )
+            with respx.mock(base_url="https://graph.instagram.com") as graph_network:
+                make_it_last = graph_network.get("/access_token").mock(
+                    return_value=httpx.Response(
+                        200,
+                        json={
+                            "access_token": "long-lived",
+                            "token_type": "bearer",
+                            "expires_in": 5_184_000,
+                        },
+                    )
+                )
+                profile = graph_network.get(f"/v21.0/{IG_ID}").mock(
+                    return_value=httpx.Response(
+                        200, json={"id": IG_ID, "username": IG_NAME}
+                    )
+                )
 
-        assert isinstance(step, ChooseAccount)
-        assert [(one.id, one.name, one.kind) for one in step.options] == [
-            (IG_ID, IG_NAME, "instagram_account")
-        ]
+                step = await platform.finish_login(a_request(), {"code": "abc"})
 
-    async def test_it_asks_meta_for_the_instagram_account_on_each_page(
+        sent = dict(httpx.QueryParams(swap.calls[-1].request.content.decode()))
+        assert sent["client_id"] == APP_ID
+        assert sent["client_secret"] == APP_SECRET
+        assert sent["grant_type"] == "authorization_code"
+        assert sent["redirect_uri"] == REDIRECT
+        assert sent["code"] == "abc"
+
+        traded = make_it_last.calls[-1].request.url.params
+        assert traded["grant_type"] == "ig_exchange_token"
+        assert traded["client_secret"] == APP_SECRET
+        assert traded["access_token"] == "short-lived"
+
+        assert profile.calls[-1].request.headers["Authorization"] == (
+            "Bearer long-lived"
+        )
+
+        assert isinstance(step, Finished)
+        saved = step.connection
+        assert saved.id == f"instagram:{IG_ID}"
+        assert saved.account_id == IG_ID
+        assert saved.account_name == IG_NAME
+        assert saved.token.access_token == "long-lived"
+        assert saved.token.expires_at == NOW + timedelta(seconds=5_184_000)
+
+    async def test_it_finishes_the_login_outright(
         self,
         platform: InstagramPlatform,
+        clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
-            listing = stub_the_sign_in(network)
-            await platform.finish_login(a_request(), {"code": "abc"})
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "short-lived", "user_id": int(IG_ID)}
+                )
+            )
+            with respx.mock(base_url="https://graph.instagram.com") as graph_network:
+                graph_network.get("/access_token").mock(
+                    return_value=httpx.Response(
+                        200,
+                        json={
+                            "access_token": "long-lived",
+                            "expires_in": 5_184_000,
+                        },
+                    )
+                )
+                graph_network.get(f"/v21.0/{IG_ID}").mock(
+                    return_value=httpx.Response(
+                        200, json={"id": IG_ID, "username": IG_NAME}
+                    )
+                )
 
-        asked = listing.calls[-1].request.url.params["fields"]
-        assert "instagram_business_account{id,username}" in asked
+                step = await platform.finish_login(a_request(), {"code": "abc"})
 
-    async def test_it_carries_the_persons_token_to_the_next_step(
+        assert isinstance(step, Finished)
+
+    def test_it_never_imports_choose_account(self) -> None:
+        import socialchimp.platforms.instagram as instagram_module
+
+        assert not hasattr(instagram_module, "ChooseAccount")
+
+    async def test_it_remembers_the_instagram_id_and_username(
         self,
         platform: InstagramPlatform,
+        clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
-            stub_the_sign_in(network)
-            step = await platform.finish_login(a_request(), {"code": "abc"})
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "short-lived", "user_id": int(IG_ID)}
+                )
+            )
+            with respx.mock(base_url="https://graph.instagram.com") as graph_network:
+                graph_network.get("/access_token").mock(
+                    return_value=httpx.Response(
+                        200,
+                        json={
+                            "access_token": "long-lived",
+                            "expires_in": 5_184_000,
+                        },
+                    )
+                )
+                graph_network.get(f"/v21.0/{IG_ID}").mock(
+                    return_value=httpx.Response(
+                        200, json={"id": IG_ID, "username": IG_NAME}
+                    )
+                )
 
-        assert step.resume_token == "long-lived"
+                step = await platform.finish_login(a_request(), {"code": "abc"})
 
-    async def test_a_page_with_no_instagram_account_is_left_out(
+        assert step.connection.extra["instagram_id"] == IG_ID
+        assert step.connection.extra["username"] == IG_NAME
+        assert IG_NAME in str(step.connection.extra["profile_url"])
+
+    async def test_it_uses_the_permissions_the_login_asked_for(
         self,
         platform: InstagramPlatform,
+        clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
-            stub_the_sign_in(network)
-            step = await platform.finish_login(a_request(), {"code": "abc"})
+        asked = LoginRequest(
+            redirect_uri=REDIRECT, scopes=("instagram_business_basic",), app=an_app()
+        )
 
-        # The second page in PAGES has no Instagram account attached, so it is
-        # not offered: picking it could never lead to a post.
-        assert [one.id for one in step.options] == [IG_ID]
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "short-lived", "user_id": int(IG_ID)}
+                )
+            )
+            with respx.mock(base_url="https://graph.instagram.com") as graph_network:
+                graph_network.get("/access_token").mock(
+                    return_value=httpx.Response(
+                        200,
+                        json={
+                            "access_token": "long-lived",
+                            "expires_in": 5_184_000,
+                        },
+                    )
+                )
+                graph_network.get(f"/v21.0/{IG_ID}").mock(
+                    return_value=httpx.Response(
+                        200, json={"id": IG_ID, "username": IG_NAME}
+                    )
+                )
 
-    async def test_a_page_whose_instagram_account_has_no_id_is_left_out(
-        self,
-        platform: InstagramPlatform,
-    ) -> None:
-        odd = {
-            "data": [
-                {
-                    "id": PAGE_ID,
-                    "name": "Ada's Cakes",
-                    "access_token": PAGE_TOKEN,
-                    "instagram_business_account": {"username": IG_NAME},
-                },
-                PAGES["data"][0],
-            ]
-        }
+                step = await platform.finish_login(asked, {"code": "abc"})
 
-        with respx.mock(base_url=GRAPH_API) as network:
-            stub_the_sign_in(network, odd)
-            step = await platform.finish_login(a_request(), {"code": "abc"})
-
-        assert [one.id for one in step.options] == [IG_ID]
-
-    async def test_an_account_with_no_username_is_shown_by_its_id(
-        self,
-        platform: InstagramPlatform,
-    ) -> None:
-        nameless = {
-            "data": [
-                {
-                    "id": PAGE_ID,
-                    "name": "Ada's Cakes",
-                    "access_token": PAGE_TOKEN,
-                    "instagram_business_account": {"id": IG_ID},
-                }
-            ]
-        }
-
-        with respx.mock(base_url=GRAPH_API) as network:
-            stub_the_sign_in(network, nameless)
-            step = await platform.finish_login(a_request(), {"code": "abc"})
-
-        assert step.options[0].name == IG_ID
-
-    async def test_nobody_with_an_instagram_account_is_refused_plainly(
-        self,
-        platform: InstagramPlatform,
-    ) -> None:
-        with (
-            respx.mock(base_url=GRAPH_API) as network,
-            pytest.raises(AuthError) as refused,
-        ):
-            stub_the_sign_in(network, NO_INSTAGRAM_ANYWHERE)
-            await platform.finish_login(a_request(), {"code": "abc"})
-
-        said = str(refused.value).lower()
-        assert "business" in said
-        assert "creator" in said
-        assert "page" in said
+        assert step.connection.scopes == ("instagram_business_basic",)
 
     async def test_a_state_that_does_not_match_stops_the_login(
         self,
@@ -614,89 +622,42 @@ class TestFinishingALogin:
                 LoginRequest(redirect_uri=REDIRECT), {"code": "abc"}
             )
 
-
-class TestResumingALogin:
-    async def test_it_finishes_with_the_account_the_person_picked(
+    async def test_a_refused_token_swap_says_the_app_id_is_likely_wrong(
         self,
         platform: InstagramPlatform,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
-            network.get("/me/accounts").mock(
-                return_value=httpx.Response(200, json=PAGES)
-            )
-            step = await platform.resume_login(
-                a_request(), resume_token="long-lived", account_id=IG_ID
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(400, json=an_error(100))
             )
 
-        assert isinstance(step, Finished)
-        saved = step.connection
-        assert saved.id == f"instagram:{IG_ID}"
-        assert saved.account_id == IG_ID
-        assert saved.account_name == IG_NAME
-        assert saved.token.access_token == PAGE_TOKEN
-        assert saved.token.expires_at is None
+            with pytest.raises(AuthError) as refused:
+                await platform.finish_login(a_request(), {"code": "abc"})
 
-    async def test_it_remembers_the_page_behind_the_account(
+        said = str(refused.value)
+        assert "Instagram App ID" in said
+        assert "Instagram App Secret" in said
+
+    async def test_a_refused_long_lived_token_says_the_app_is_wrong(
         self,
         platform: InstagramPlatform,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
-            network.get("/me/accounts").mock(
-                return_value=httpx.Response(200, json=PAGES)
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "short-lived", "user_id": int(IG_ID)}
+                )
             )
-            step = await platform.resume_login(
-                a_request(), resume_token="long-lived", account_id=IG_ID
-            )
+            with respx.mock(base_url="https://graph.instagram.com") as graph_network:
+                graph_network.get("/access_token").mock(
+                    return_value=httpx.Response(400, json=an_error(100))
+                )
 
-        assert step.connection.extra["page_id"] == PAGE_ID
-        assert step.connection.extra["instagram_id"] == IG_ID
-        assert step.connection.extra["username"] == IG_NAME
-        assert IG_NAME in str(step.connection.extra["profile_url"])
+                with pytest.raises(AuthError) as refused:
+                    await platform.finish_login(a_request(), {"code": "abc"})
 
-    async def test_it_uses_the_permissions_the_login_asked_for(
-        self,
-        platform: InstagramPlatform,
-    ) -> None:
-        asked = LoginRequest(
-            redirect_uri=REDIRECT, scopes=("instagram_business_basic",), app=an_app()
-        )
-
-        with respx.mock(base_url=GRAPH_API) as network:
-            network.get("/me/accounts").mock(
-                return_value=httpx.Response(200, json=PAGES)
-            )
-            step = await platform.resume_login(
-                asked, resume_token="long-lived", account_id=IG_ID
-            )
-
-        assert step.connection.scopes == ("instagram_business_basic",)
-
-    async def test_a_missing_resume_token_says_where_it_should_have_been_kept(
-        self,
-        platform: InstagramPlatform,
-    ) -> None:
-        with pytest.raises(AuthError) as refused:
-            await platform.resume_login(a_request(), resume_token="", account_id=IG_ID)
-
-        assert "session" in str(refused.value)
-
-    async def test_an_account_that_is_no_longer_there_is_explained(
-        self,
-        platform: InstagramPlatform,
-    ) -> None:
-        with (
-            respx.mock(base_url=GRAPH_API) as network,
-            pytest.raises(AuthError) as refused,
-        ):
-            network.get("/me/accounts").mock(
-                return_value=httpx.Response(200, json=PAGES)
-            )
-            await platform.resume_login(
-                a_request(), resume_token="long-lived", account_id="99"
-            )
-
-        assert "'99'" in str(refused.value)
-        assert "again" in str(refused.value)
+        said = str(refused.value)
+        assert "Instagram App ID" in said
 
 
 # ---------------------------------------------------------------------------
@@ -705,64 +666,240 @@ class TestResumingALogin:
 
 
 class TestRenewingAToken:
-    async def test_a_page_token_does_not_expire_so_nothing_happens(
+    async def test_a_token_with_plenty_of_life_left_is_not_renewed(
         self,
         platform: InstagramPlatform,
-        account: Connection,
+        clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(assert_all_called=False) as network:
-            token = await platform.refresh(account)
+        plenty = an_account(
+            expires_at=NOW + timedelta(seconds=REFRESH_AFTER_SECONDS + 86400)
+        )
 
-        assert token is account.token
+        with respx.mock(assert_all_called=False) as network:
+            token = await platform.refresh(plenty)
+
+        assert token is plenty.token
         assert not network.calls
 
-    async def test_a_token_with_an_expiry_is_traded_for_a_fresh_sixty_days(
+    async def test_a_token_with_thirty_days_exactly_left_is_renewed(
         self,
         platform: InstagramPlatform,
+        clock: dict[str, datetime],
     ) -> None:
-        running_out = an_account(expires_at=NOW + timedelta(days=1))
+        running_out = an_account(
+            expires_at=NOW + timedelta(seconds=REFRESH_AFTER_SECONDS)
+        )
 
-        with respx.mock(base_url=GRAPH_API) as network:
-            swap = network.get("/oauth/access_token").mock(
+        with respx.mock(base_url="https://graph.instagram.com") as network:
+            renew = network.get("/refresh_access_token").mock(
                 return_value=httpx.Response(
-                    200, json={"access_token": "fresh", "expires_in": 5_184_000}
+                    200,
+                    json={
+                        "access_token": "fresh",
+                        "token_type": "bearer",
+                        "expires_in": 5_184_000,
+                    },
                 )
             )
-            token = await platform.refresh(running_out, an_app())
 
-        asked = swap.calls[-1].request.url.params
-        assert asked["grant_type"] == "fb_exchange_token"
-        assert asked["fb_exchange_token"] == PAGE_TOKEN
+            token = await platform.refresh(running_out)
+
+        query = renew.calls[-1].request.url.params
+        assert query["grant_type"] == "ig_refresh_token"
+        assert query["access_token"] == running_out.token.access_token
         assert token.access_token == "fresh"
         assert token.expires_at is not None
 
-    async def test_renewing_without_your_app_credentials_says_where_to_get_them(
+    async def test_a_token_with_less_than_thirty_days_left_is_renewed(
         self,
         platform: InstagramPlatform,
+        clock: dict[str, datetime],
     ) -> None:
         running_out = an_account(expires_at=NOW + timedelta(days=1))
 
-        with pytest.raises(ConfigError) as refused:
-            await platform.refresh(running_out)
+        with respx.mock(base_url="https://graph.instagram.com") as network:
+            renew = network.get("/refresh_access_token").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "access_token": "fresh",
+                        "expires_in": 5_184_000,
+                    },
+                )
+            )
 
-        assert DEVELOPER_PORTAL in str(refused.value)
+            token = await platform.refresh(running_out)
+
+        assert renew.called
+        assert token.access_token == "fresh"
+
+    async def test_a_token_with_no_expiry_is_renewed(
+        self,
+        platform: InstagramPlatform,
+    ) -> None:
+        no_expiry = an_account(expires_at=None)
+
+        with respx.mock(base_url="https://graph.instagram.com") as network:
+            network.get("/refresh_access_token").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"access_token": "fresh", "expires_in": 5_184_000},
+                )
+            )
+
+            token = await platform.refresh(no_expiry)
+
+        assert token.access_token == "fresh"
 
     async def test_a_token_meta_will_not_extend_needs_a_new_sign_in(
         self,
         platform: InstagramPlatform,
+        clock: dict[str, datetime],
     ) -> None:
         running_out = an_account(expires_at=NOW + timedelta(days=1))
 
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url="https://graph.instagram.com") as network,
             pytest.raises(TokenExpiredError) as refused,
         ):
-            network.get("/oauth/access_token").mock(
+            network.get("/refresh_access_token").mock(
                 return_value=httpx.Response(400, json=an_error(190))
             )
-            await platform.refresh(running_out, an_app())
+            await platform.refresh(running_out)
 
         assert "connect their account again" in str(refused.value)
+
+    async def test_the_refresh_needs_no_app_credentials(
+        self,
+        platform: InstagramPlatform,
+        clock: dict[str, datetime],
+    ) -> None:
+        running_out = an_account(expires_at=NOW + timedelta(days=1))
+
+        with respx.mock(base_url="https://graph.instagram.com") as network:
+            renew = network.get("/refresh_access_token").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"access_token": "fresh", "expires_in": 5_184_000},
+                )
+            )
+
+            await platform.refresh(running_out)
+
+        query = renew.calls[-1].request.url.params
+        assert "client_secret" not in query
+        assert "client_id" not in query
+
+    async def test_your_app_credentials_are_accepted_and_ignored(
+        self,
+        platform: InstagramPlatform,
+        clock: dict[str, datetime],
+    ) -> None:
+        running_out = an_account(expires_at=NOW + timedelta(days=1))
+
+        with respx.mock(base_url="https://graph.instagram.com") as network:
+            network.get("/refresh_access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "fresh", "expires_in": 5_184_000}
+                )
+            )
+
+            token = await platform.refresh(running_out, an_app())
+
+        assert token.access_token == "fresh"
+
+
+# ---------------------------------------------------------------------------
+# Account ID extraction
+# ---------------------------------------------------------------------------
+
+
+class TestAccountIdExtraction:
+    async def test_it_extracts_an_integer_user_id(
+        self,
+        platform: InstagramPlatform,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "short-lived", "user_id": 12345}
+                )
+            )
+            with respx.mock(base_url="https://graph.instagram.com") as graph_network:
+                graph_network.get("/access_token").mock(
+                    return_value=httpx.Response(
+                        200,
+                        json={"access_token": "long-lived", "expires_in": 5_184_000},
+                    )
+                )
+                graph_network.get("/v21.0/12345").mock(
+                    return_value=httpx.Response(
+                        200, json={"id": "12345", "username": "test"}
+                    )
+                )
+
+                step = await platform.finish_login(a_request(), {"code": "abc"})
+
+        assert step.connection.account_id == "12345"
+
+    async def test_it_extracts_a_string_user_id(
+        self,
+        platform: InstagramPlatform,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "short-lived", "user_id": "67890"}
+                )
+            )
+            with respx.mock(base_url="https://graph.instagram.com") as graph_network:
+                graph_network.get("/access_token").mock(
+                    return_value=httpx.Response(
+                        200,
+                        json={"access_token": "long-lived", "expires_in": 5_184_000},
+                    )
+                )
+                graph_network.get("/v21.0/67890").mock(
+                    return_value=httpx.Response(
+                        200, json={"id": "67890", "username": "test"}
+                    )
+                )
+
+                step = await platform.finish_login(a_request(), {"code": "abc"})
+
+        assert step.connection.account_id == "67890"
+
+    async def test_a_boolean_user_id_is_rejected(
+        self,
+        platform: InstagramPlatform,
+    ) -> None:
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "short-lived", "user_id": True}
+                )
+            )
+
+            with pytest.raises(PlatformError) as refused:
+                await platform.finish_login(a_request(), {"code": "abc"})
+
+        assert "user_id" in str(refused.value)
+
+    async def test_a_missing_user_id_is_rejected(
+        self,
+        platform: InstagramPlatform,
+    ) -> None:
+        with respx.mock(base_url=IG_LOGIN_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(200, json={"access_token": "short-lived"})
+            )
+
+            with pytest.raises(PlatformError) as refused:
+                await platform.finish_login(a_request(), {"code": "abc"})
+
+        assert "user_id" in str(refused.value)
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +913,7 @@ class TestPublishingAPicture:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             build = network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -801,7 +938,7 @@ class TestPublishingAPicture:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -818,7 +955,7 @@ class TestPublishingAPicture:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API, assert_all_called=False) as network:
+        with respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network:
             stub_quota(network)
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -835,7 +972,7 @@ class TestPublishingAPicture:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             build = network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -853,10 +990,9 @@ class TestPublishingAPicture:
         self,
         platform: InstagramPlatform,
     ) -> None:
-        # A connection built by hand may only carry the account id.
         plain = an_account(extra={})
 
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -877,7 +1013,7 @@ class TestPublishingAPicture:
             host=None,
             account_id="",
             account_name="",
-            token=Token(access_token=PAGE_TOKEN),
+            token=Token(access_token="token"),
         )
 
         with pytest.raises(ConfigError) as refused:
@@ -891,7 +1027,7 @@ class TestPublishingAPicture:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(PlatformError) as refused,
         ):
             stub_quota(network)
@@ -915,7 +1051,7 @@ class TestPublishingAVideo:
         account: Connection,
         clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             build = network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -940,7 +1076,7 @@ class TestPublishingAVideo:
         account: Connection,
         clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -954,7 +1090,6 @@ class TestPublishingAVideo:
 
         assert asked.call_count == 2
         assert asked.calls[0].request.url.params["fields"] == "status_code,status"
-        # It really waited: the clock only moves when the platform sleeps.
         assert clock["now"] == NOW + timedelta(seconds=HOW_OFTEN_TO_CHECK)
         assert put_out.called
         assert result.id == MEDIA_ID
@@ -963,12 +1098,9 @@ class TestPublishingAVideo:
         self,
         account: Connection,
     ) -> None:
-        # No fake clock here, so this runs the real sleep and the real
-        # reading of the time - the two halves every other test stands in
-        # for. Checking every no seconds keeps it instant.
         eager = InstagramPlatform(retries=ONCE, check_every_seconds=0.0)
 
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -989,7 +1121,7 @@ class TestPublishingAVideo:
         clock: dict[str, datetime],
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             stub_quota(network)
@@ -1018,7 +1150,7 @@ class TestPublishingAVideo:
         clock: dict[str, datetime],
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             stub_quota(network)
@@ -1037,7 +1169,7 @@ class TestPublishingAVideo:
         clock: dict[str, datetime],
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(PlatformError) as refused,
         ):
             stub_quota(network)
@@ -1056,7 +1188,7 @@ class TestPublishingAVideo:
         clock: dict[str, datetime],
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(PlatformError) as refused,
         ):
             stub_quota(network)
@@ -1072,7 +1204,6 @@ class TestPublishingAVideo:
         said = str(refused.value)
         assert "may still appear" in said
         assert CONTAINER in said
-        # Once a minute for five minutes, counting the first look.
         assert asked.call_count == 6
         assert clock["now"] == NOW + timedelta(seconds=HOW_LONG_TO_WAIT)
         assert not put_out.called
@@ -1087,7 +1218,7 @@ class TestPublishingAVideo:
         )
 
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(PlatformError),
         ):
             stub_quota(network)
@@ -1107,14 +1238,12 @@ class TestPublishingAVideo:
         account: Connection,
         clock: dict[str, datetime],
     ) -> None:
-        # PUBLISHED, or anything Meta adds later, is not FINISHED and is not a
-        # failure either, so we keep looking rather than guessing.
         quick = InstagramPlatform(
             retries=ONCE, check_every_seconds=5.0, wait_up_to_seconds=5.0
         )
 
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(PlatformError) as refused,
         ):
             stub_quota(network)
@@ -1138,7 +1267,7 @@ class TestPublishingACarousel:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             build = network.post(f"/{IG_ID}/media").mock(
                 side_effect=[
@@ -1181,7 +1310,7 @@ class TestPublishingACarousel:
         account: Connection,
         clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             build = network.post(f"/{IG_ID}/media").mock(
                 side_effect=[
@@ -1212,7 +1341,7 @@ class TestPublishingACarousel:
         account: Connection,
         clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API, assert_all_called=False) as network:
+        with respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network:
             stub_quota(network)
             network.post(f"/{IG_ID}/media").mock(
                 side_effect=[
@@ -1242,7 +1371,7 @@ class TestPublishingACarousel:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             stub_quota(network)
@@ -1260,12 +1389,10 @@ class TestPublishingACarousel:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        # Six pictures and six videos are inside both of the per-kind limits
-        # and still twelve things, which is two too many for one post.
         too_much = Post(media=(a_picture(),) * 6 + (a_video(),) * 6)
 
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             await platform.publish(account, too_much)
@@ -1278,7 +1405,7 @@ class TestPublishingACarousel:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             build = network.post(f"/{IG_ID}/media").mock(
                 side_effect=[
@@ -1338,7 +1465,7 @@ class TestWhatItWillNotPublish:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(NotSupportedError) as refused,
         ):
             await platform.publish(account, Post(text="Just words"))
@@ -1354,7 +1481,7 @@ class TestWhatItWillNotPublish:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(NotSupportedError) as refused,
         ):
             await platform.publish(
@@ -1384,7 +1511,7 @@ class TestWhatItWillNotPublish:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             await platform.publish(
@@ -1403,7 +1530,7 @@ class TestWhatItWillNotPublish:
         many = " ".join(f"#tag{number}" for number in range(MOST_HASHTAGS + 1))
 
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             await platform.publish(account, Post(text=many, media=(a_picture(),)))
@@ -1420,7 +1547,7 @@ class TestWhatItWillNotPublish:
     ) -> None:
         allowed = " ".join(f"#tag{number}" for number in range(MOST_HASHTAGS))
 
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network)
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -1438,12 +1565,14 @@ class TestWhatItWillNotPublish:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
+        from datetime import UTC, timedelta
+
         later = Post(
             media=(a_picture(),), publish_at=datetime.now(UTC) + timedelta(hours=2)
         )
 
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(NotSupportedError) as refused,
         ):
             await platform.publish(account, later)
@@ -1473,7 +1602,7 @@ class TestTheDailyLimit:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             asked = stub_quota(network)
             limits = await platform.limits(account)
 
@@ -1492,7 +1621,7 @@ class TestTheDailyLimit:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API, assert_all_called=False) as network,
+            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             stub_quota(network, USED_UP)
@@ -1509,7 +1638,7 @@ class TestTheDailyLimit:
     ) -> None:
         over = {"data": [{"quota_usage": 105, "config": {"quota_total": 100}}]}
 
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network, over)
             limits = await platform.limits(account)
 
@@ -1533,12 +1662,10 @@ class TestTheDailyLimit:
         account: Connection,
         reply: dict[str, Any],
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network, reply)
             limits = await platform.limits(account)
 
-        # None, never nought: a number we made up would refuse posts Instagram
-        # would have taken.
         assert limits.posts_left_today is None
 
     async def test_not_knowing_does_not_stop_a_post(
@@ -1546,7 +1673,7 @@ class TestTheDailyLimit:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             stub_quota(network, {})
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
@@ -1570,7 +1697,7 @@ class TestWhenInstagramSaysNo:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             stub_quota(network)
@@ -1590,7 +1717,7 @@ class TestWhenInstagramSaysNo:
         clock: dict[str, datetime],
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             stub_quota(network)
@@ -1609,10 +1736,8 @@ class TestWhenInstagramSaysNo:
         account: Connection,
         clock: dict[str, datetime],
     ) -> None:
-        # Meta puts some of these in `code` and some in `error_subcode`, and
-        # which one is not something you can rely on.
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             stub_quota(network)
@@ -1629,7 +1754,7 @@ class TestWhenInstagramSaysNo:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(PlatformError) as refused,
         ):
             stub_quota(network)
@@ -1648,7 +1773,7 @@ class TestWhenInstagramSaysNo:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(RateLimitError),
         ):
             stub_quota(network)
@@ -1662,10 +1787,8 @@ class TestWhenInstagramSaysNo:
         platform: InstagramPlatform,
         account: Connection,
     ) -> None:
-        # Meta answers 200 with the refusal in the body more often than you
-        # would believe, and Instagram's own codes arrive that way too.
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(InvalidPostError) as refused,
         ):
             stub_quota(network)
@@ -1682,7 +1805,7 @@ class TestWhenInstagramSaysNo:
         account: Connection,
     ) -> None:
         with (
-            respx.mock(base_url=GRAPH_API) as network,
+            respx.mock(base_url=IG_GRAPH_API) as network,
             pytest.raises(PlatformError) as refused,
         ):
             stub_quota(network)
@@ -1705,7 +1828,6 @@ class TestWhenInstagramSaysNo:
         self,
         platform: InstagramPlatform,
     ) -> None:
-        # None means no news, which is a different thing from nothing left.
         assert platform.usage is None
 
     async def test_it_remembers_how_much_of_the_allowance_is_gone(
@@ -1715,7 +1837,7 @@ class TestWhenInstagramSaysNo:
     ) -> None:
         headers = {"X-App-Usage": json.dumps({"call_count": 42})}
 
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             network.get(f"/{IG_ID}/content_publishing_limit").mock(
                 return_value=httpx.Response(200, json=QUOTA, headers=headers)
             )
@@ -1731,7 +1853,7 @@ class TestWhenInstagramSaysNo:
     ) -> None:
         headers = {"X-App-Usage": json.dumps({"call_count": 42})}
 
-        with respx.mock(base_url=GRAPH_API) as network:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
             quiet = network.get(f"/{IG_ID}/content_publishing_limit")
             quiet.mock(
                 side_effect=[
@@ -1785,8 +1907,6 @@ class TestRequestsInstagramPushesToUs:
         self,
         platform: InstagramPlatform,
     ) -> None:
-        # SocialChimp.answer_setup_check and SocialChimp.read_updates
-        # both look for these before they will hand anything on.
         assert isinstance(platform, CanAnswerSetupCheck)
         assert isinstance(platform, CanReadPushedUpdates)
 
@@ -1844,8 +1964,6 @@ class TestRequestsInstagramPushesToUs:
         self,
         platform: InstagramPlatform,
     ) -> None:
-        # Meta promises to deliver at least once, which is a promise to
-        # deliver twice sometimes.
         body = a_push({"id": "17888", "text": "Lovely"})
 
         first = platform.read_update(body, {})
@@ -1949,8 +2067,6 @@ class TestInstagramBehavesLikeTheOthers(PlatformChecks):
         return an_account()
 
     def make_post(self, text: str) -> Post:
-        # Instagram fetches the file itself, so a post it would look at twice
-        # carries a web address rather than bytes.
         return Post(text=text, media=(Media.from_url(PICTURE_URL),))
 
     def make_transport(self) -> httpx.AsyncBaseTransport | None:

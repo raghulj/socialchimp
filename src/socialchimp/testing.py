@@ -1670,13 +1670,12 @@ class PlatformChecks:
     async def test_a_platform_that_pauses_to_ask_can_carry_on(self) -> None:
         """A `resume_login` is `async def` and takes what it will be given.
 
-        Facebook asks which page, Instagram which business account, YouTube
-        which channel. All three answer `finish_login` with `ChooseAccount`
-        and finish the job in `resume_login`, and socialchimp calls that one
-        by name with `resume_token`, `account_id` and `remember`. A plain
-        `def`, or arguments under other names, leaves the person stuck on
-        the page where they picked - and it fails there, in someone else's
-        app, rather than here.
+        Facebook asks which page, YouTube which channel. Both answer
+        `finish_login` with `ChooseAccount` and finish the job in `resume_login`,
+        and socialchimp calls that one by name with `resume_token`, `account_id`
+        and `remember`. A plain `def`, or arguments under other names, leaves
+        the person stuck on the page where they picked - and it fails there, in
+        someone else's app, rather than here.
         """
         platform = self.platform
         if not hasattr(platform, "resume_login"):

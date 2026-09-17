@@ -169,8 +169,8 @@ class AccountChoice:
 class ChooseAccount:
     """A pause: the person has approved, but we need to know which account.
 
-    Facebook asks which page, Instagram which business account, YouTube which
-    channel. Show `options`, then carry on with the one they picked.
+    Facebook asks which page, YouTube which channel. Show `options`, then
+    carry on with the one they picked.
 
     Attributes:
         options: What they can choose from.
@@ -385,9 +385,9 @@ class CanCreateApp(Protocol):
 class CanResumeLogin(Protocol):
     """Extra for networks that pause to ask which account to use.
 
-    Facebook asks which page, Instagram which business account, YouTube which
-    channel. Those platforms answer `finish_login` with `ChooseAccount`, and
-    finish the job here once the person has picked one.
+    Facebook asks which page, YouTube which channel. Those platforms answer
+    `finish_login` with `ChooseAccount`, and finish the job here once the
+    person has picked one.
     """
 
     async def resume_login(

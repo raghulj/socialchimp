@@ -99,7 +99,7 @@ Put it in the session, a signed cookie, or a row in your database.
 ### Some networks ask a question instead
 
 `finish_login` can also come back with `ChooseAccount`. Facebook asks which
-page, Instagram which business account, YouTube which channel:
+page, YouTube which channel:
 
 ```python
 match step:

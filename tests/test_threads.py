@@ -402,8 +402,8 @@ class TestWhatThreadsSaysItCanDo:
         self,
         platform: ThreadsPlatform,
     ) -> None:
-        # Facebook and Instagram both ask, because a person has many pages.
-        # A Threads sign-in is one profile, so there is nothing to choose.
+        # Facebook asks which page, because a person manages many. A Threads
+        # sign-in is one profile, so there is nothing to choose.
         assert not isinstance(platform, CanResumeLogin)
 
 

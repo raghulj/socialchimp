@@ -180,8 +180,9 @@ SOCIAL_REDIRECT_URI = os.environ.get(
 # `social/storage.py` explains what it hands back instead.
 SOCIAL_APPS = {
     "facebook": _app("FACEBOOK_APP_ID", "FACEBOOK_APP_SECRET"),
-    # Instagram publishes through the same Meta app as Facebook Pages, so
-    # this is usually the same pair of values.
+    # Instagram has its own app id and secret, separate from Facebook's, in
+    # the "Instagram > API setup with Instagram login" section of the
+    # dashboard. Using the Facebook pair here fails at the token swap.
     "instagram": _app("INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET"),
     # Threads is *not* the same pair, even inside one Meta app. Adding the
     # Threads use case creates a second id and secret, and using the
