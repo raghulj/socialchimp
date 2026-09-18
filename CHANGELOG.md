@@ -4,6 +4,36 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.7.0 - 2026-09-18
+
+### Added: TikTok Business
+
+The eleventh network, and the first one that cannot post at all. `tiktok`
+publishes video; `tiktok_business` reads and answers the comments that show
+up underneath it once it is live - a separate TikTok product, its own app,
+its own sign-in, and a token exchanged through TikTok's own OAuth flow rather
+than Login Kit's. See
+[docs/platforms.md](docs/platforms.md#tiktok-business) for the whole of it,
+including which parts of this are confirmed against TikTok's own SDK source
+and which are best-effort because TikTok never documented them.
+
+- **`CanModerateComments`**, in `socialchimp.platform`. `fetch_updates` and
+  `reply_to_update` already covered reading and answering a comment; nothing
+  covered taking one down or hiding it. `await account.delete_comment(update)`
+  removes one outright; `await account.set_comment_visibility(update,
+  hidden=True)` hides or shows one again. TikTok Business is the first
+  network to need either.
+- **Comments arrive as `Update`s**, the same shape a webhook would hand you -
+  `fetch_updates` polls TikTok's `comment/list` and hands back
+  `UpdateKind.COMMENT_CREATED`, with the untouched comment on `update.raw` so
+  nothing is lost even where TikTok's own field names had to be guessed at.
+- **Read-only for posting.** `tiktok_business` declares no `Feature.*` flags;
+  `post()` refuses by name every time. Publish through `tiktok` instead.
+- **What is deliberately not here**: video-level stats (`business/video/list`
+  is not in TikTok's own SDK, and nothing here claims a number it cannot back
+  with a source) and a confirmed `refresh` endpoint (TikTok's docs say a
+  token needs renewing daily; its SDK documents no call that does it).
+
 ## 0.6.0 - 2026-09-18
 
 ### Added: Google Business Profile

@@ -47,6 +47,7 @@ __all__ = [
     "CanDeletePosts",
     "CanEditBusinessInfo",
     "CanManageVerification",
+    "CanModerateComments",
     "CanReadPushedUpdates",
     "CanReadStats",
     "CanReadUpdates",
@@ -697,6 +698,59 @@ class CanReplyToUpdates(Protocol):
                 this network. Google, for instance, answers a review or a
                 question, but there is nothing to reply to on a mention.
             SocialChimpError: If the network refuses the reply.
+        """
+        ...
+
+
+@runtime_checkable
+class CanModerateComments(Protocol):
+    """Extra for hiding or deleting a comment someone else made.
+
+    Meant to sit alongside `CanReplyToUpdates`: `fetch_updates` or
+    `read_updates` hands back the comment as an `Update`, `reply_to_update`
+    answers it, and this is for the other two things a business does with
+    an unwanted one - hide it, or remove it outright. TikTok Business is the
+    first network here that needs it.
+
+    `Account.delete_comment` and `Account.set_comment_visibility` are what
+    your app calls.
+    """
+
+    async def delete_comment(self, connection: Connection, update: Update) -> None:
+        """Remove a comment outright.
+
+        Args:
+            connection: The account the comment belongs to.
+            update: The comment to remove, exactly as `fetch_updates` or
+                `read_updates` handed it back. Its `raw` carries whatever
+                this platform needs to know which comment, and where.
+
+        Raises:
+            NotSupportedError: If this kind of update cannot be removed on
+                this network.
+            SocialChimpError: If the network refuses.
+        """
+        ...
+
+    async def set_comment_visibility(
+        self,
+        connection: Connection,
+        update: Update,
+        *,
+        hidden: bool,
+    ) -> None:
+        """Hide a comment from public view, or show one again.
+
+        Args:
+            connection: The account the comment belongs to.
+            update: The comment to hide or show, exactly as `fetch_updates`
+                or `read_updates` handed it back.
+            hidden: `True` to hide it, `False` to show it again.
+
+        Raises:
+            NotSupportedError: If this kind of update has no visibility to
+                change on this network.
+            SocialChimpError: If the network refuses.
         """
         ...
 

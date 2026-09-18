@@ -55,6 +55,7 @@ instagram = []
 pinterest = []
 threads = []
 tiktok = []
+tiktok_business = []
 x = []
 youtube = []
 django = ["django>=4.2"]
@@ -81,6 +82,7 @@ instagram = "socialchimp.platforms.instagram:InstagramPlatform"
 pinterest = "socialchimp.platforms.pinterest:PinterestPlatform"
 threads = "socialchimp.platforms.threads:ThreadsPlatform"
 tiktok = "socialchimp.platforms.tiktok:TikTokPlatform"
+tiktok_business = "socialchimp.platforms.tiktok_business:TikTokBusinessPlatform"
 x = "socialchimp.platforms.x:XPlatform"
 youtube = "socialchimp.platforms.youtube:YouTubePlatform"
 

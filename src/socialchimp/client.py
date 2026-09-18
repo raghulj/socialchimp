@@ -58,6 +58,7 @@ from socialchimp.platform import (
     CanDeletePosts,
     CanEditBusinessInfo,
     CanManageVerification,
+    CanModerateComments,
     CanReadPushedUpdates,
     CanReadStats,
     CanReadUpdates,
@@ -678,6 +679,59 @@ class Account:
                 ),
             )
         await platform.reply_to_update(connection, update, text)
+
+    async def delete_comment(self, update: Update) -> None:
+        """Remove a comment outright.
+
+        The token is renewed first, the same as every other call here.
+
+        Args:
+            update: The comment to remove, exactly as `fetch_updates` or
+                `SocialChimp.read_updates` handed it back.
+
+        Raises:
+            NotSupportedError: If this network cannot remove this kind of
+                update.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanModerateComments):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="removing a comment",
+                suggestion=(
+                    "It keeps nothing that can be removed this way, or its "
+                    "platform file has no delete_comment yet."
+                ),
+            )
+        await platform.delete_comment(connection, update)
+
+    async def set_comment_visibility(self, update: Update, *, hidden: bool) -> None:
+        """Hide a comment from public view, or show one again.
+
+        The token is renewed first, the same as every other call here.
+
+        Args:
+            update: The comment to hide or show, exactly as `fetch_updates`
+                or `SocialChimp.read_updates` handed it back.
+            hidden: `True` to hide it, `False` to show it again.
+
+        Raises:
+            NotSupportedError: If this network has no visibility to change
+                on this kind of update.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanModerateComments):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="changing whether a comment is hidden",
+                suggestion=(
+                    "It keeps nothing with visibility to change this way, "
+                    "or its platform file has no set_comment_visibility yet."
+                ),
+            )
+        await platform.set_comment_visibility(connection, update, hidden=hidden)
 
     async def get_location(self) -> BusinessLocation:
         """Read the business information this account holds.

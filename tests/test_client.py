@@ -402,6 +402,29 @@ class ReplyingPlatform(FakePlatform):
         self.replied.append((connection, update, text))
 
 
+class ModeratingPlatform(FakePlatform):
+    """A platform that can hide or remove a comment, like TikTok Business."""
+
+    name = "moderator"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.deleted: list[tuple[Connection, Update]] = []
+        self.visibility_changed: list[tuple[Connection, Update, bool]] = []
+
+    async def delete_comment(self, connection: Connection, update: Update) -> None:
+        self.deleted.append((connection, update))
+
+    async def set_comment_visibility(
+        self,
+        connection: Connection,
+        update: Update,
+        *,
+        hidden: bool,
+    ) -> None:
+        self.visibility_changed.append((connection, update, hidden))
+
+
 class BusinessPlatform(FakePlatform):
     """A platform that keeps more about a place than its posts, like Google."""
 
@@ -469,6 +492,12 @@ class VerifyingPlatform(FakePlatform):
 def made_replier() -> ReplyingPlatform:
     platform = made("replier")
     assert isinstance(platform, ReplyingPlatform)
+    return platform
+
+
+def made_moderator() -> ModeratingPlatform:
+    platform = made("moderator")
+    assert isinstance(platform, ModeratingPlatform)
     return platform
 
 
@@ -626,6 +655,7 @@ FAKES: dict[str, type[FakePlatform]] = {
     "counter": CountingPlatform,
     "lying-counter": LyingCounter,
     "replier": ReplyingPlatform,
+    "moderator": ModeratingPlatform,
     "business": BusinessPlatform,
     "verifier": VerifyingPlatform,
     "pusher": PushingPlatform,
@@ -1227,6 +1257,68 @@ class TestAnsweringAReviewOrAQuestion:
 
         with pytest.raises(NotSupportedError, match="fake"):
             await sc.account("conn-1").reply_to_update(an_update("conn-1"), "hi")
+
+
+class TestModeratingComments:
+    async def test_an_account_can_delete_a_comment(self) -> None:
+        storage = await storage_holding(a_connection(platform="moderator"))
+        sc = SocialChimp(storage)
+        update = an_update("conn-1")
+
+        await sc.account("conn-1").delete_comment(update)
+
+        connection, deleted = made_moderator().deleted[0]
+        assert connection.id == "conn-1"
+        assert deleted is update
+
+    async def test_an_account_can_hide_a_comment(self) -> None:
+        storage = await storage_holding(a_connection(platform="moderator"))
+        sc = SocialChimp(storage)
+        update = an_update("conn-1")
+
+        await sc.account("conn-1").set_comment_visibility(update, hidden=True)
+
+        connection, changed, hidden = made_moderator().visibility_changed[0]
+        assert connection.id == "conn-1"
+        assert changed is update
+        assert hidden is True
+
+    async def test_an_account_can_show_a_comment_again(self) -> None:
+        storage = await storage_holding(a_connection(platform="moderator"))
+        sc = SocialChimp(storage)
+        update = an_update("conn-1")
+
+        await sc.account("conn-1").set_comment_visibility(update, hidden=False)
+
+        _, _, hidden = made_moderator().visibility_changed[0]
+        assert hidden is False
+
+    async def test_deleting_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="moderator"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").delete_comment(an_update("conn-1"))
+
+        connection, _ = made_moderator().deleted[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_nothing_to_moderate_says_so_on_delete(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").delete_comment(an_update("conn-1"))
+
+    async def test_a_network_with_nothing_to_moderate_says_so_on_visibility(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").set_comment_visibility(
+                an_update("conn-1"), hidden=True
+            )
 
 
 class TestBusinessInformation:
