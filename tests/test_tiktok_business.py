@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import httpx
@@ -47,7 +48,7 @@ APP = AppCredentials(
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 
 
-def at(moment: datetime = NOW) -> object:
+def at(moment: datetime = NOW) -> Callable[[], datetime]:
     """A clock that always says the same thing."""
     return lambda: moment
 

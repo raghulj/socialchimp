@@ -409,11 +409,11 @@ class ModeratingPlatform(FakePlatform):
 
     def __init__(self) -> None:
         super().__init__()
-        self.deleted: list[tuple[Connection, Update]] = []
+        self.deleted_comments: list[tuple[Connection, Update]] = []
         self.visibility_changed: list[tuple[Connection, Update, bool]] = []
 
     async def delete_comment(self, connection: Connection, update: Update) -> None:
-        self.deleted.append((connection, update))
+        self.deleted_comments.append((connection, update))
 
     async def set_comment_visibility(
         self,
@@ -1267,7 +1267,7 @@ class TestModeratingComments:
 
         await sc.account("conn-1").delete_comment(update)
 
-        connection, deleted = made_moderator().deleted[0]
+        connection, deleted = made_moderator().deleted_comments[0]
         assert connection.id == "conn-1"
         assert deleted is update
 
@@ -1299,7 +1299,7 @@ class TestModeratingComments:
 
         await sc.account("conn-1").delete_comment(an_update("conn-1"))
 
-        connection, _ = made_moderator().deleted[0]
+        connection, _ = made_moderator().deleted_comments[0]
         assert connection.token.access_token == NEW_ACCESS
 
     async def test_a_network_with_nothing_to_moderate_says_so_on_delete(self) -> None:
