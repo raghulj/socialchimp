@@ -26,12 +26,15 @@ if TYPE_CHECKING:
     from socialchimp.features import Feature, Limits
     from socialchimp.models import (
         AppCredentials,
+        BusinessLocation,
         Connection,
         Post,
         PostResult,
         PostStats,
         RawData,
         Token,
+        Verification,
+        VerificationOption,
     )
 
 __all__ = [
@@ -42,9 +45,13 @@ __all__ = [
     "CanCheckState",
     "CanCreateApp",
     "CanDeletePosts",
+    "CanEditBusinessInfo",
+    "CanManageVerification",
+    "CanModerateComments",
     "CanReadPushedUpdates",
     "CanReadStats",
     "CanReadUpdates",
+    "CanReplyToUpdates",
     "CanResumeLogin",
     "ChooseAccount",
     "Finished",
@@ -653,5 +660,240 @@ class CanReadPushedUpdates(Protocol):
             What happened, in the order the network listed it. Empty when
             the message carried nothing we can act on, which is not an
             error - networks send shapes we have no interest in.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReplyToUpdates(Protocol):
+    """Extra for answering an update, rather than only reading it.
+
+    A review or a question is not a post - there is nothing on `publish()`
+    for it, and no post id to hand `delete_post`. Google Business Profile is
+    the first network that needs this: a business replies to a review, or
+    answers a question, and both are changes to the update itself rather
+    than something new going out.
+
+    `Account.reply_to_update` is what your app calls.
+    """
+
+    async def reply_to_update(
+        self,
+        connection: Connection,
+        update: Update,
+        text: str,
+    ) -> None:
+        """Answer one update in place.
+
+        Args:
+            connection: The account the update belongs to.
+            update: The update to answer, exactly as `fetch_updates` or
+                `read_updates` handed it back. Its `raw` carries whatever
+                this platform needs to know where the reply goes - which
+                review, which question.
+            text: The reply.
+
+        Raises:
+            NotSupportedError: If this kind of update cannot be answered on
+                this network. Google, for instance, answers a review or a
+                question, but there is nothing to reply to on a mention.
+            SocialChimpError: If the network refuses the reply.
+        """
+        ...
+
+
+@runtime_checkable
+class CanModerateComments(Protocol):
+    """Extra for hiding or deleting a comment someone else made.
+
+    Meant to sit alongside `CanReplyToUpdates`: `fetch_updates` or
+    `read_updates` hands back the comment as an `Update`, `reply_to_update`
+    answers it, and this is for the other two things a business does with
+    an unwanted one - hide it, or remove it outright. TikTok Business is the
+    first network here that needs it.
+
+    `Account.delete_comment` and `Account.set_comment_visibility` are what
+    your app calls.
+    """
+
+    async def delete_comment(self, connection: Connection, update: Update) -> None:
+        """Remove a comment outright.
+
+        Args:
+            connection: The account the comment belongs to.
+            update: The comment to remove, exactly as `fetch_updates` or
+                `read_updates` handed it back. Its `raw` carries whatever
+                this platform needs to know which comment, and where.
+
+        Raises:
+            NotSupportedError: If this kind of update cannot be removed on
+                this network.
+            SocialChimpError: If the network refuses.
+        """
+        ...
+
+    async def set_comment_visibility(
+        self,
+        connection: Connection,
+        update: Update,
+        *,
+        hidden: bool,
+    ) -> None:
+        """Hide a comment from public view, or show one again.
+
+        Args:
+            connection: The account the comment belongs to.
+            update: The comment to hide or show, exactly as `fetch_updates`
+                or `read_updates` handed it back.
+            hidden: `True` to hide it, `False` to show it again.
+
+        Raises:
+            NotSupportedError: If this kind of update has no visibility to
+                change on this network.
+            SocialChimpError: If the network refuses.
+        """
+        ...
+
+
+@runtime_checkable
+class CanEditBusinessInfo(Protocol):
+    """Extra for a platform that keeps more about a place than its posts.
+
+    Google Business Profile is the first: a location's name, phone, address,
+    hours and category are not a post, and `publish()` has nothing to do with
+    them. A platform with this extra says how to read that information back
+    and how to change it.
+
+    `Account.get_location` and `Account.update_location` are what your app
+    calls.
+    """
+
+    async def get_location(self, connection: Connection) -> BusinessLocation:
+        """Read the current business information for this connection.
+
+        Args:
+            connection: The location to read.
+
+        Returns:
+            What the network currently has on file.
+        """
+        ...
+
+    async def update_location(
+        self,
+        connection: Connection,
+        fields: RawData,
+    ) -> BusinessLocation:
+        """Change some of the business information for this location.
+
+        Args:
+            connection: The location to change.
+            fields: The fields to change, named the way the network's own
+                API names them, and nothing else - an update touches only
+                what is given here, the same way a field mask does. Fields
+                left out are left alone.
+
+        Returns:
+            The location as it stands after the change.
+
+        Raises:
+            SocialChimpError: If the network refuses the change.
+        """
+        ...
+
+
+@runtime_checkable
+class CanManageVerification(Protocol):
+    """Extra for a network that will not do much until you prove you own it.
+
+    Google will not show a location fully, and will not let every field be
+    edited or every post go out, until the location is verified - and
+    verifying it is a process with its own steps, not a login.
+
+    socialchimp never sees the proof itself. A postcard goes to the
+    business's own address, a call or a text goes to its own phone, an email
+    goes to its own inbox - none of that passes through here. This is only
+    for starting that process and handing back the code the business owner
+    was sent, which your app collects from them and nowhere else.
+
+    `Account.verification_options`, `Account.start_verification`,
+    `Account.complete_verification` and `Account.verification_state` are
+    what your app calls.
+    """
+
+    async def verification_options(
+        self,
+        connection: Connection,
+    ) -> Sequence[VerificationOption]:
+        """List the ways this location could be verified right now.
+
+        Args:
+            connection: The location to ask about.
+
+        Returns:
+            What the network will offer. Which methods are offered depends
+            on the location, and changes once one has been tried.
+        """
+        ...
+
+    async def start_verification(
+        self,
+        connection: Connection,
+        method: str,
+    ) -> Verification:
+        """Ask the network to verify this location by one of the offered ways.
+
+        This is what makes the network act - mail a postcard, place a call,
+        send a text or an email - to the business's own address, phone or
+        inbox. Nothing about the proof passes through socialchimp.
+
+        Args:
+            connection: The location to verify.
+            method: One of the methods `verification_options` offered.
+
+        Returns:
+            The verification now in progress. Its `id` is what
+            `complete_verification` needs.
+
+        Raises:
+            SocialChimpError: If the network refuses to start it.
+        """
+        ...
+
+    async def complete_verification(
+        self,
+        connection: Connection,
+        verification_id: str,
+        pin: str,
+    ) -> Verification:
+        """Finish a verification with the code the business owner was sent.
+
+        Args:
+            connection: The location being verified.
+            verification_id: The id `start_verification` returned.
+            pin: The code the business owner received. socialchimp never
+                generates or stores this - it exists only in what the
+                network sent them and what they type into your app.
+
+        Returns:
+            The verification's new state.
+
+        Raises:
+            AuthError: If the pin is wrong.
+            SocialChimpError: If the network refuses for some other reason.
+        """
+        ...
+
+    async def verification_state(self, connection: Connection) -> str:
+        """Ask where this location's verification stands right now.
+
+        Worth checking before assuming `update_location` or `publish` will
+        work - both can be refused until a location is verified.
+
+        Args:
+            connection: The location to ask about.
+
+        Returns:
+            The network's own word for the state.
         """
         ...

@@ -50,10 +50,12 @@ testing = ["pytest>=8.3"]
 mastodon = []
 bluesky = []
 facebook = []
+google_business = []
 instagram = []
 pinterest = []
 threads = []
 tiktok = []
+tiktok_business = []
 x = []
 youtube = []
 django = ["django>=4.2"]
@@ -75,10 +77,12 @@ Issues = "https://github.com/raghulj/socialchimp/issues"
 mastodon = "socialchimp.platforms.mastodon:MastodonPlatform"
 bluesky = "socialchimp.platforms.bluesky:BlueskyPlatform"
 facebook = "socialchimp.platforms.facebook:FacebookPlatform"
+google_business = "socialchimp.platforms.google_business:GoogleBusinessPlatform"
 instagram = "socialchimp.platforms.instagram:InstagramPlatform"
 pinterest = "socialchimp.platforms.pinterest:PinterestPlatform"
 threads = "socialchimp.platforms.threads:ThreadsPlatform"
 tiktok = "socialchimp.platforms.tiktok:TikTokPlatform"
+tiktok_business = "socialchimp.platforms.tiktok_business:TikTokBusinessPlatform"
 x = "socialchimp.platforms.x:XPlatform"
 youtube = "socialchimp.platforms.youtube:YouTubePlatform"
 

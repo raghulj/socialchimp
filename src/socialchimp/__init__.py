@@ -54,6 +54,7 @@ from socialchimp.features import (
 )
 from socialchimp.models import (
     AppCredentials,
+    BusinessLocation,
     Connection,
     Media,
     MediaKind,
@@ -63,6 +64,8 @@ from socialchimp.models import (
     PostStats,
     RawData,
     Token,
+    Verification,
+    VerificationOption,
     require_timezone,
 )
 from socialchimp.registry import available_platforms, register_platform
@@ -76,12 +79,13 @@ from socialchimp.storage import (
 )
 from socialchimp.tokens import TokenManager
 
-__version__ = "0.5.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "Account",
     "AppCredentials",
     "AuthError",
+    "BusinessLocation",
     "ConfigError",
     "Connection",
     "Dispatcher",
@@ -117,6 +121,8 @@ __all__ = [
     "TokenManager",
     "Update",
     "UpdateKind",
+    "Verification",
+    "VerificationOption",
     "__version__",
     "answer_setup_check",
     "available_platforms",

@@ -4,6 +4,108 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.7.0 - 2026-09-18
+
+### Added: TikTok Business
+
+The eleventh network, and the first one that cannot post at all. `tiktok`
+publishes video; `tiktok_business` reads and answers the comments that show
+up underneath it once it is live - a separate TikTok product, its own app,
+its own sign-in, and a token exchanged through TikTok's own OAuth flow rather
+than Login Kit's. See
+[docs/platforms.md](docs/platforms.md#tiktok-business) for the whole of it,
+including which parts of this are confirmed against TikTok's own SDK source
+and which are best-effort because TikTok never documented them.
+
+- **`CanModerateComments`**, in `socialchimp.platform`. `fetch_updates` and
+  `reply_to_update` already covered reading and answering a comment; nothing
+  covered taking one down or hiding it. `await account.delete_comment(update)`
+  removes one outright; `await account.set_comment_visibility(update,
+  hidden=True)` hides or shows one again. TikTok Business is the first
+  network to need either.
+- **Comments arrive as `Update`s**, the same shape a webhook would hand you -
+  `fetch_updates` polls TikTok's `comment/list` and hands back
+  `UpdateKind.COMMENT_CREATED`, with the untouched comment on `update.raw` so
+  nothing is lost even where TikTok's own field names had to be guessed at.
+- **Read-only for posting.** `tiktok_business` declares no `Feature.*` flags;
+  `post()` refuses by name every time. Publish through `tiktok` instead.
+- **What is deliberately not here**: video-level stats (`business/video/list`
+  is not in TikTok's own SDK, and nothing here claims a number it cannot back
+  with a source) and a confirmed `refresh` endpoint (TikTok's docs say a
+  token needs renewing daily; its SDK documents no call that does it).
+
+## 0.6.0 - 2026-09-18
+
+### Added: Google Business Profile
+
+The tenth network, and the first one that is a place rather than a feed.
+Signing in gets you a location - one business's listing - and posting is the
+smallest part of what there is to do with it: a location also has a name, a
+phone number, an address, a category, and a verification process with
+nothing to do with signing in at all. See
+[docs/platforms.md](docs/platforms.md#google-business-profile) for the whole
+of it; the shape of it is worth knowing even if you never touch this network,
+because three genuinely new things were added to the platform contract to
+carry it.
+
+- **`CanReplyToUpdates`**, in `socialchimp.platform`. A review or a question
+  is not a post, so there was nothing to answer one with. `await
+  account.reply_to_update(update, "Thank you!")` answers a review or a
+  question - `reply_to_update` reads `update.kind` to work out which.
+- **`CanEditBusinessInfo`**. A location's name, phone, address and category
+  are not a post either. `await account.get_location()` reads them back;
+  `await account.update_location({"title": "New Name"})` changes only the
+  fields named, the way a field mask does. New model: `BusinessLocation`.
+- **`CanManageVerification`**. Google will not show a location fully, or let
+  every field be edited, until it is verified - and verifying it is a
+  process with its own steps. `await account.verification_options()` lists
+  the ways; `await account.start_verification(method)` makes Google act -
+  mail a postcard, place a call, send a text or an email; `await
+  account.complete_verification(id, pin)` finishes it with the code the
+  business owner was sent. socialchimp never sees that code otherwise. New
+  models: `Verification`, `VerificationOption`.
+- **Four new `UpdateKind` values**: `REVIEW_CREATED`, `REVIEW_UPDATED`,
+  `QUESTION_CREATED`, `ANSWER_CREATED`.
+- **Pub/Sub, not a plain webhook.** Every other pushing network here signs a
+  request with a shared secret checked by plain HMAC, entirely offline.
+  Google's Pub/Sub instead signs with a Google-issued OIDC token whose
+  signature can only really be checked against Google's own rotating public
+  keys - fetching them on every check would put a network call inside what
+  is supposed to be a cheap, offline one. So on this platform only, `secret`
+  is not a password: it is `{"keys": [...Google's public keys as JWKs...],
+  "audience": "...", "service_account": "...@gcp-sa-pubsub.iam.gserviceaccount.com"}`,
+  a small JSON document your app keeps refreshed and hands over on every
+  check. The audience alone is not proof of anything - Google will sign a
+  token for any audience a caller names - so `check_signature` also checks
+  the token's `email` claim against the one Pub/Sub service account your
+  subscription authenticates as, the way Google's own push documentation
+  says to. `check_signature` and `read_updates` still take the same
+  arguments as every other platform's; only what `secret` holds is different
+  here, and that is documented on `GoogleBusinessPlatform` itself.
+  `fetch_updates` also works, polling reviews and questions on a timer, for
+  an app that cannot receive a push at all.
+
+None of this changes anything for the nine networks already here. All three
+extras are optional - discovered the same way `CanCheckState` and
+`CanReadUpdates` already were, by `isinstance` rather than a `Feature` flag -
+so a platform written against 0.1.0 needed no changes for any of them, which
+is exactly what [the promise about changes](docs/adding-a-platform.md#what-we-promise-about-changes)
+says should happen.
+
+**What Google Business Profile deliberately does not do here.** No
+`read_stats` - Google's Performance API reports how the *location* is doing
+in search and Maps, not how one post did, and there is no honest number to
+hand back for a post id. No scheduling, and no `check_state` - a post is live
+by the time Google answers, and only a rejected one is reported as anything
+other than done. No event or offer posts - only ordinary ones; asking for
+either is refused by name rather than silently becoming something else.
+
+**Before any of this works**, Google's Business Profile API access is a
+separate, manual approval on top of the OAuth client - it can take weeks, and
+an unapproved project's quota on these APIs is zero whatever the OAuth client
+says. Begin it early. See
+[docs/platforms.md](docs/platforms.md#google-business-profile).
+
 ## 0.5.0 - 2026-09-17
 
 ### Read this first: Instagram no longer signs in through Facebook

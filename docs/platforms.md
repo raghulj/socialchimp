@@ -11,9 +11,11 @@ things about it that surprise people.
 | YouTube | yes | by hand, reviewed | **no** | no | yes | yes | on a timer |
 | Instagram | yes | by hand, **its own app id** | **no** | yes | yes | no | yes |
 | TikTok | yes | by hand, audited | **no** | no | yes | no | yes |
+| TikTok Business | yes | by hand, **its own app, plus Business Center** | **no posting at all** | no | no | no | on a timer |
 | Threads | yes | by hand, **its own app id** | yes | yes | yes | no | yes |
 | X | yes | by hand, **paid plan** | yes | yes | yes | no | on a timer |
 | Pinterest | yes | by hand, reviewed | **no** | yes | yes | no | **no** |
+| Google Business Profile | yes | by hand, **plus a separate API access approval** | yes | yes | **no** | **no** | yes |
 
 "On a timer" means the network has no way to tell us when something happens,
 so socialchimp checks instead. Your code gets the same updates either way.
@@ -280,6 +282,62 @@ values the client key and the client secret; the client key goes in
   you have proved is yours. A post with pictures on it is refused with a
   message saying so.
 
+## TikTok Business
+
+**A different TikTok product from the one above, with nothing shared between
+them.** Posting to TikTok is `tiktok`, the Content Posting API, signed in
+through Login Kit. Reading and answering comments is `tiktok_business`, the
+Comment Management side of [TikTok for
+Business](https://business-api.tiktok.com/portal/docs), signed in through its
+own, separate portal. Different app, different client id and secret, different
+sign-in page, and the account has to be linked to a TikTok Business Center
+before any of it works - a manual step on TikTok's side that nothing here can
+do for you.
+
+**It manages comments on ads, not on any video you like.** Every write here -
+replying, deleting, hiding - carries `ad_id` alongside the comment, straight
+from TikTok's own request schema. This is TikTok's ads/business Comment
+Management API; nothing about it is documented as working for a plain organic
+post nobody has boosted.
+
+- **Read-only for posting.** `tiktok_business` has no `Feature.*` flags at
+  all, and `post()` refuses outright, by name, every time. Publish through
+  `tiktok` instead; use this one to read and answer what happens under a post
+  once it is up.
+- **Comments arrive as `Update`s**, the same object a webhook would hand you
+  elsewhere - `fetch_updates` polls `comment/list` and hands back
+  `UpdateKind.COMMENT_CREATED`. `account.reply_to_update`,
+  `account.delete_comment` and `account.set_comment_visibility` answer, remove
+  or hide one, reading whatever TikTok needs - `ad_id`, `identity_id`, the
+  rest - straight off the comment's own `raw`, the untouched dict TikTok sent.
+- **`fetch_updates` needs `Connection.extra["advertiser_id"]` and
+  `Connection.extra["ad_id"]` set by hand.** There is no call in this API that
+  looks either one up for you, and TikTok's `comment/list` has no "everything
+  for this advertiser" mode - it wants one ad named up front, so an account
+  missing either is refused with `ConfigError` rather than sent an empty
+  search.
+- **Not everything here comes from TikTok's own documentation.** The four
+  comment endpoints - listing, replying, deleting, hiding - are confirmed
+  against [TikTok's own SDK
+  source](https://github.com/tiktok/tiktok-business-api-sdk), field for
+  field. Three things are not, and are called out by name in the module's own
+  docstring rather than presented as fact: the endpoint `refresh` uses (the
+  SDK documents no refresh call at all, despite saying a token needs renewing
+  daily), the exact shape of a single comment object in `comment/list`'s
+  reply (so field names on `Update` are a best-effort guess - `Update.raw`
+  always carries what TikTok actually sent, so nothing is lost if the guess
+  is wrong), and the words `"HIDE"`/`"SHOW"` sent to hide or show a comment.
+  Worth checking each against a live TikTok Business account before depending
+  on it in production.
+- **No video-level stats.** TikTok is said to have a `business/video/list`
+  endpoint returning like/comment/share/view counts, but it appears nowhere
+  in TikTok's own SDK - only in search-indexed fragments with no confirmed
+  shape. Rather than ship a guessed schema, it is left out; there is no
+  `read_stats` here.
+- **Tokens**: an access token from `finish_login` lasts as long as TikTok's
+  reply says (`expires_in`, when present); nothing is guessed when it is not.
+  `refresh` is best-effort - see above.
+
 ## Threads
 
 **You create the app by hand** at
@@ -459,6 +517,81 @@ Check
 - **No updates worth having.** No webhooks for ordinary pins, and nothing in
   the API reports that something *happened* — so there is no `fetch_updates`
   here and `Feature.PUSH_UPDATES` is off.
+
+## Google Business Profile
+
+**A place, not a feed.** Signing in gets you a location - one business's
+listing - and posting is the smallest part of what there is to do with it: a
+location also has a name, a phone number, an address, a category, and a
+verification process with nothing to do with signing in at all.
+
+**You create the app by hand, and then apply separately.** Make a project at
+[console.cloud.google.com](https://console.cloud.google.com), turn on the
+Business Profile APIs, create an OAuth client - and then apply for **Business
+Profile API access** through Google's own contact form, a manual approval on
+top of the OAuth client that can take weeks. An unapproved project's quota on
+these APIs is zero, whatever the OAuth client says, and nothing in the API
+tells you which side of that approval you are on.
+
+- **It always asks which location**, even when there is only one, the same
+  rule every network here holds to. One Google account can manage several
+  businesses, and each business several locations - `finish_login` lists
+  every one of them and hands you `ChooseAccount`.
+- **Google fetches the picture itself, from a web address**, the way Facebook
+  and Instagram do. `Media.from_url(...)` works; a local file is refused.
+  One picture at a time.
+- **Post options**: `call_to_action_type` (`BOOK`, `ORDER`, `SHOP`,
+  `LEARN_MORE`, `SIGN_UP`, `CALL`), `call_to_action_url` (needed for every
+  type but `CALL`).
+- **Only ordinary posts are written here.** Google's API also has event posts
+  and offer posts, each with their own extra fields; neither is written yet,
+  and asking for one is refused by name.
+- **No `read_stats`.** Google's Performance API reports how the *location* is
+  doing in search and Maps, not how one post did - there is no honest number
+  to hand back for a post id, so this is left off rather than approximated.
+- **Reviews and questions are answered, not just read** - the first network
+  here that needs it. `await account.reply_to_update(update, "Thank you!")`
+  answers either one; `reply_to_update` reads `update.kind` to work out
+  which. `CanReplyToUpdates`, on `socialchimp.platform`, is the shape a
+  platform provides to say it can do this.
+- **Updates arrive through Cloud Pub/Sub, not a plain webhook.** Every other
+  pushing network here signs a request with a shared secret checked by plain
+  HMAC, entirely offline. Google's Pub/Sub instead signs with a Google-issued
+  OIDC token whose signature can only really be checked against Google's own
+  rotating public keys - fetching them on every check would be a network call
+  inside what is supposed to be a cheap one, so this platform does not fetch
+  them itself. `secret` here is a small JSON document your app keeps
+  refreshed instead of a password:
+
+      {
+          "keys": [<Google's public keys, as JWKs>],
+          "audience": "https://you.example/webhooks/google_business",
+          "service_account": "service-1234@gcp-sa-pubsub.iam.gserviceaccount.com"
+      }
+
+  Refresh `keys` from Google's own JWKS endpoint on a timer - they last hours,
+  not minutes. Audience alone is not proof of anything, since Google will
+  sign a token for any audience a caller names - `service_account` is the
+  identity your Pub/Sub push subscription actually authenticates as, and
+  `check_signature` checks the token's `email` claim against it, the way
+  Google's own push documentation says to. `fetch_updates` still works too,
+  polling reviews and questions on a timer, for an app that cannot receive a
+  push at all.
+- **Business information can be read and changed**:
+  `await account.get_location()` and
+  `await account.update_location({"title": "New Name"})`. `fields` names
+  only what changes, the way Google's own field mask does.
+  `CanEditBusinessInfo` is the shape a platform provides for this.
+- **Verification never sees the proof.**
+  `await account.start_verification(method)` is what makes Google act - mail
+  a postcard, place a call, send a text or an email - to the business's own
+  address, phone or inbox. `await account.complete_verification(id, pin)`
+  takes the code the business owner was sent and nothing else; socialchimp
+  never generates, stores or sees it otherwise. `CanManageVerification` is
+  the shape a platform provides for the whole process.
+- **No scheduling, and no `check_state`.** A post goes out when you publish
+  it, and is live by the time Google answers - only a rejected one is
+  reported as anything other than done.
 
 ---
 

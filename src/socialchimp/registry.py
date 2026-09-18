@@ -55,6 +55,7 @@ PLATFORM_EXTRAS: Final[Mapping[str, str]] = {
     "pinterest": "pinterest",
     "threads": "threads",
     "tiktok": "tiktok",
+    "tiktok_business": "tiktok_business",
     "twitter": "twitter",
     "x": "twitter",
     "youtube": "youtube",
