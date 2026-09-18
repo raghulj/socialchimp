@@ -13,6 +13,7 @@ import respx
 
 from socialchimp import (
     AppCredentials,
+    BusinessLocation,
     ConfigError,
     Connection,
     Feature,
@@ -33,6 +34,8 @@ from socialchimp import (
     TokenManager,
     Update,
     UpdateKind,
+    Verification,
+    VerificationOption,
 )
 from socialchimp.client import Account, SocialChimp
 from socialchimp.http import HttpClient
@@ -381,6 +384,106 @@ def made_counter() -> CountingPlatform:
     return platform
 
 
+class ReplyingPlatform(FakePlatform):
+    """A platform that can answer a review or a question, the way Google is."""
+
+    name = "replier"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.replied: list[tuple[Connection, Update, str]] = []
+
+    async def reply_to_update(
+        self,
+        connection: Connection,
+        update: Update,
+        text: str,
+    ) -> None:
+        self.replied.append((connection, update, text))
+
+
+class BusinessPlatform(FakePlatform):
+    """A platform that keeps more about a place than its posts, like Google."""
+
+    name = "business"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.read: list[Connection] = []
+        self.changed: list[tuple[Connection, RawData]] = []
+
+    async def get_location(self, connection: Connection) -> BusinessLocation:
+        self.read.append(connection)
+        return BusinessLocation(id=connection.account_id, name="Ada's Bakery")
+
+    async def update_location(
+        self,
+        connection: Connection,
+        fields: RawData,
+    ) -> BusinessLocation:
+        self.changed.append((connection, fields))
+        return BusinessLocation(id=connection.account_id, name="New Name")
+
+
+class VerifyingPlatform(FakePlatform):
+    """A platform with a verification process of its own, like Google."""
+
+    name = "verifier"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.options_asked: list[Connection] = []
+        self.verifications_started: list[tuple[Connection, str]] = []
+        self.completed: list[tuple[Connection, str, str]] = []
+        self.states_asked: list[Connection] = []
+
+    async def verification_options(
+        self,
+        connection: Connection,
+    ) -> Sequence[VerificationOption]:
+        self.options_asked.append(connection)
+        return (VerificationOption(method="PHONE_CALL"),)
+
+    async def start_verification(
+        self,
+        connection: Connection,
+        method: str,
+    ) -> Verification:
+        self.verifications_started.append((connection, method))
+        return Verification(id="v1", method=method, state="PENDING")
+
+    async def complete_verification(
+        self,
+        connection: Connection,
+        verification_id: str,
+        pin: str,
+    ) -> Verification:
+        self.completed.append((connection, verification_id, pin))
+        return Verification(id=verification_id, method="PHONE_CALL", state="COMPLETED")
+
+    async def verification_state(self, connection: Connection) -> str:
+        self.states_asked.append(connection)
+        return "VERIFIED"
+
+
+def made_replier() -> ReplyingPlatform:
+    platform = made("replier")
+    assert isinstance(platform, ReplyingPlatform)
+    return platform
+
+
+def made_business() -> BusinessPlatform:
+    platform = made("business")
+    assert isinstance(platform, BusinessPlatform)
+    return platform
+
+
+def made_verifier() -> VerifyingPlatform:
+    platform = made("verifier")
+    assert isinstance(platform, VerifyingPlatform)
+    return platform
+
+
 class ChoosyPlatform(FakePlatform):
     """A platform that pauses to ask which page to use, the way Facebook does."""
 
@@ -522,6 +625,9 @@ FAKES: dict[str, type[FakePlatform]] = {
     "asker": PollingPlatform,
     "counter": CountingPlatform,
     "lying-counter": LyingCounter,
+    "replier": ReplyingPlatform,
+    "business": BusinessPlatform,
+    "verifier": VerifyingPlatform,
     "pusher": PushingPlatform,
     "fixed": FixedAddressPlatform,
     "per-server": PerServerPlatform,
@@ -1091,6 +1197,198 @@ class TestReadingAPostsNumbers:
             await sc.account("conn-1").read_stats("post-9")
 
         assert "read_stats" in str(broken.value)
+
+
+class TestAnsweringAReviewOrAQuestion:
+    async def test_an_account_can_answer_an_update(self) -> None:
+        storage = await storage_holding(a_connection(platform="replier"))
+        sc = SocialChimp(storage)
+        update = an_update("conn-1")
+
+        await sc.account("conn-1").reply_to_update(update, "Thank you!")
+
+        connection, replied_to, text = made_replier().replied[0]
+        assert connection.id == "conn-1"
+        assert replied_to is update
+        assert text == "Thank you!"
+
+    async def test_answering_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="replier"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").reply_to_update(an_update("conn-1"), "hi")
+
+        connection, _, _ = made_replier().replied[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_nothing_to_answer_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").reply_to_update(an_update("conn-1"), "hi")
+
+
+class TestBusinessInformation:
+    async def test_an_account_can_read_its_business_information(self) -> None:
+        storage = await storage_holding(a_connection(platform="business"))
+        sc = SocialChimp(storage)
+
+        location = await sc.account("conn-1").get_location()
+
+        assert location.name == "Ada's Bakery"
+        assert made_business().read[0].id == "conn-1"
+
+    async def test_reading_it_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="business"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").get_location()
+
+        assert made_business().read[0].token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_nothing_beyond_posts_cannot_be_read(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").get_location()
+
+    async def test_an_account_can_change_its_business_information(self) -> None:
+        storage = await storage_holding(a_connection(platform="business"))
+        sc = SocialChimp(storage)
+
+        location = await sc.account("conn-1").update_location({"title": "New Name"})
+
+        assert location.name == "New Name"
+        connection, fields = made_business().changed[0]
+        assert connection.id == "conn-1"
+        assert fields == {"title": "New Name"}
+
+    async def test_changing_it_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="business"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").update_location({"title": "New Name"})
+
+        connection, _ = made_business().changed[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_nothing_beyond_posts_cannot_be_changed(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").update_location({"title": "New Name"})
+
+
+class TestVerifyingALocation:
+    async def test_an_account_can_list_its_verification_options(self) -> None:
+        storage = await storage_holding(a_connection(platform="verifier"))
+        sc = SocialChimp(storage)
+
+        options = await sc.account("conn-1").verification_options()
+
+        assert options == (VerificationOption(method="PHONE_CALL"),)
+        assert made_verifier().options_asked[0].id == "conn-1"
+
+    async def test_listing_them_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="verifier"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").verification_options()
+
+        assert made_verifier().options_asked[0].token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_no_verification_process_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").verification_options()
+
+    async def test_an_account_can_start_a_verification(self) -> None:
+        storage = await storage_holding(a_connection(platform="verifier"))
+        sc = SocialChimp(storage)
+
+        verification = await sc.account("conn-1").start_verification("PHONE_CALL")
+
+        assert verification.state == "PENDING"
+        connection, method = made_verifier().verifications_started[0]
+        assert connection.id == "conn-1"
+        assert method == "PHONE_CALL"
+
+    async def test_starting_one_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="verifier"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").start_verification("PHONE_CALL")
+
+        connection, _ = made_verifier().verifications_started[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_no_verification_process_cannot_start_one(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").start_verification("PHONE_CALL")
+
+    async def test_an_account_can_complete_a_verification(self) -> None:
+        storage = await storage_holding(a_connection(platform="verifier"))
+        sc = SocialChimp(storage)
+
+        verification = await sc.account("conn-1").complete_verification("v1", "123456")
+
+        assert verification.state == "COMPLETED"
+        connection, verification_id, pin = made_verifier().completed[0]
+        assert connection.id == "conn-1"
+        assert verification_id == "v1"
+        assert pin == "123456"
+
+    async def test_completing_one_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="verifier"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").complete_verification("v1", "123456")
+
+        connection, _, _ = made_verifier().completed[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_no_verification_process_cannot_finish_one(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").complete_verification("v1", "123456")
+
+    async def test_an_account_can_ask_its_verification_state(self) -> None:
+        storage = await storage_holding(a_connection(platform="verifier"))
+        sc = SocialChimp(storage)
+
+        state = await sc.account("conn-1").verification_state()
+
+        assert state == "VERIFIED"
+        assert made_verifier().states_asked[0].id == "conn-1"
+
+    async def test_asking_it_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="verifier"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").verification_state()
+
+        assert made_verifier().states_asked[0].token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_no_verification_process_has_no_state(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").verification_state()
 
 
 class TestRequestsANetworkSendsUs:

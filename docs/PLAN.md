@@ -79,7 +79,8 @@ We are building these in the order below. The first four are the priority.
 | 7 | X / Twitter | Wide demand. Media upload still uses the older endpoint. | **Done** |
 | 8 | Pinterest | Every pin needs a board, so it proves we handle "where does this post go". | **Done** |
 | 9 | Threads | Same two-step posting as Instagram, but its own separate app and login. | **Done** |
-| - | Discord, Telegram, LinkedIn, Reddit, Tumblr | After the nine above. | Not started |
+| 10 | Google Business Profile | A place rather than a feed - posts, reviews, questions, business information and a verification process all live behind one connection. First network that needs to answer an update rather than only read it. | **Done** |
+| - | Discord, Telegram, LinkedIn, Reddit, Tumblr | After the ten above. | Not started |
 
 ---
 
@@ -148,10 +149,14 @@ against**, not partway through as first planned. See
 [the promise about changes](adding-a-platform.md#what-we-promise-about-changes)
 for what that means for a platform written today.
 
-Three releases have tested that promise since: 0.2.0 added `CanCheckState`,
+Four releases have tested that promise since: 0.2.0 added `CanCheckState`,
 `CanAnswerSetupCheck` and `CanReadPushedUpdates`, 0.3.0 added
-`Feature.NEEDS_NO_APP` for a network with no app to register, and 0.4.0
-added `CanReadStats` for reading a post's numbers back. All three were
+`Feature.NEEDS_NO_APP` for a network with no app to register, 0.4.0
+added `CanReadStats` for reading a post's numbers back, and 0.6.0 added
+`CanReplyToUpdates`, `CanEditBusinessInfo` and `CanManageVerification` for
+Google Business Profile - the first network where reading is not enough, a
+post is not the whole of what there is to manage, and there is a
+verification process with nothing to do with signing in. All four were
 additions a platform written against 0.1.0 did not have to do anything
 about, which is exactly what the promise says should happen.
 
@@ -180,8 +185,8 @@ The full `uv run pytest` is the one that has to pass before pushing.
 
 - **The name is `socialchimp`**, on PyPI and here. Settled at 0.1.0.
 - **The way platforms are written is settled** as of 0.1.0, and 0.2.0,
-  0.3.0 and 0.4.0 have each added to it since without breaking anything already
-  written. See
+  0.3.0, 0.4.0 and 0.6.0 have each added to it since without breaking anything
+  already written. See
   [the promise about changes](adding-a-platform.md#what-we-promise-about-changes).
 
 ## Next

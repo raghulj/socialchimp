@@ -16,8 +16,9 @@ Three things are worth knowing before you read on.
 the same network as the same account. Tokens, retries and rate limits still
 apply; only the request is yours. The things only some networks can do are
 here rather than behind the platform: `account.check_state`,
-`account.fetch_updates` and `account.read_stats` for one account, and
-`answer_setup_check`,
+`account.fetch_updates`, `account.read_stats`, `account.reply_to_update`,
+`account.get_location`/`update_location` and the verification calls for one
+account, and `answer_setup_check`,
 `check_signature` and `read_updates` on the client for the requests a network
 pushes to you, which arrive before you know whose account they are about.
 
@@ -55,9 +56,12 @@ from socialchimp.platform import (
     CanCheckState,
     CanCreateApp,
     CanDeletePosts,
+    CanEditBusinessInfo,
+    CanManageVerification,
     CanReadPushedUpdates,
     CanReadStats,
     CanReadUpdates,
+    CanReplyToUpdates,
     CanResumeLogin,
     Finished,
     LoginRequest,
@@ -76,11 +80,14 @@ if TYPE_CHECKING:
     from socialchimp.features import Limits
     from socialchimp.models import (
         AppCredentials,
+        BusinessLocation,
         Connection,
         Post,
         PostStats,
         RawData,
         Token,
+        Verification,
+        VerificationOption,
     )
     from socialchimp.platform import LoginStep, Platform
     from socialchimp.storage import Storage
@@ -642,6 +649,168 @@ class Account:
         if not isinstance(platform, CanReadStats):
             raise _missing_method(platform, "read_stats")
         return await platform.read_stats(connection, post_id)
+
+    async def reply_to_update(self, update: Update, text: str) -> None:
+        """Answer an update - a review, a question - in place.
+
+        A review or a question is not a post, so there is nothing on `post()`
+        for it. The token is renewed first, the same as every other call
+        here.
+
+        Args:
+            update: The update to answer, exactly as `fetch_updates` or
+                `SocialChimp.read_updates` handed it back.
+            text: The reply.
+
+        Raises:
+            NotSupportedError: If this network has nothing to answer, or
+                cannot answer this kind of update.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanReplyToUpdates):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="answering a review or a question",
+                suggestion=(
+                    "It keeps nothing worth replying to, or its platform "
+                    "file has no reply_to_update yet."
+                ),
+            )
+        await platform.reply_to_update(connection, update, text)
+
+    async def get_location(self) -> BusinessLocation:
+        """Read the business information this account holds.
+
+        Returns:
+            What the network currently has on file.
+
+        Raises:
+            NotSupportedError: If this network keeps nothing beyond posts.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanEditBusinessInfo):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="reading business information back",
+                suggestion="It has nothing beyond posts to read.",
+            )
+        return await platform.get_location(connection)
+
+    async def update_location(self, fields: RawData) -> BusinessLocation:
+        """Change some of this account's business information.
+
+        Args:
+            fields: The fields to change, named the way the network's own
+                API names them. Fields left out are left alone.
+
+        Returns:
+            The location as it stands after the change.
+
+        Raises:
+            NotSupportedError: If this network keeps nothing beyond posts.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanEditBusinessInfo):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="changing business information",
+                suggestion="It has nothing beyond posts to change.",
+            )
+        return await platform.update_location(connection, fields)
+
+    async def verification_options(self) -> Sequence[VerificationOption]:
+        """List the ways this account's location could be verified right now.
+
+        Returns:
+            What the network will offer.
+
+        Raises:
+            NotSupportedError: If this network has no verification process.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanManageVerification):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="verifying a location",
+                suggestion="It has no verification process of its own.",
+            )
+        return await platform.verification_options(connection)
+
+    async def start_verification(self, method: str) -> Verification:
+        """Ask the network to verify this account's location.
+
+        This is what makes the network act - mail a postcard, place a call,
+        send a text or an email. Nothing about the proof passes through
+        socialchimp.
+
+        Args:
+            method: One of the methods `verification_options` offered.
+
+        Returns:
+            The verification now in progress.
+
+        Raises:
+            NotSupportedError: If this network has no verification process.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanManageVerification):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="verifying a location",
+                suggestion="It has no verification process of its own.",
+            )
+        return await platform.start_verification(connection, method)
+
+    async def complete_verification(
+        self,
+        verification_id: str,
+        pin: str,
+    ) -> Verification:
+        """Finish a verification with the code the business owner was sent.
+
+        Args:
+            verification_id: The id `start_verification` returned.
+            pin: The code the business owner received.
+
+        Returns:
+            The verification's new state.
+
+        Raises:
+            NotSupportedError: If this network has no verification process.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanManageVerification):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="verifying a location",
+                suggestion="It has no verification process of its own.",
+            )
+        return await platform.complete_verification(connection, verification_id, pin)
+
+    async def verification_state(self) -> str:
+        """Ask where this account's location's verification stands.
+
+        Returns:
+            The network's own word for the state.
+
+        Raises:
+            NotSupportedError: If this network has no verification process.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanManageVerification):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="verifying a location",
+                suggestion="It has no verification process of its own.",
+            )
+        return await platform.verification_state(connection)
 
 
 class SocialChimp:

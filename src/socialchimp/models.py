@@ -28,6 +28,7 @@ from socialchimp.errors import ConfigError, InvalidPostError
 
 __all__ = [
     "AppCredentials",
+    "BusinessLocation",
     "Connection",
     "Media",
     "MediaKind",
@@ -37,6 +38,8 @@ __all__ = [
     "PostStats",
     "RawData",
     "Token",
+    "Verification",
+    "VerificationOption",
     "require_timezone",
 ]
 
@@ -586,4 +589,65 @@ class PostStats:
     likes: int | None = None
     comments: int | None = None
     shares: int | None = None
+    raw: RawData = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class BusinessLocation:
+    """What a network like Google Business Profile calls a place.
+
+    Only the fields worth a name of their own are modelled. A location
+    resource has dozens of fields - service areas, opening date, more
+    attributes than any app needs at once - and modelling all of them here
+    would mean this file changing every time the network adds one. Anything
+    not named here is still on `raw`.
+
+    Attributes:
+        id: The network's identifier for this location.
+        name: The business name shown on the profile.
+        phone: The primary phone number, where the location has one.
+        address: The postal address, in the shape the network's own API
+            returns it.
+        categories: The primary category first, then any additional ones.
+        raw: The location resource exactly as the network returned it.
+    """
+
+    id: str
+    name: str
+    phone: str | None = None
+    address: RawData = field(default_factory=dict)
+    categories: tuple[str, ...] = ()
+    raw: RawData = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationOption:
+    """One way a location could be verified.
+
+    Attributes:
+        method: The network's own name for it, such as `"PHONE_CALL"`,
+            `"EMAIL"` or `"MAIL"`.
+        display_data: Whatever the network says about it that is worth
+            showing to a person before they pick - a phone number's last few
+            digits, an email address with the rest starred out.
+    """
+
+    method: str
+    display_data: RawData = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class Verification:
+    """One verification, in progress or finished.
+
+    Attributes:
+        id: The network's identifier for this verification.
+        method: Which of the offered ways was chosen.
+        state: The network's own word for where it has got to.
+        raw: The network's untouched reply.
+    """
+
+    id: str
+    method: str
+    state: str
     raw: RawData = field(default_factory=dict, repr=False)

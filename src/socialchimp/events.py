@@ -114,6 +114,19 @@ class UpdateKind(Enum):
     working, and Meta will not tell you twice.
     """
 
+    REVIEW_CREATED = "review_created"
+    """Someone left a review."""
+
+    REVIEW_UPDATED = "review_updated"
+    """Someone changed a review they had already left - its rating, its
+    words, or both."""
+
+    QUESTION_CREATED = "question_created"
+    """Someone asked a question."""
+
+    ANSWER_CREATED = "answer_created"
+    """Someone answered a question - not necessarily the business itself."""
+
     UNKNOWN = "unknown"
     """Something we have no name for yet. Look at `raw` to see what it was."""
 
