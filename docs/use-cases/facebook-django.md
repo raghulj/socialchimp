@@ -77,11 +77,12 @@ The permissions this needs are all reviewed:
 | Permission | What for |
 |---|---|
 | `pages_show_list` | See which Pages the person manages, so you can ask which one |
-| `pages_read_engagement` | Read the Page, including comments |
+| `pages_read_engagement` | Read the Page and its posts, and the counts of reactions and comments on them |
+| `pages_read_user_content` | Read what other people wrote on the Page, such as their comments |
 | `pages_manage_posts` | Publish, schedule and delete |
 | `business_management` | Pages owned by a business rather than a person - which is most Pages worth posting to |
 
-socialchimp asks for all four by default. Until Meta's review passes, **they
+socialchimp asks for all five by default. Until Meta's review passes, **they
 work for people who have a role on the app in the portal and fail for
 everybody else.** Add yourself and a colleague as testers and you can build
 the whole thing; the first customer you hand it to will be turned away.
@@ -586,6 +587,36 @@ own pages and keep the protection - which is why the template above has
 page for choosing a Page rather than a JSON body, and because it is worth
 seeing once what the ready-made ones do.
 
+### Reading comments and likes without a webhook
+
+The webhook tells you the moment something happens. When you cannot receive
+one - or want to catch up after being down - ask instead:
+
+```python
+account = client().account("facebook:111222333")
+
+# How is one post doing? One small request; only the counts come back.
+stats = await account.read_stats(post_id)
+print(stats.likes, stats.comments, stats.shares)
+
+# What have people said on the latest posts since we last looked?
+for update in await account.fetch_updates(since=last_looked):
+    print(update.raw["message"])
+```
+
+- **`likes` is every reaction added together** - love, wow and the rest as
+  well as the thumbs-up - because that is the one number Facebook gives.
+- **`fetch_updates` looks at the latest 25 posts** by default, one request
+  each. `FacebookPlatform(recent_posts=50)` changes that. A comment on a post
+  older than that is not seen by polling; the webhook sees it whatever its age.
+- **What comes back looks the same as a webhook's**, `update.raw["message"]`
+  and all, and has the same `id`, so a `Dispatcher` with a `SeenUpdates` that
+  is fed by both answers each comment once.
+- **A video's `shares` is `None`.** Facebook has no `shares` to ask a video
+  about, and unknown is not the same as none.
+- **Reading other people's comments needs `pages_read_user_content`.**
+  Somebody who connected before socialchimp asked for it has to connect again.
+
 ---
 
 ## Running it
@@ -620,6 +651,20 @@ Then:
    `feed` field, pointed at `https://shop.example/social/webhooks/facebook`,
    with your verify token. Comment on the post you just made.
 
+A page has to be **subscribed to your app** before Meta sends anything for it,
+as well as the URL being saved in the dashboard - a second step people miss.
+With the Page's own token, which is the one on the connection:
+
+```bash
+curl -X POST "https://graph.facebook.com/v21.0/<page id>/subscribed_apps" \
+  -H "Authorization: Bearer <page token>" \
+  -d subscribed_fields=feed
+```
+
+Meta answers `{"success": true}`. socialchimp does not make this call for you.
+It needs a further permission, `pages_manage_metadata`, that not everybody
+wants to ask for, and polling with `fetch_updates` (below) needs none of it.
+
 Before any of that, try
 `uv run python examples/facebook_django/page_post_demo.py`. It runs the
 sign-in, the pause to choose a Page, a scheduled post and a comment webhook
@@ -632,7 +677,7 @@ against a fake, with no app and no waiting.
 ### "It works for me and fails for the customer"
 
 App review has not passed, or the business is not verified, or both. Every
-one of the four permissions above is reviewed, and until then they work for
+one of the five permissions above is reviewed, and until then they work for
 people with a role on the app in the developer portal and for nobody else.
 There is nothing wrong with your code. See
 [the section above](#2-wait-for-app-review).

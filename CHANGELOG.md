@@ -4,6 +4,38 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.7.2 - 2026-09-22
+
+### Added: read comments and likes on a Facebook Page
+
+- **`account.read_stats(post_id)`** now works on Facebook: `likes` (every kind
+  of reaction added together), `comments` and `shares`, in one small request.
+  A video's `shares` is `None` rather than a made-up zero.
+- **`account.fetch_updates()`** now works on Facebook: the comments on the
+  page's latest posts, as `UpdateKind.COMMENT_CREATED`. `update.raw` and
+  `update.id` match what the webhook produces, so one handler and one
+  `SeenUpdates` serve both. It reads the latest 25 posts, one request each;
+  `FacebookPlatform(recent_posts=...)` changes that, between 1 and 100.
+- **Read this first: Facebook now asks for `pages_read_user_content`.** It is
+  added to the default scopes, because reading what other people wrote on a
+  Page needs it. It is a permission Meta reviews, so add it to your app review.
+  **Anybody who connected a Page before this has to connect again** to grant
+  it; their posting keeps working in the meantime.
+- `socialchimp.platforms._meta.read_edge`, one page of any list Meta keeps
+  and the cursor for the next, for Instagram and Threads to use next.
+
+**Not confirmed against a live Page yet.** Meta's own reference pages could not
+be read in full when this was written. The comment and reaction endpoints,
+`filter`, `order` and the comment field names are confirmed from Meta's SDK
+source. Not confirmed: that `pages_read_user_content` is what gates other
+people's comments, the exact shape of the counts reply (including that a post
+nobody shared has no `shares`), the timestamp format on a comment, that
+`limit` and `after` page the comments edge as they do elsewhere on the Graph
+API, and the `limit(0).summary(true)` form used to ask for counts alone. The
+code reads defensively and keeps the whole reply on `raw`, and
+`examples/facebook_django/page_live.py` now prints both so you can check them
+against your own Page.
+
 ## 0.7.1 - unreleased
 
 ### Fixed: Instagram published a picture before it was ready

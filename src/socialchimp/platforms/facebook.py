@@ -95,11 +95,33 @@ The whole file is read into memory first, unlike YouTube, TikTok and X, which
 send a video in pieces. That is the reason for the limit below, and for
 `biggest_video_bytes` on the constructor.
 
+## Reading comments and likes
+
+Two ways in, and they can be used together.
+
+- **`read_stats`** says how one post is doing: its reactions (`likes`, which
+  counts every kind of reaction, not only the thumbs-up), its comments and
+  its shares. One request, and only the counts come back.
+- **`fetch_updates`** hands back the comments on the page's most recent posts
+  as `UpdateKind.COMMENT_CREATED`, in the same shape a webhook would have
+  produced, so one handler serves both. It looks at the latest
+  `recent_posts` posts (25 unless you say otherwise) and makes one request
+  for each, plus more where a post has more comments than one request holds.
+  A comment on an older post than that is not seen by polling - a webhook
+  sees it whatever the age.
+
+Reading what other people wrote needs `pages_read_user_content`, which is on
+top of the permission that lets you read the page itself. Somebody who
+connected before it was asked for has to connect again.
+
+Not written yet: a list of *who* reacted, and answering, hiding or deleting a
+comment. Reactions do arrive as `UpdateKind.REACTION_ADDED` through the
+webhook.
+
 ## What Facebook cannot do here
 
 - **No replies yet.** `Feature.REPLY` is off. A reply on Facebook is a
-  comment, which is a different kind of thing from a post, and it belongs in
-  its own step alongside reading comments back.
+  comment, which is a different kind of thing from a post.
 - **No big videos.** Anything over a gigabyte has to go up in pieces, over
   several requests, and that is not written yet. A video over the line is
   refused with a message saying so, rather than half-uploaded.
@@ -115,6 +137,7 @@ import httpx
 
 from socialchimp.errors import (
     AuthError,
+    ConfigError,
     InvalidPostError,
     NotSupportedError,
     PlatformError,
@@ -137,6 +160,7 @@ from socialchimp.models import (
     Post,
     PostResult,
     PostState,
+    PostStats,
     RawData,
     Token,
 )
@@ -163,6 +187,7 @@ from socialchimp.platforms._meta import (
     meta_errors,
     page_by_id,
     pages_of,
+    read_edge,
     required_text,
     sign_in_url,
     state_for,
@@ -171,7 +196,7 @@ from socialchimp.platforms._meta import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from socialchimp.errors import SocialChimpError
     from socialchimp.http import Retries
@@ -184,14 +209,18 @@ PLATFORM_NAME: Final = "facebook"
 DEFAULT_SCOPES: Final = (
     "pages_manage_posts",
     "pages_read_engagement",
+    "pages_read_user_content",
     "pages_show_list",
     "business_management",
 )
-"""The permissions posting to a page needs.
+"""The permissions posting to a page, and reading what people say on it, needs.
 
 - `pages_show_list` - see which pages the person manages, which is how we
   get to ask them which one.
-- `pages_read_engagement` - read the page, including its comments.
+- `pages_read_engagement` - read the page and its posts, and the counts of
+  reactions and comments on them.
+- `pages_read_user_content` - read what other people wrote on the page, such
+  as their comments.
 - `pages_manage_posts` - publish, schedule and delete.
 - `business_management` - needed for pages that belong to a business rather
   than to a person, which is most pages worth posting to.
@@ -225,6 +254,36 @@ is written it belongs beside `_publish_video`.
 Until then the whole file is read into memory before it is sent, so this
 number is also how much memory one video costs your own server. Lower it
 with `biggest_video_bytes` if that is more than you have.
+"""
+
+RECENT_POSTS_TO_CHECK: Final = 25
+"""How many of the page's latest posts `fetch_updates` looks at by default.
+
+Every post costs one request, every time it is asked, so this is a balance
+between how far back a comment is still noticed and how much of your hourly
+allowance a poll spends. Change it with `recent_posts` on the constructor.
+"""
+
+MOST_POSTS_TO_CHECK: Final = 100
+"""The most posts Facebook lists in one request, and so the most we ask for."""
+
+COMMENTS_PER_REQUEST: Final = 100
+"""How many comments to read at a time."""
+
+MOST_COMMENT_PAGES: Final = 10
+"""How many requests to spend on one post's comments before moving on."""
+
+COMMENT_FIELDS: Final = "id,message,created_time,from,parent{id},permalink_url"
+"""What to ask about each comment."""
+
+STATS_FIELDS: Final = (
+    "id,reactions.limit(0).summary(true),comments.limit(0).summary(true)"
+)
+"""What to ask about a post to get its numbers and nothing else.
+
+`limit(0)` asks for no reactions and no comments themselves, only the count
+that comes alongside them, so this stays one small request however popular
+the post is. `shares` is added by `read_stats` where the id is a post's.
 """
 
 SOONEST_SCHEDULE_SECONDS: Final = 10 * 60
@@ -498,6 +557,7 @@ class FacebookPlatform:
         | Feature.POST_VIDEO
         | Feature.SCHEDULE
         | Feature.DELETE_POST
+        | Feature.READ_STATS
         | Feature.PUSH_UPDATES
     )
 
@@ -508,6 +568,7 @@ class FacebookPlatform:
         retries: Retries | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         biggest_video_bytes: int = BIGGEST_SIMPLE_VIDEO,
+        recent_posts: int = RECENT_POSTS_TO_CHECK,
     ) -> None:
         """Set Facebook up for one app.
 
@@ -521,11 +582,26 @@ class FacebookPlatform:
             biggest_video_bytes: The largest video to send in one request.
                 Lower it if your own server cannot hold a big file in
                 memory - a failed upload here reads the whole thing again.
+            recent_posts: How many of the page's latest posts `fetch_updates`
+                reads comments from, between 1 and 100. Each one costs a
+                request every time you poll.
+
+        Raises:
+            ConfigError: If `recent_posts` is outside 1 to 100.
         """
+        if not 1 <= recent_posts <= MOST_POSTS_TO_CHECK:
+            message = (
+                f"recent_posts is {recent_posts}, but it has to be between 1 "
+                f"and {MOST_POSTS_TO_CHECK} - Facebook lists no more than "
+                f"that many posts in one request."
+            )
+            raise ConfigError(message)
+
         self._timeout = timeout
         self._retries = retries
         self._transport = transport
         self._biggest_video = biggest_video_bytes
+        self._recent_posts = recent_posts
         self._usage: Usage | None = None
 
     @property
@@ -1205,6 +1281,111 @@ class FacebookPlatform:
             await graph.json("DELETE", f"/{post_id}")
             self._note(graph)
 
+    async def read_stats(self, connection: Connection, post_id: str) -> PostStats:
+        """Ask Facebook how a post is doing.
+
+        One small request: Facebook is asked for the counts and for none of
+        the reactions or comments behind them.
+
+        `likes` is every kind of reaction added together - love, wow and the
+        rest as well as the thumbs-up - because that is the one number
+        Facebook gives. `comments` is what Facebook reports for the post. A
+        video's `shares` is `None`, not `0`: we have no way to ask a video
+        that, and a zero somebody can chart is worse than a gap they can see.
+        A post nobody has shared has no `shares` on it at all, and that does
+        mean `0`.
+
+        Args:
+            connection: The page the post is on.
+            post_id: Facebook's id for the post, as `publish` handed it back.
+
+        Returns:
+            Its reactions, comments and shares, under socialchimp's own
+            names: `likes`, `comments` and `shares`.
+
+        Raises:
+            NotFoundError: If there is no such post.
+            PlatformError: If Facebook answers without an id.
+            SocialChimpError: If Facebook refuses - most often because the
+                person connected before `pages_read_engagement` was asked for.
+        """
+        # A post's id is `<page>_<post>`; a video's is a bare number, and a
+        # video has no `shares` to ask about.
+        is_a_post = "_" in post_id
+        fields = f"{STATS_FIELDS},shares" if is_a_post else STATS_FIELDS
+
+        async with self._graph(connection.token.access_token) as graph:
+            reply = await graph.json("GET", f"/{post_id}", params={"fields": fields})
+            self._note(graph)
+
+        return PostStats(
+            id=required_text(
+                reply, "id", platform=PLATFORM_NAME, when="read a post's numbers"
+            ),
+            likes=_total_in(reply, "reactions"),
+            comments=_total_in(reply, "comments"),
+            shares=_shares_in(reply) if is_a_post else None,
+            raw=reply,
+        )
+
+    async def fetch_updates(
+        self,
+        connection: Connection,
+        since: datetime | None,
+    ) -> Sequence[Update]:
+        """Read the comments on the page's latest posts.
+
+        Facebook can push these to you, and this is for when you would rather
+        ask, or cannot receive a request from the internet. What comes back
+        has the same shape a webhook's would - and the same `id`, so a
+        `Dispatcher` given a `SeenUpdates` answers a comment once even when
+        it turns up both ways.
+
+        The latest `recent_posts` posts are read, one request each, newest
+        comment first. A post is left as soon as a comment no newer than
+        `since` turns up, so a poll of a quiet page costs about one request
+        per post. Replies to comments are included.
+
+        Args:
+            connection: The page to read.
+            since: Only return comments newer than this. `None` on the first
+                call, when there is no marker saved yet - the latest hundred
+                comments on each post, rather than the whole history.
+
+        Returns:
+            The comments, oldest first, as `UpdateKind.COMMENT_CREATED`.
+
+        Raises:
+            ConfigError: If the connection names no page.
+            SocialChimpError: If Facebook refuses - most often because the
+                person connected before `pages_read_user_content` was asked
+                for and has to connect again.
+        """
+        page_id = where_to_post(
+            connection,
+            key="page_id",
+            what="Facebook page",
+            platform=PLATFORM_NAME,
+        )
+
+        found: list[Update] = []
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                posts, _ = await read_edge(
+                    graph,
+                    f"/{page_id}/published_posts",
+                    params={"fields": "id", "limit": self._recent_posts},
+                )
+                for post in posts:
+                    post_id = post.get("id")
+                    if isinstance(post_id, str) and post_id:
+                        found.extend(await _comments_on(graph, page_id, post_id, since))
+            finally:
+                self._note(graph)
+
+        found.sort(key=lambda update: update.created_at)
+        return found
+
     def check_signature(
         self,
         body: bytes,
@@ -1306,6 +1487,168 @@ class FacebookPlatform:
                 carries no change at all.
         """
         return first_update(self.read_updates(body), platform=PLATFORM_NAME)
+
+
+def _total_in(reply: RawData, edge: str) -> int | None:
+    """Read the count Facebook sends alongside a list it was told not to send.
+
+    Args:
+        reply: What Facebook answered about a post.
+        edge: Which list, such as `"reactions"`.
+
+    Returns:
+        The total, or `None` when the reply has no such number - which is not
+        the same as none at all.
+    """
+    listed = reply.get(edge)
+    summary = listed.get("summary") if isinstance(listed, dict) else None
+    total = summary.get("total_count") if isinstance(summary, dict) else None
+    if isinstance(total, int) and not isinstance(total, bool):
+        return total
+    return None
+
+
+def _shares_in(reply: RawData) -> int:
+    """Read how many times a post was shared.
+
+    Args:
+        reply: What Facebook answered about a post, which was asked for its
+            `shares`.
+
+    Returns:
+        The count. Facebook leaves `shares` off a post nobody has shared
+        rather than sending a zero, so a reply without it is `0`.
+    """
+    shared = reply.get("shares")
+    count = shared.get("count") if isinstance(shared, dict) else None
+    if isinstance(count, int) and not isinstance(count, bool):
+        return count
+    return 0
+
+
+def _when_written(value: object) -> datetime | None:
+    """Read the time on a comment.
+
+    Facebook writes it as text (`2026-09-22T10:00:00+0000`) when asked for a
+    comment and as seconds since 1970 when it pushes one, so both are read.
+
+    Args:
+        value: What Facebook put in `created_time`.
+
+    Returns:
+        The moment, with a timezone, or `None` if it is not a time we can
+        read.
+    """
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return datetime.fromtimestamp(float(value), UTC)
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
+def _as_pushed(comment: RawData, *, post_id: str) -> RawData | None:
+    """Reshape a comment we asked for into the shape Facebook pushes.
+
+    An app that handles a comment should not have to care which way it
+    arrived, so `raw` looks the same either way.
+
+    Args:
+        comment: One entry from a post's comments.
+        post_id: The post it is on.
+
+    Returns:
+        What a webhook would have carried, or `None` if the comment has no id
+        or no readable time - without those there is nothing stable to name
+        it by.
+    """
+    comment_id = comment.get("id")
+    written = _when_written(comment.get("created_time"))
+    if not isinstance(comment_id, str) or not comment_id or written is None:
+        return None
+
+    parent = comment.get("parent")
+    parent_id = parent.get("id") if isinstance(parent, dict) else None
+
+    value: RawData = {
+        "item": "comment",
+        "verb": "add",
+        "comment_id": comment_id,
+        "post_id": post_id,
+        # A reply names the comment it answers; a comment on the post itself
+        # names the post.
+        "parent_id": parent_id if isinstance(parent_id, str) else post_id,
+        "message": comment.get("message", ""),
+        "created_time": int(written.timestamp()),
+    }
+    for key in ("from", "permalink_url"):
+        if key in comment:
+            value[key] = comment[key]
+    return value
+
+
+async def _comments_on(
+    graph: Graph,
+    page_id: str,
+    post_id: str,
+    since: datetime | None,
+) -> list[Update]:
+    """Read the comments on one post that are newer than a moment.
+
+    Args:
+        graph: A conversation signed with the page's token.
+        page_id: Which page.
+        post_id: Which post.
+        since: Only comments newer than this, or `None` for the latest page
+            of them.
+
+    Returns:
+        The comments as updates, in the order Facebook listed them.
+    """
+    updates: list[Update] = []
+    after: str | None = None
+    # With nothing to compare against there is no natural place to stop, so
+    # a first call reads one page - the latest - rather than a whole history.
+    most_pages = 1 if since is None else MOST_COMMENT_PAGES
+
+    for _ in range(most_pages):
+        params: dict[str, object] = {
+            # Every comment, replies included, and newest first: that is what
+            # lets us stop at the first one we have already seen.
+            "filter": "stream",
+            "order": "reverse_chronological",
+            "fields": COMMENT_FIELDS,
+            "limit": COMMENTS_PER_REQUEST,
+        }
+        if after is not None:
+            params["after"] = after
+        entries, after = await read_edge(graph, f"/{post_id}/comments", params=params)
+
+        caught_up = False
+        for entry in entries:
+            value = _as_pushed(entry, post_id=post_id)
+            if value is None:
+                continue
+            written = datetime.fromtimestamp(float(value["created_time"]), UTC)
+            if since is not None and written <= since:
+                caught_up = True
+                break
+            updates.append(
+                _update_from(
+                    Change(
+                        account_id=page_id,
+                        when=written,
+                        topic="feed",
+                        value=value,
+                    )
+                )
+            )
+        if caught_up or after is None:
+            break
+    return updates
 
 
 def _add_timing(form: dict[str, Any], when: int | None) -> None:

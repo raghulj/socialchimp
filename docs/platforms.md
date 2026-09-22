@@ -134,6 +134,18 @@ all. That review is the slowest part of getting started, so begin it early.
   gigabyte is refused with a clear message rather than half-uploaded, and
   `biggest_video_bytes` lowers that line.
 - **Alt text works.** `Media.alt_text` goes up with the picture.
+- **`read_stats` gives a post's numbers**: `likes` (every kind of reaction
+  added together), `comments` and `shares`. A video's `shares` is `None`,
+  because there is nothing to ask a video that.
+- **`fetch_updates` reads the comments** on the page's latest posts (25 by
+  default, `recent_posts` on the constructor) as `UpdateKind.COMMENT_CREATED`,
+  the same shape and the same `id` a webhook produces. It costs a request per
+  post per poll, and it does not see a comment on an older post.
+- **Reading other people's comments needs `pages_read_user_content`**, which
+  is one of the permissions Meta reviews. Anybody who connected before it was
+  asked for has to connect again.
+- **Not written yet:** who reacted, and replying to, hiding or deleting a
+  comment.
 
 ## YouTube
 

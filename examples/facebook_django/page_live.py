@@ -138,6 +138,21 @@ async def main() -> None:
         # nothing on the page to link to until the moment arrives.
         print(f"\n{result.state.name}: {result.id} at {when.isoformat()}")
 
+        # Now read back what people have said on the page's latest posts.
+        # `raw` is printed on purpose: it is the quickest way to see exactly
+        # what Facebook sent, which is worth doing once against a real page.
+        comments = await account.fetch_updates()
+        print(f"\n{len(comments)} recent comments.")
+        for update in comments[-3:]:
+            print(f"  {update.created_at:%Y-%m-%d %H:%M}  {update.raw}")
+
+        if comments:
+            stats = await account.read_stats(str(comments[-1].raw["post_id"]))
+            print(f"\nThe latest one's post: {stats.raw}")
+            print(
+                f"likes={stats.likes} comments={stats.comments} shares={stats.shares}"
+            )
+
 
 if __name__ == "__main__":
     asyncio.run(main())

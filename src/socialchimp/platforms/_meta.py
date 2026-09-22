@@ -121,6 +121,7 @@ __all__ = [
     "page_by_id",
     "pages_of",
     "quota_left",
+    "read_edge",
     "required_text",
     "sign_in_url",
     "state_for",
@@ -1168,6 +1169,36 @@ def _after_in(reply: RawData) -> str | None:
         return None
     after = cursors.get("after")
     return after if isinstance(after, str) and after else None
+
+
+async def read_edge(
+    graph: Graph,
+    path: str,
+    *,
+    params: Mapping[str, object],
+) -> tuple[list[RawData], str | None]:
+    """Read one page of any list Meta keeps, and how to ask for the next.
+
+    Every list on Meta - a page's posts, a post's comments - is shaped the
+    same way, so this is the one place that knows how. It reads a single page
+    on purpose: what to do with a page, and when to stop asking for more, is
+    different for everybody.
+
+    Args:
+        graph: A conversation carrying the token that may read this list.
+        path: Which list, such as `/1234_5678/comments`.
+        params: What to ask for. Add `after` with the cursor from the last
+            call to get the page after it.
+
+    Returns:
+        The entries on this page, and the cursor for the next one - or
+        `None` when this was the last page.
+
+    Raises:
+        SocialChimpError: If Meta refuses.
+    """
+    reply = await graph.json("GET", path, params=dict(params))
+    return _pages_in(reply), _after_in(reply)
 
 
 async def pages_of(
