@@ -234,16 +234,6 @@ def status(code: str) -> httpx.Response:
     return httpx.Response(200, json={"id": CONTAINER, "status_code": code})
 
 
-def stub_ready(network: respx.Router, *containers: str) -> None:
-    """Answer "how is that container getting on?" with "finished", for each."""
-    for container in containers:
-        network.get(f"/{container}").mock(
-            return_value=httpx.Response(
-                200, json={"id": container, "status_code": "FINISHED"}
-            )
-        )
-
-
 # ---------------------------------------------------------------------------
 # What it says it can do
 # ---------------------------------------------------------------------------
@@ -928,7 +918,6 @@ class TestPublishingAPicture:
             build = network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
             )
-            stub_ready(network, CONTAINER)
             put_out = stub_publish(network)
 
             result = await platform.publish(
@@ -954,13 +943,29 @@ class TestPublishingAPicture:
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
             )
-            stub_ready(network, CONTAINER)
             stub_publish(network)
 
             result = await platform.publish(account, Post(media=(a_picture(),)))
 
         assert result.url is None
         assert result.raw == {"id": MEDIA_ID}
+
+    async def test_a_picture_needs_no_waiting_at_all(
+        self,
+        platform: InstagramPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network:
+            stub_quota(network)
+            network.post(f"/{IG_ID}/media").mock(
+                return_value=httpx.Response(200, json={"id": CONTAINER})
+            )
+            stub_publish(network)
+            asked = network.get(f"/{CONTAINER}")
+
+            await platform.publish(account, Post(media=(a_picture(),)))
+
+        assert not asked.called
 
     async def test_it_sends_the_alt_text_where_instagram_will_read_it(
         self,
@@ -972,7 +977,6 @@ class TestPublishingAPicture:
             build = network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
             )
-            stub_ready(network, CONTAINER)
             stub_publish(network)
 
             await platform.publish(
@@ -993,7 +997,6 @@ class TestPublishingAPicture:
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
             )
-            stub_ready(network, CONTAINER)
             stub_publish(network)
 
             result = await platform.publish(plain, Post(media=(a_picture(),)))
@@ -1254,480 +1257,6 @@ class TestPublishingAVideo:
 
 
 # ---------------------------------------------------------------------------
-# Publishing: a picture is not ready the instant Instagram says it has one
-# ---------------------------------------------------------------------------
-
-# What Instagram sent, more or less, when a picture was published 0.27 seconds
-# after it was created: a 400 that is not a refusal of the post at all.
-NOT_READY: dict[str, Any] = {
-    "error": {
-        "message": "Media ID is not available",
-        "type": "OAuthException",
-        "code": 9007,
-        "error_subcode": 2207027,
-        "is_transient": False,
-        "error_user_title": "Media not ready for publishing",
-        "error_user_msg": "The media is not ready for publishing, please wait.",
-    }
-}
-
-WRONG_SHAPE: dict[str, Any] = {
-    "error": {
-        "message": "The aspect ratio is not supported",
-        "type": "OAuthException",
-        "code": 36003,
-        "error_subcode": 2207009,
-    }
-}
-
-
-@pytest.fixture
-def stopwatch(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Like `clock`, but remembers how long each wait was."""
-    moment = {"now": NOW}
-    waits: list[float] = []
-
-    async def move_on(seconds: float) -> None:
-        waits.append(seconds)
-        moment["now"] += timedelta(seconds=seconds)
-
-    monkeypatch.setattr(instagram_module, "_now", lambda: moment["now"])
-    monkeypatch.setattr(instagram_module, "_sleep", move_on)
-    monkeypatch.setattr(_meta, "_now", lambda: moment["now"])
-    return waits
-
-
-def what_went_out(network: respx.Router) -> list[str]:
-    """Every request that was made, in order, as `METHOD last-part-of-path`."""
-    return [
-        f"{call.request.method} {call.request.url.path.rsplit('/', 1)[-1]}"
-        for call in network.calls
-    ]
-
-
-def a_picture_container(network: respx.Router) -> None:
-    """Answer "start making this picture" with a container."""
-    network.post(f"/{IG_ID}/media").mock(
-        return_value=httpx.Response(200, json={"id": CONTAINER})
-    )
-
-
-class TestWaitingForAPictureToBeReady:
-    async def test_it_publishes_only_once_the_picture_says_it_is_finished(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with respx.mock(base_url=IG_GRAPH_API) as network:
-            stub_quota(network)
-            a_picture_container(network)
-            asked = network.get(f"/{CONTAINER}").mock(
-                side_effect=[status("IN_PROGRESS"), status("FINISHED")]
-            )
-            stub_publish(network)
-
-            result = await platform.publish(account, Post(media=(a_picture(),)))
-            # Read inside the block: respx forgets the router's calls on the
-            # way out (each route keeps its own).
-            went = what_went_out(network)
-
-        assert asked.call_count == 2
-        assert asked.calls[0].request.url.params["fields"] == "status_code,status"
-        assert went[-3:] == [
-            f"GET {CONTAINER}",
-            f"GET {CONTAINER}",
-            "POST media_publish",
-        ]
-        assert stopwatch == [instagram_module.PICTURE_FIRST_WAIT]
-        assert result.id == MEDIA_ID
-
-    async def test_a_picture_that_is_already_ready_costs_one_look_and_no_wait(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with respx.mock(base_url=IG_GRAPH_API) as network:
-            stub_quota(network)
-            a_picture_container(network)
-            asked = network.get(f"/{CONTAINER}").mock(side_effect=[status("FINISHED")])
-            stub_publish(network)
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert asked.call_count == 1
-        assert stopwatch == []
-
-    async def test_the_first_looks_are_quick_and_slow_down_to_a_cap(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with (
-            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
-            pytest.raises(PlatformError) as refused,
-        ):
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("IN_PROGRESS"))
-            put_out = stub_publish(network)
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert stopwatch[:6] == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0]
-        assert max(stopwatch) == instagram_module.PICTURE_LONGEST_WAIT == 30.0
-        assert sum(stopwatch) >= HOW_LONG_TO_WAIT
-        assert "may still appear" in str(refused.value)
-        assert not put_out.called
-
-    async def test_a_picture_instagram_gave_up_on_is_an_invalid_post(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with (
-            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
-            pytest.raises(InvalidPostError),
-        ):
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("ERROR"))
-            put_out = stub_publish(network)
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert not put_out.called
-
-    async def test_a_picture_instagram_threw_away_is_a_platform_error(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with (
-            respx.mock(base_url=IG_GRAPH_API, assert_all_called=False) as network,
-            pytest.raises(PlatformError, match="threw away"),
-        ):
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("EXPIRED"))
-            put_out = stub_publish(network)
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert not put_out.called
-
-    async def test_a_picture_with_no_status_at_all_is_published_not_waited_on(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        # Meta's guide does not say a picture has a status, so a reply that
-        # carries none must not turn every picture into a five minute wait.
-        with respx.mock(base_url=IG_GRAPH_API) as network:
-            stub_quota(network)
-            a_picture_container(network)
-            asked = network.get(f"/{CONTAINER}").mock(
-                return_value=httpx.Response(200, json={"id": CONTAINER})
-            )
-            put_out = stub_publish(network)
-
-            result = await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert asked.call_count == 1
-        assert put_out.called
-        assert stopwatch == []
-        assert result.id == MEDIA_ID
-
-    async def test_a_video_with_no_status_is_still_waited_on(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with respx.mock(base_url=IG_GRAPH_API) as network:
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(
-                side_effect=[
-                    httpx.Response(200, json={"id": CONTAINER}),
-                    status("FINISHED"),
-                ]
-            )
-            stub_publish(network)
-
-            await platform.publish(account, Post(media=(a_video(),)))
-
-        assert stopwatch == [HOW_OFTEN_TO_CHECK]
-
-    async def test_a_carousel_of_pictures_waits_on_every_piece_and_the_whole(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with respx.mock(base_url=IG_GRAPH_API) as network:
-            stub_quota(network)
-            network.post(f"/{IG_ID}/media").mock(
-                side_effect=[
-                    httpx.Response(200, json={"id": CONTAINER}),
-                    httpx.Response(200, json={"id": OTHER_CONTAINER}),
-                    httpx.Response(200, json={"id": PARENT_CONTAINER}),
-                ]
-            )
-            first = network.get(f"/{CONTAINER}").mock(return_value=status("FINISHED"))
-            second = network.get(f"/{OTHER_CONTAINER}").mock(
-                return_value=status("FINISHED")
-            )
-            parent = network.get(f"/{PARENT_CONTAINER}").mock(
-                side_effect=[status("IN_PROGRESS"), status("FINISHED")]
-            )
-            put_out = stub_publish(network)
-
-            await platform.publish(
-                account,
-                Post(media=(a_picture(), a_picture(OTHER_PICTURE_URL))),
-            )
-            went = what_went_out(network)
-
-        assert (first.call_count, second.call_count, parent.call_count) == (1, 1, 2)
-        assert sent_form(put_out) == {"creation_id": PARENT_CONTAINER}
-        # The parent is not asked about until the children have been named on
-        # it, and nothing is published until the parent says it is ready.
-        last_build = max(i for i, line in enumerate(went) if line == "POST media")
-        assert went.index(f"GET {PARENT_CONTAINER}") > last_build
-        assert went.index("POST media_publish") > max(
-            i for i, line in enumerate(went) if line == f"GET {PARENT_CONTAINER}"
-        )
-
-    async def test_video_is_still_looked_at_once_a_minute(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with respx.mock(base_url=IG_GRAPH_API) as network:
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(
-                side_effect=[
-                    status("IN_PROGRESS"),
-                    status("IN_PROGRESS"),
-                    status("FINISHED"),
-                ]
-            )
-            stub_publish(network)
-
-            await platform.publish(account, Post(media=(a_video(),)))
-
-        assert stopwatch == [HOW_OFTEN_TO_CHECK, HOW_OFTEN_TO_CHECK]
-
-
-class TestNotReadyYet:
-    async def test_it_is_named_and_is_the_kind_an_app_may_try_again(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with (
-            respx.mock(base_url=IG_GRAPH_API) as network,
-            pytest.raises(RateLimitError) as refused,
-        ):
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("FINISHED"))
-            put_out = network.post(f"/{IG_ID}/media_publish").mock(
-                return_value=httpx.Response(400, json=NOT_READY)
-            )
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        said = str(refused.value)
-        assert "not ready" in said
-        assert "9007" in said
-        assert refused.value.retry_after is not None
-        assert refused.value.raw == NOT_READY
-        # Once, and twice more after short waits, and then it is the app's turn.
-        assert put_out.call_count == 1 + instagram_module.TIMES_TO_PUBLISH_AGAIN
-        assert stopwatch == [instagram_module.WAIT_BEFORE_PUBLISHING_AGAIN] * (
-            instagram_module.TIMES_TO_PUBLISH_AGAIN
-        )
-
-    async def test_a_second_try_that_works_is_a_post_and_not_an_error(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with respx.mock(base_url=IG_GRAPH_API) as network:
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("FINISHED"))
-            put_out = network.post(f"/{IG_ID}/media_publish").mock(
-                side_effect=[
-                    httpx.Response(400, json=NOT_READY),
-                    httpx.Response(200, json={"id": MEDIA_ID}),
-                ]
-            )
-
-            result = await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert result.id == MEDIA_ID
-        assert put_out.call_count == 2
-        assert [sent_form(put_out, at=i) for i in (0, 1)] == [
-            {"creation_id": CONTAINER}
-        ] * 2
-        assert stopwatch == [instagram_module.WAIT_BEFORE_PUBLISHING_AGAIN]
-
-    async def test_it_is_the_same_when_instagram_hides_it_in_a_200(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with respx.mock(base_url=IG_GRAPH_API) as network:
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("FINISHED"))
-            network.post(f"/{IG_ID}/media_publish").mock(
-                side_effect=[
-                    httpx.Response(200, json=NOT_READY),
-                    httpx.Response(200, json={"id": MEDIA_ID}),
-                ]
-            )
-
-            result = await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert result.id == MEDIA_ID
-
-    @pytest.mark.parametrize(
-        "error",
-        [
-            {"code": 9007},
-            {"code": 1, "error_subcode": 2207027},
-            # Which of the two Instagram puts it under is not something to
-            # rely on, so both count - and so does 24, which is where the
-            # generic "something went wrong" was hiding it before.
-            {"code": 24, "error_subcode": 2207027},
-        ],
-    )
-    def test_either_code_names_it(self, error: dict[str, Any]) -> None:
-        named = instagram_errors(httpx.Response(400, json={"error": error}))
-
-        assert isinstance(named, RateLimitError)
-        assert named.platform == "instagram"
-
-    async def test_an_ordinary_rate_limit_is_not_tried_again_here(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with (
-            respx.mock(base_url=IG_GRAPH_API) as network,
-            pytest.raises(RateLimitError),
-        ):
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("FINISHED"))
-            put_out = network.post(f"/{IG_ID}/media_publish").mock(
-                return_value=httpx.Response(400, json=an_error(32))
-            )
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        # That one means the hour's allowance is gone, and waiting seconds
-        # does nothing about it - so it is left alone for the app to handle.
-        assert put_out.call_count == 1
-        assert stopwatch == []
-
-    async def test_a_plain_429_with_no_body_is_not_tried_again_either(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        # Nothing in it says "not ready", because nothing in it says anything.
-        with (
-            respx.mock(base_url=IG_GRAPH_API) as network,
-            pytest.raises(RateLimitError),
-        ):
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("FINISHED"))
-            put_out = network.post(f"/{IG_ID}/media_publish").mock(
-                return_value=httpx.Response(429, text="slow down")
-            )
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert put_out.call_count == 1
-        assert stopwatch == []
-
-    async def test_another_refusal_while_publishing_is_not_tried_again(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-    ) -> None:
-        with (
-            respx.mock(base_url=IG_GRAPH_API) as network,
-            pytest.raises(InvalidPostError),
-        ):
-            stub_quota(network)
-            a_picture_container(network)
-            network.get(f"/{CONTAINER}").mock(return_value=status("FINISHED"))
-            put_out = network.post(f"/{IG_ID}/media_publish").mock(
-                return_value=httpx.Response(400, json=an_error(9004))
-            )
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        assert put_out.call_count == 1
-        assert stopwatch == []
-
-
-class TestAPictureTheWrongShape:
-    @pytest.mark.parametrize(
-        "error",
-        [
-            WRONG_SHAPE["error"],
-            {"code": 1, "error_subcode": 36003},
-        ],
-    )
-    async def test_it_is_a_permanent_invalid_post_that_says_what_to_fix(
-        self,
-        platform: InstagramPlatform,
-        account: Connection,
-        stopwatch: list[float],
-        error: dict[str, Any],
-    ) -> None:
-        with (
-            respx.mock(base_url=IG_GRAPH_API) as network,
-            pytest.raises(InvalidPostError) as refused,
-        ):
-            stub_quota(network)
-            build = network.post(f"/{IG_ID}/media").mock(
-                return_value=httpx.Response(400, json={"error": error})
-            )
-
-            await platform.publish(account, Post(media=(a_picture(),)))
-
-        said = str(refused.value)
-        assert "36003" in said
-        assert "aspect ratio" in said
-        assert "4:5" in said
-        assert "1.91" in said
-        assert build.call_count == 1
-        assert stopwatch == []
-
-
-# ---------------------------------------------------------------------------
 # Publishing: carousels
 # ---------------------------------------------------------------------------
 
@@ -1747,9 +1276,6 @@ class TestPublishingACarousel:
                     httpx.Response(200, json={"id": THIRD_CONTAINER}),
                     httpx.Response(200, json={"id": PARENT_CONTAINER}),
                 ]
-            )
-            stub_ready(
-                network, CONTAINER, OTHER_CONTAINER, THIRD_CONTAINER, PARENT_CONTAINER
             )
             put_out = stub_publish(network)
 
@@ -1793,7 +1319,12 @@ class TestPublishingACarousel:
                     httpx.Response(200, json={"id": PARENT_CONTAINER}),
                 ]
             )
-            stub_ready(network, CONTAINER, OTHER_CONTAINER, PARENT_CONTAINER)
+            network.get(f"/{OTHER_CONTAINER}").mock(
+                return_value=httpx.Response(200, json={"status_code": "FINISHED"})
+            )
+            network.get(f"/{PARENT_CONTAINER}").mock(
+                return_value=httpx.Response(200, json={"status_code": "FINISHED"})
+            )
             stub_publish(network)
 
             await platform.publish(account, Post(media=(a_picture(), a_video())))
@@ -1804,7 +1335,7 @@ class TestPublishingACarousel:
             "is_carousel_item": "true",
         }
 
-    async def test_a_carousel_with_a_video_waits_on_every_piece_and_the_whole(
+    async def test_a_carousel_with_a_video_waits_on_the_whole_thing(
         self,
         platform: InstagramPlatform,
         account: Connection,
@@ -1819,9 +1350,7 @@ class TestPublishingACarousel:
                     httpx.Response(200, json={"id": PARENT_CONTAINER}),
                 ]
             )
-            picture_watched = network.get(f"/{CONTAINER}").mock(
-                return_value=httpx.Response(200, json={"status_code": "FINISHED"})
-            )
+            picture_watched = network.get(f"/{CONTAINER}")
             video_watched = network.get(f"/{OTHER_CONTAINER}").mock(
                 return_value=httpx.Response(200, json={"status_code": "FINISHED"})
             )
@@ -1832,7 +1361,7 @@ class TestPublishingACarousel:
 
             await platform.publish(account, Post(media=(a_picture(), a_video())))
 
-        assert picture_watched.called
+        assert not picture_watched.called
         assert video_watched.called
         assert parent_watched.called
 
@@ -1885,7 +1414,6 @@ class TestPublishingACarousel:
                     httpx.Response(200, json={"id": PARENT_CONTAINER}),
                 ]
             )
-            stub_ready(network, CONTAINER, OTHER_CONTAINER, PARENT_CONTAINER)
             stub_publish(network)
 
             await platform.publish(
@@ -2024,7 +1552,6 @@ class TestWhatItWillNotPublish:
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
             )
-            stub_ready(network, CONTAINER)
             stub_publish(network)
 
             result = await platform.publish(
@@ -2151,7 +1678,6 @@ class TestTheDailyLimit:
             network.post(f"/{IG_ID}/media").mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
             )
-            stub_ready(network, CONTAINER)
             stub_publish(network)
 
             result = await platform.publish(account, Post(media=(a_picture(),)))

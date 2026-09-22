@@ -139,7 +139,6 @@ from socialchimp.errors import (
     InvalidPostError,
     NotSupportedError,
     PlatformError,
-    RateLimitError,
     SocialChimpError,
     TokenExpiredError,
 )
@@ -317,38 +316,6 @@ HOW_LONG_TO_WAIT: Final = 300.0
 Giving up is not the same as failing. See `_stopped_waiting`.
 """
 
-PICTURE_FIRST_WAIT: Final = 1.0
-"""Seconds to wait before the second look at a picture, then twice that, and so on.
-
-A picture is usually ready within a second or two, and Instagram answers
-`media_publish` with error 9007 if it is asked too soon - so a picture is
-looked at straight away, and only then does the waiting start, short at first
-and doubling each time. A video is different: it is re-encoded, which takes
-minutes, and stays on `HOW_OFTEN_TO_CHECK`.
-"""
-
-PICTURE_LONGEST_WAIT: Final = 30.0
-"""The most the doubling above is allowed to grow to, in seconds."""
-
-TIMES_TO_PUBLISH_AGAIN: Final = 2
-"""How many more times to ask for a post to go out after it is "not ready".
-
-Only for error 9007, which means the post was fine and Instagram was not
-finished with it, so asking again cannot publish anything twice. See
-`_put_it_out`.
-"""
-
-WAIT_BEFORE_PUBLISHING_AGAIN: Final = 5.0
-"""Seconds to wait before each of those tries."""
-
-NOT_READY_RETRY_AFTER: Final = 30.0
-"""What `RateLimitError.retry_after` says on an error 9007 we gave up on.
-
-Meta's own error reference calls this error transient and says to try again
-within thirty seconds to two minutes. We have already spent about ten seconds
-on it by the time this is raised.
-"""
-
 TOKEN_LIFE_SECONDS: Final = 60 * 24 * 60 * 60
 """How long a long-lived Instagram token is good for: sixty days."""
 
@@ -375,13 +342,6 @@ _THROWN_AWAY: Final = "EXPIRED"
 _COULD_NOT_FETCH_THE_FILE: Final = 9004
 _VIDEO_FORMAT_IT_WILL_NOT_TAKE: Final = 2_207_026
 _NOBODY_KNOWS: Final = 24
-# "Media ID is not available": the post was made and is fine, and Instagram is
-# not finished with it. Sent as 9007, with 2207027 alongside.
-_NOT_READY_YET: Final = 9007
-_NOT_READY_YET_SUBCODE: Final = 2_207_027
-# "The aspect ratio is not supported": a property of the picture, so trying
-# again is never the fix.
-_ASPECT_RATIO_IT_WILL_NOT_TAKE: Final = 36_003
 
 # What Instagram calls a change it pushes to us, and what we call it.
 # `story_insights` is missing on purpose: it is a bundle of numbers about a
@@ -464,21 +424,6 @@ def _numbers_in(error: RawData) -> set[int]:
     }
 
 
-def _is_not_ready(error: object) -> bool:
-    """Say whether an error object is Instagram's "not finished with it yet".
-
-    Args:
-        error: The `error` object from a reply, or anything else.
-
-    Returns:
-        True for error 9007 or subcode 2207027, whichever way round Instagram
-        sent them.
-    """
-    if not isinstance(error, dict):
-        return False
-    return bool({_NOT_READY_YET, _NOT_READY_YET_SUBCODE} & _numbers_in(error))
-
-
 def _instagram_error(body: RawData) -> SocialChimpError | None:
     """Name a refusal that belongs to Instagram rather than to Meta at large.
 
@@ -495,34 +440,6 @@ def _instagram_error(body: RawData) -> SocialChimpError | None:
 
     codes = _numbers_in(error)
     raw = {"error": error}
-
-    # Looked at before 24 below, which Instagram also uses for this and which
-    # would otherwise call it "something went wrong".
-    if _is_not_ready(error):
-        message = (
-            f"Instagram was not ready to publish this yet (error "
-            f"{_NOT_READY_YET}, subcode {_NOT_READY_YET_SUBCODE}). The post "
-            f"itself is fine - it is still being made, and nothing has been "
-            f"published. Try the same post again in about "
-            f"{NOT_READY_RETRY_AFTER:.0f} seconds.{_metas_words(error)}"
-        )
-        return RateLimitError(
-            message,
-            retry_after=NOT_READY_RETRY_AFTER,
-            platform=PLATFORM_NAME,
-            raw=raw,
-        )
-
-    if _ASPECT_RATIO_IT_WILL_NOT_TAKE in codes:
-        message = (
-            f"Instagram will not take this picture's shape (error "
-            f'{_ASPECT_RATIO_IT_WILL_NOT_TAKE}, "the aspect ratio is not '
-            f'supported"). A feed picture has to be between 4:5 (0.8) and '
-            f"1.91:1 wide against its height. Crop it or add space around "
-            f"it; nothing else about the post is wrong, and sending the same "
-            f"picture again will not help.{_metas_words(error)}"
-        )
-        return InvalidPostError(message, platform=PLATFORM_NAME, raw=raw)
 
     if _COULD_NOT_FETCH_THE_FILE in codes:
         message = (
@@ -1646,7 +1563,8 @@ class InstagramPlatform:
             container = await self._start_one(
                 graph, account_id, only, caption=post.text, in_a_carousel=False
             )
-            await self._wait_for(graph, container, video=only.kind is MediaKind.VIDEO)
+            if only.kind is MediaKind.VIDEO:
+                await self._wait_for(graph, container)
             return container
 
         children: list[str] = []
@@ -1655,7 +1573,8 @@ class InstagramPlatform:
                 graph, account_id, item, caption=None, in_a_carousel=True
             )
             # Each one has to be finished before the parent can name it.
-            await self._wait_for(graph, child, video=item.kind is MediaKind.VIDEO)
+            if item.kind is MediaKind.VIDEO:
+                await self._wait_for(graph, child)
             children.append(child)
 
         reply = await _ask(
@@ -1672,13 +1591,8 @@ class InstagramPlatform:
             reply, "id", platform=PLATFORM_NAME, when="start a carousel"
         )
 
-        # The parent is a container of its own, and is as capable of not being
-        # ready as anything in it - pictures only included.
-        await self._wait_for(
-            graph,
-            parent,
-            video=any(item.kind is MediaKind.VIDEO for item in things),
-        )
+        if any(item.kind is MediaKind.VIDEO for item in things):
+            await self._wait_for(graph, parent)
         return parent
 
     async def _start_one(
@@ -1734,36 +1648,17 @@ class InstagramPlatform:
         reply = await _ask(graph, "POST", f"/{account_id}/media", data=form)
         return required_text(reply, "id", platform=PLATFORM_NAME, when="start a post")
 
-    async def _wait_for(
-        self,
-        graph: Graph,
-        container_id: str,
-        *,
-        video: bool,
-    ) -> None:
+    async def _wait_for(self, graph: Graph, container_id: str) -> None:
         """Keep asking whether Instagram has finished making a post.
 
-        Everything goes through here - a picture, every piece of a carousel
-        and the carousel itself - because Instagram answers the request that
-        starts one long before it has finished it. A picture asked about
-        straight away can still be unready: `media_publish` then fails with
-        error 9007, a quarter of a second after the container was made.
-
-        The first look is always immediate, so a container that is already
-        ready costs one request and no waiting. After that the pace depends
-        on what is being made. A picture is looked at again after a second,
-        then two, doubling up to `PICTURE_LONGEST_WAIT`. A video is
-        re-encoded, which takes minutes, so it is looked at every
-        `check_every_seconds`, as Meta's guide advises.
-
-        A picture whose reply says nothing at all about `status_code` is
-        taken to be one Instagram does not track, and is published rather than
-        waited on; if it turns out not to be ready, `_put_it_out` copes.
+        Only video goes through here. Instagram has to fetch and re-encode
+        it, which takes anywhere from seconds to minutes; a picture is ready
+        by the time the first request comes back, so asking about one would
+        cost a request and tell us nothing.
 
         Args:
             graph: A conversation signed with the account's own token.
             container_id: The half-made post to watch.
-            video: Whether it is, or holds, a video.
 
         Raises:
             InvalidPostError: If Instagram gave up on it.
@@ -1772,7 +1667,6 @@ class InstagramPlatform:
             SocialChimpError: If Instagram refuses the question.
         """
         give_up_at = _now() + timedelta(seconds=self._wait_up_to)
-        wait = self._check_every if video else PICTURE_FIRST_WAIT
 
         while True:
             reply = await _ask(
@@ -1783,8 +1677,6 @@ class InstagramPlatform:
                 # the word we branch on.
                 params={"fields": "status_code,status"},
             )
-            if not video and "status_code" not in reply:
-                return
             said = str(reply.get("status_code", ""))
 
             if said == _FINISHED:
@@ -1799,9 +1691,7 @@ class InstagramPlatform:
             # either publish something half-made or throw away a good post.
             if _now() >= give_up_at:
                 raise _stopped_waiting(container_id, self._wait_up_to)
-            await _sleep(wait)
-            if not video:
-                wait = min(wait * 2, PICTURE_LONGEST_WAIT)
+            await _sleep(self._check_every)
 
     async def _put_it_out(
         self,
@@ -1810,14 +1700,6 @@ class InstagramPlatform:
         container_id: str,
     ) -> PostResult:
         """Publish a container that Instagram has finished making.
-
-        Instagram can still say "not ready" here (error 9007) even after a
-        container reported `FINISHED`. That refusal means the post was fine
-        and nothing was published, so asking again is safe and cannot make a
-        second post. It is asked again `TIMES_TO_PUBLISH_AGAIN` times, after
-        `WAIT_BEFORE_PUBLISHING_AGAIN` seconds each, and then handed on. No
-        other refusal is asked again - not even another `RateLimitError`,
-        which means the hour's allowance is gone and seconds will not fix it.
 
         Args:
             graph: A conversation signed with the account's own token.
@@ -1828,27 +1710,15 @@ class InstagramPlatform:
             What Instagram said about the new post.
 
         Raises:
-            RateLimitError: If Instagram is still not ready after every try.
             PlatformError: If Instagram answered without an id.
             SocialChimpError: If Instagram refuses.
         """
-        tries_left = TIMES_TO_PUBLISH_AGAIN
-        while True:
-            try:
-                reply = await _ask(
-                    graph,
-                    "POST",
-                    f"/{account_id}/media_publish",
-                    data={"creation_id": container_id},
-                )
-            except RateLimitError as refused:
-                if tries_left == 0 or not _is_not_ready(refused.raw.get("error")):
-                    raise
-                tries_left -= 1
-                await _sleep(WAIT_BEFORE_PUBLISHING_AGAIN)
-                continue
-            break
-
+        reply = await _ask(
+            graph,
+            "POST",
+            f"/{account_id}/media_publish",
+            data={"creation_id": container_id},
+        )
         return PostResult(
             id=required_text(
                 reply, "id", platform=PLATFORM_NAME, when="publish a post"
