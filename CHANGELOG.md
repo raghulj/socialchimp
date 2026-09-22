@@ -4,6 +4,72 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.7.1 - unreleased
+
+### Fixed: Instagram published a picture before it was ready
+
+A single picture, one piece of a carousel, or a carousel of pictures was
+published the instant Instagram answered the request that started it, on the
+assumption that only video needs waiting for. It does not hold: a picture was
+published 0.27 seconds after its container was made and Instagram refused with
+error 9007 ("Media ID is not available"). Only video was ever checked.
+
+- **Every container is checked before it is published** - pictures, each piece
+  of a carousel, and the carousel itself. The first look is immediate, so a
+  container that is already ready costs one request and no waiting. After that
+  a picture is looked at again after 1, 2, 4... seconds, never more than 30
+  apart. Video is unchanged: once a minute, up to five minutes
+  (`check_every_seconds` and `wait_up_to_seconds`).
+- **Error 9007 (subcode 2207027) is a `RateLimitError`**, with
+  `retry_after=30`, instead of an unnamed `PlatformError`. It is the existing
+  "wait, then try again" error, so an app that already treats
+  `RateLimitError` as transient needs no change. Nothing was published when
+  this comes back, so the same post can be sent again. `publish` also asks
+  again twice on its own, five seconds apart, before it raises it. No other
+  refusal is asked again, including an ordinary `RateLimitError`.
+- **Error 36003 ("The aspect ratio is not supported") is an
+  `InvalidPostError`** saying feed pictures have to be between 4:5 and 1.91:1.
+- **A picture whose status reply has no `status_code` at all** is published
+  rather than waited on for five minutes. Meta's guide does not say a picture
+  has one; the retry above covers it if it turns out not to be ready.
+
+### Fixed: the same assumption, on Threads
+
+Threads made the identical assumption for the identical reason - a container
+answers the request that starts it long before Threads may be finished with
+it, and only video was ever checked. The container shape is the same as
+Instagram's, so it is fixed the same way:
+
+- **Every container is checked before it is published** - words, a picture,
+  each piece of a carousel, and the carousel itself. The first look is
+  immediate, so a container that is already ready costs one request and no
+  waiting. After that, anything that is not video is looked at again after 1,
+  2, 4... seconds, never more than 30 apart. Video is unchanged: every 30
+  seconds, up to five minutes.
+- **A non-video container whose reply has no `status` at all** is published
+  rather than waited on for five minutes, the same reasoning as Instagram's
+  picture.
+
+**Not done for Threads, and this is worth reading before you rely on it.**
+Nothing here names a Threads "not ready" error the way Instagram's 9007 is
+named. Two rounds of research looked for one: the first found a number (code
+24, subcode 4279009) from unofficial, non-Meta repositories; the second could
+not confirm that number anywhere in Meta's own documentation, called it likely
+wrong, and could not find any Threads-documented code for this at all. Rather
+than name something unverified in a released library, `_put_it_out` here has
+no retry, and a "not ready" reply - if Threads sends one - surfaces as a plain
+`PlatformError` with the whole reply on it, the same as any code socialchimp
+has no better name for yet. The polling above should make this rare in
+practice, the same as it did for Instagram, but it is not closed off the way
+Instagram's is. If you see one, the error's `raw` has exactly what Threads
+said - that is what would let this be named properly.
+
+Likewise, no numeric code is named here for an unsupported aspect ratio on
+Threads (Instagram's 36003); Meta's own error list gives Threads' aspect
+ratio problem a name (`INVALID_ASPEC_RATIO`, sic) but no number, and it comes
+back already readable, on `error_message`, through the existing "Threads gave
+up" message when it is caught by polling.
+
 ## 0.7.0 - 2026-09-18
 
 ### Added: TikTok Business

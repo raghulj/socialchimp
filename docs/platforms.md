@@ -186,12 +186,23 @@ involved anywhere, and signing in never asks which account.
   with an explanation. Put the file somewhere public first.
 - **There is no text-only post.** Every post needs a picture or a video.
 - **Publishing is two calls with a wait in between**: build the post, wait for
-  Instagram to finish with it, then publish. socialchimp does the waiting. If
-  it runs out of patience you get a message saying the post *may still appear*
-  — because it might, and being told it failed when it later succeeds is
-  worse than being told we do not know. Because the waiting happens inside
-  `publish`, a post here is live by the time you get it: you never see
-  `PostState.PROCESSING`, and there is no `check_state` to need.
+  Instagram to finish with it, then publish. socialchimp does the waiting, for
+  **pictures as well as video**, and for every piece of a carousel and the
+  carousel itself. A picture is looked at straight away and then after 1, 2,
+  4... seconds (never more than 30 apart); a video every minute, as Meta's
+  guide advises. If it runs out of patience you get a message saying the post
+  *may still appear* — because it might, and being told it failed when it
+  later succeeds is worse than being told we do not know. Because the waiting
+  happens inside `publish`, a post here is live by the time you get it: you
+  never see `PostState.PROCESSING`, and there is no `check_state` to need.
+- **"Not ready yet" (error 9007) is a `RateLimitError`.** Instagram can still
+  say it after a container reported `FINISHED`. Nothing was published, so
+  socialchimp asks again twice, five seconds apart; if it is still not ready
+  you get a `RateLimitError` with `retry_after=30`, and trying the same post
+  again is safe.
+- **A picture with the wrong shape is an `InvalidPostError`** (error 36003).
+  Feed pictures have to be between 4:5 and 1.91:1, and sending the same one
+  again will not help.
 - **Post options**: `carousel` (only needed to force a single picture into a
   carousel; two or more already make one). 2 to 10 items.
 - **The daily posting limit is read, not written down.** Meta's own
@@ -376,11 +387,21 @@ Almost nothing else about it lives where the rest of Meta lives:
   an explanation.
 - **It does take a post of words alone**, which Instagram does not.
 - **Publishing is two calls with a wait in between**: build the post, wait for
-  Threads to finish with it, then publish. socialchimp does the waiting, and
-  only where there is video — words and pictures are ready straight away. If
-  it runs out of patience you get a message saying the post *may still appear*.
-  As on Instagram, that means a post here is live by the time you get it: no
-  `PostState.PROCESSING`, and no `check_state` to need.
+  Threads to finish with it, then publish. socialchimp does the waiting for
+  **every container** — words and a picture included, not only video, since a
+  container answers the request that made it before Threads may be finished
+  with it. A container that is already ready costs one extra look and no
+  waiting; a picture (or words) is then looked at again after 1, 2, 4...
+  seconds, never more than 30 apart, and video every 30 seconds as before. If
+  it runs out of patience you get a message saying the post *may still
+  appear*. As on Instagram, that means a post here is live by the time you get
+  it: no `PostState.PROCESSING`, and no `check_state` to need.
+- **Unlike Instagram, "not ready" has no name here.** Instagram's identical
+  container shape can refuse publishing with a named, retryable error a
+  moment after the container is made; nothing here confirms Threads returns
+  the same error, or any particular one, so none is named. The waiting above
+  should make it rare, and if Threads does refuse this way it still surfaces,
+  as a plain error with the whole reply kept on it.
 - **The length limit is 500 bytes, not 500 characters.** Threads' own
   documentation says characters and means bytes, so an emoji costs four and
   500 emoji are 2,000. socialchimp counts the way Threads does.
