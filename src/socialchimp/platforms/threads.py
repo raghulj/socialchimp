@@ -68,17 +68,12 @@ named outright - TEXT, IMAGE, VIDEO or CAROUSEL - and **TEXT is a real
 kind**, so Threads takes a post of words alone where Instagram does not.
 `Feature.POST_TEXT` is on.
 
-Step 2 happens for every container, not only video - a picture container
-answered `media_publish` with "not ready" on Instagram's identical shape a
-fraction of a second after it was made, so nothing here assumes a container
-is ready the instant step 1 answers. A container that already is costs one
-extra look and no waiting; video is looked at every thirty seconds as
-before, and everything else after 1, 2, 4... seconds, never more than 30
-apart.
+Step 2 only happens where it is needed. Threads has to fetch and re-encode a
+**video**; text and pictures are ready by the time step 1 answers, so asking
+about one would cost a request and tell us nothing.
 
 A carousel is two to twenty pieces: each becomes its own container, then a
-parent names them all, then the parent is published - and the parent is
-looked at too, whatever it is made of.
+parent names them all, then the parent is published.
 
 Threads fetches every picture and video itself, from a web address, exactly
 as Instagram does - so `Media.from_url(...)` works and `Media.from_file` and
@@ -306,23 +301,6 @@ HOW_LONG_TO_WAIT: Final = 300.0
 
 Giving up is not the same as failing. See `_stopped_waiting`.
 """
-
-PICTURE_FIRST_WAIT: Final = 1.0
-"""Seconds before the second look at a container that is not a video, then
-twice that, and so on.
-
-Applies to text and to a picture. Instagram's identical container shape
-answers `media_publish` with "not ready" when a picture is published the
-instant its container is made - the container was still not finished with,
-0.27 seconds after it was created, in a real log. Nothing here confirms
-Threads returns that same error, but the container is made the same way, so
-it is looked at before being published rather than assumed ready, the same
-as Instagram. A container that is already ready costs one request and no
-wait.
-"""
-
-PICTURE_LONGEST_WAIT: Final = 30.0
-"""The most the doubling above is allowed to grow to, in seconds."""
 
 TOKEN_LIFE_SECONDS: Final = 60 * 24 * 60 * 60
 """How long a long-lived Threads token is good for: sixty days."""
@@ -1559,16 +1537,15 @@ class ThreadsPlatform:
             SocialChimpError: If Threads refuses one of the requests.
         """
         if not things:
-            container = await self._start(
+            return await self._start(
                 graph, account_id, {"media_type": _TEXT}, post.text
             )
-            await self._wait_for(graph, container, video=False)
-            return container
 
         if not as_carousel:
             only = things[0]
             container = await self._start(graph, account_id, _form_for(only), post.text)
-            await self._wait_for(graph, container, video=only.kind is MediaKind.VIDEO)
+            if only.kind is MediaKind.VIDEO:
+                await self._wait_for(graph, container)
             return container
 
         children: list[str] = []
@@ -1578,7 +1555,8 @@ class ThreadsPlatform:
             # No text on a piece: the words belong to the carousel.
             child = await self._start(graph, account_id, form, None)
             # Each one has to be finished before the parent can name it.
-            await self._wait_for(graph, child, video=item.kind is MediaKind.VIDEO)
+            if item.kind is MediaKind.VIDEO:
+                await self._wait_for(graph, child)
             children.append(child)
 
         parent = await self._start(
@@ -1587,13 +1565,8 @@ class ThreadsPlatform:
             {"media_type": _CAROUSEL, "children": ",".join(children)},
             post.text,
         )
-        # The parent is a container of its own, and as capable of not being
-        # finished with as anything inside it - pictures and words included.
-        await self._wait_for(
-            graph,
-            parent,
-            video=any(item.kind is MediaKind.VIDEO for item in things),
-        )
+        if any(item.kind is MediaKind.VIDEO for item in things):
+            await self._wait_for(graph, parent)
         return parent
 
     async def _start(
@@ -1627,37 +1600,17 @@ class ThreadsPlatform:
         reply = await graph.json("POST", f"/{account_id}/threads", data=form)
         return required_text(reply, "id", platform=PLATFORM_NAME, when="start a post")
 
-    async def _wait_for(
-        self,
-        graph: Graph,
-        container_id: str,
-        *,
-        video: bool,
-    ) -> None:
+    async def _wait_for(self, graph: Graph, container_id: str) -> None:
         """Keep asking whether Threads has finished making a post.
 
-        Every container goes through here - words, a picture, each piece of a
-        carousel and the carousel itself - because a container answers the
-        request that made it long before Threads may be finished with it.
-        Instagram's identical shape can refuse `media_publish` a fraction of
-        a second after the container was made; this looks before publishing
-        rather than assume any of them are ready, the way it already did for
-        video.
-
-        The first look is always immediate, so a container that is already
-        ready costs one request and no waiting. After that, video is looked
-        at every `check_every_seconds`, as before. Anything else is looked at
-        again after a second, then two, doubling up to `PICTURE_LONGEST_WAIT`.
-
-        A non-video container whose reply carries no `status` at all is
-        published rather than waited on: nothing here confirms every kind of
-        container reports one, and waiting the full five minutes on a word
-        Threads never sends would be worse than publishing early.
+        Only video goes through here. Threads has to fetch and re-encode it,
+        which takes anywhere from seconds to minutes; words and a picture are
+        ready by the time the first request comes back, so asking about one
+        would cost a request and tell us nothing.
 
         Args:
             graph: A conversation signed with the account's token.
             container_id: The half-made post to watch.
-            video: Whether it is, or holds, a video.
 
         Raises:
             InvalidPostError: If Threads gave up on it.
@@ -1666,7 +1619,6 @@ class ThreadsPlatform:
             SocialChimpError: If Threads refuses the question.
         """
         give_up_at = _now() + timedelta(seconds=self._wait_up_to)
-        wait = self._check_every if video else PICTURE_FIRST_WAIT
 
         while True:
             reply = await graph.json(
@@ -1676,8 +1628,6 @@ class ThreadsPlatform:
                 # sentence a person can read when it went wrong.
                 params={"fields": "status,error_message"},
             )
-            if not video and "status" not in reply:
-                return
             said = str(reply.get("status", ""))
 
             if said in (_FINISHED, _ALREADY_OUT):
@@ -1692,9 +1642,7 @@ class ThreadsPlatform:
             # either publish something half-made or throw away a good post.
             if _now() >= give_up_at:
                 raise _stopped_waiting(container_id, self._wait_up_to)
-            await _sleep(wait)
-            if not video:
-                wait = min(wait * 2, PICTURE_LONGEST_WAIT)
+            await _sleep(self._check_every)
 
     async def _put_it_out(
         self,
