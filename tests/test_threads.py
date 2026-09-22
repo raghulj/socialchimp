@@ -115,6 +115,14 @@ def api(path: str) -> str:
     return f"/v1.0{path}"
 
 
+def stub_ready(network: respx.Router, *containers: str) -> None:
+    """Answer "how is that container getting on?" with "finished", for each."""
+    for container in containers:
+        network.get(api(f"/{container}")).mock(
+            return_value=httpx.Response(200, json={"status": "FINISHED"})
+        )
+
+
 @pytest.fixture
 def platform() -> ThreadsPlatform:
     """A platform that gives up after one try."""
@@ -945,6 +953,7 @@ class TestPublishingWords:
     ) -> None:
         with respx.mock(base_url=THREADS_HOST) as network:
             routes = a_publishing_network(network)
+            stub_ready(network, CONTAINER)
             build = routes["build"]
             publish = routes["publish"]
 
@@ -964,13 +973,13 @@ class TestPublishingWords:
         # another request to find out.
         assert result.url is None
 
-    async def test_a_text_post_is_not_waited_on(
+    async def test_a_text_post_already_finished_costs_one_look_and_no_wait(
         self,
         platform: ThreadsPlatform,
         account: Connection,
         clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=THREADS_HOST, assert_all_called=False) as network:
+        with respx.mock(base_url=THREADS_HOST) as network:
             a_publishing_network(network)
             looking = network.get(api(f"/{CONTAINER}")).mock(
                 return_value=httpx.Response(200, json={"status": "FINISHED"})
@@ -978,7 +987,8 @@ class TestPublishingWords:
 
             await platform.publish(account, Post(text="Fresh cakes today"))
 
-        assert not looking.called
+        assert looking.call_count == 1
+        assert clock["now"] == NOW
 
     async def test_five_hundred_bytes_of_plain_letters_is_allowed(
         self,
@@ -988,6 +998,7 @@ class TestPublishingWords:
     ) -> None:
         with respx.mock(base_url=THREADS_HOST) as network:
             a_publishing_network(network)
+            stub_ready(network, CONTAINER)
 
             result = await platform.publish(account, Post(text="x" * MAX_TEXT_BYTES))
 
@@ -1038,6 +1049,7 @@ class TestPublishingWords:
 
         with respx.mock(base_url=THREADS_HOST) as network:
             a_publishing_network(network)
+            stub_ready(network, CONTAINER)
 
             result = await platform.publish(account, Post(text=cakes))
 
@@ -1053,6 +1065,7 @@ class TestPublishingAPicture:
     ) -> None:
         with respx.mock(base_url=THREADS_HOST) as network:
             build = a_publishing_network(network)["build"]
+            stub_ready(network, CONTAINER)
 
             result = await platform.publish(
                 account,
@@ -1071,13 +1084,13 @@ class TestPublishingAPicture:
 
         assert result.id == POST_ID
 
-    async def test_a_picture_is_not_waited_on_either(
+    async def test_a_picture_already_finished_costs_one_look_and_no_wait(
         self,
         platform: ThreadsPlatform,
         account: Connection,
         clock: dict[str, datetime],
     ) -> None:
-        with respx.mock(base_url=THREADS_HOST, assert_all_called=False) as network:
+        with respx.mock(base_url=THREADS_HOST) as network:
             a_publishing_network(network)
             looking = network.get(api(f"/{CONTAINER}")).mock(
                 return_value=httpx.Response(200, json={"status": "FINISHED"})
@@ -1087,7 +1100,8 @@ class TestPublishingAPicture:
                 account, Post(text="Cake", media=(Media.from_url(PICTURE_URL),))
             )
 
-        assert not looking.called
+        assert looking.call_count == 1
+        assert clock["now"] == NOW
 
     async def test_a_file_from_disk_is_refused_with_what_to_do_instead(
         self,
@@ -1282,6 +1296,7 @@ class TestPublishingACarousel:
             )
             build = routes["build"]
             publish = routes["publish"]
+            stub_ready(network, CONTAINER, OTHER_CONTAINER, PARENT_CONTAINER)
 
             result = await platform.publish(
                 account,
@@ -1312,7 +1327,7 @@ class TestPublishingACarousel:
         assert put_out["creation_id"] == PARENT_CONTAINER
         assert result.id == POST_ID
 
-    async def test_a_carousel_with_a_video_in_it_is_waited_on(
+    async def test_a_carousel_with_a_video_in_it_waits_on_every_piece_and_the_whole(
         self,
         platform: ThreadsPlatform,
         account: Connection,
@@ -1326,6 +1341,9 @@ class TestPublishingACarousel:
                     httpx.Response(200, json={"id": OTHER_CONTAINER}),
                     httpx.Response(200, json={"id": PARENT_CONTAINER}),
                 ],
+            )
+            picture = network.get(api(f"/{CONTAINER}")).mock(
+                return_value=httpx.Response(200, json={"status": "FINISHED"})
             )
             piece = network.get(api(f"/{OTHER_CONTAINER}")).mock(
                 return_value=httpx.Response(200, json={"status": "FINISHED"})
@@ -1341,6 +1359,8 @@ class TestPublishingACarousel:
                     media=(Media.from_url(PICTURE_URL), Media.from_url(VIDEO_URL)),
                 ),
             )
+
+        assert picture.called
 
         assert piece.called
         assert parent.called
@@ -1392,6 +1412,199 @@ class TestPublishingACarousel:
                 )
 
             assert not network.calls
+
+
+# ---------------------------------------------------------------------------
+# Publishing: a container is not ready the instant Threads says it has one
+# ---------------------------------------------------------------------------
+
+
+class TestWaitingForANonVideoContainer:
+    async def test_it_publishes_only_once_the_container_says_finished(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            a_publishing_network(network)
+            looking = network.get(api(f"/{CONTAINER}")).mock(
+                side_effect=[
+                    httpx.Response(200, json={"status": "IN_PROGRESS"}),
+                    httpx.Response(200, json={"status": "FINISHED"}),
+                ]
+            )
+
+            result = await platform.publish(account, Post(text="Fresh cakes today"))
+
+        assert looking.call_count == 2
+        assert clock["now"] == NOW + timedelta(
+            seconds=threads_module.PICTURE_FIRST_WAIT
+        )
+        assert result.id == POST_ID
+
+    async def test_a_picture_container_already_finished_costs_one_look(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            a_publishing_network(network)
+            looking = network.get(api(f"/{CONTAINER}")).mock(
+                return_value=httpx.Response(200, json={"status": "FINISHED"})
+            )
+
+            await platform.publish(
+                account, Post(text="Cake", media=(Media.from_url(PICTURE_URL),))
+            )
+
+        assert looking.call_count == 1
+        assert clock["now"] == NOW
+
+    async def test_the_looks_are_quick_at_first_and_slow_down_to_a_cap(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST, assert_all_called=False) as network:
+            a_publishing_network(network)
+            network.get(api(f"/{CONTAINER}")).mock(
+                return_value=httpx.Response(200, json={"status": "IN_PROGRESS"})
+            )
+            publish = network.post(api(f"/{USER_ID}/threads_publish"))
+
+            with pytest.raises(PlatformError, match="may still appear"):
+                await platform.publish(account, Post(text="Cake"))
+
+        assert clock["now"] >= NOW + timedelta(seconds=HOW_LONG_TO_WAIT)
+        assert not publish.called
+
+    async def test_a_container_that_gave_up_is_an_invalid_post(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST, assert_all_called=False) as network:
+            a_publishing_network(network)
+            network.get(api(f"/{CONTAINER}")).mock(
+                return_value=httpx.Response(
+                    200, json={"status": "ERROR", "error_message": "FILE_INVALID"}
+                )
+            )
+            publish = network.post(api(f"/{USER_ID}/threads_publish"))
+
+            with pytest.raises(InvalidPostError, match="FILE_INVALID"):
+                await platform.publish(
+                    account, Post(text="Cake", media=(Media.from_url(PICTURE_URL),))
+                )
+
+        assert not publish.called
+
+    async def test_a_container_that_was_thrown_away_says_to_send_it_again(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST, assert_all_called=False) as network:
+            a_publishing_network(network)
+            network.get(api(f"/{CONTAINER}")).mock(
+                return_value=httpx.Response(200, json={"status": "EXPIRED"})
+            )
+            publish = network.post(api(f"/{USER_ID}/threads_publish"))
+
+            with pytest.raises(PlatformError, match="24 hours"):
+                await platform.publish(account, Post(text="Cake"))
+
+        assert not publish.called
+
+    async def test_a_container_with_no_status_at_all_is_published_not_waited_on(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            a_publishing_network(network)
+            looking = network.get(api(f"/{CONTAINER}")).mock(
+                return_value=httpx.Response(200, json={"id": CONTAINER})
+            )
+
+            result = await platform.publish(account, Post(text="Cake"))
+
+        assert looking.call_count == 1
+        assert clock["now"] == NOW
+        assert result.id == POST_ID
+
+    async def test_a_video_with_no_status_is_still_waited_on_the_slow_way(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            a_publishing_network(network)
+            network.get(api(f"/{CONTAINER}")).mock(
+                side_effect=[
+                    httpx.Response(200, json={"id": CONTAINER}),
+                    httpx.Response(200, json={"status": "FINISHED"}),
+                ]
+            )
+
+            await platform.publish(
+                account, Post(text="Baking", media=(Media.from_url(VIDEO_URL),))
+            )
+
+        assert clock["now"] == NOW + timedelta(seconds=HOW_OFTEN_TO_CHECK)
+
+    async def test_an_image_only_carousel_waits_on_every_child_and_the_parent(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            a_publishing_network(
+                network,
+                containers=[
+                    httpx.Response(200, json={"id": CONTAINER}),
+                    httpx.Response(200, json={"id": OTHER_CONTAINER}),
+                    httpx.Response(200, json={"id": PARENT_CONTAINER}),
+                ],
+            )
+            first = network.get(api(f"/{CONTAINER}")).mock(
+                return_value=httpx.Response(200, json={"status": "FINISHED"})
+            )
+            second = network.get(api(f"/{OTHER_CONTAINER}")).mock(
+                return_value=httpx.Response(200, json={"status": "FINISHED"})
+            )
+            parent = network.get(api(f"/{PARENT_CONTAINER}")).mock(
+                side_effect=[
+                    httpx.Response(200, json={"status": "IN_PROGRESS"}),
+                    httpx.Response(200, json={"status": "FINISHED"}),
+                ]
+            )
+            publish = network.post(api(f"/{USER_ID}/threads_publish")).mock(
+                return_value=httpx.Response(200, json={"id": POST_ID})
+            )
+
+            await platform.publish(
+                account,
+                Post(
+                    text="Two cakes",
+                    media=(
+                        Media.from_url(PICTURE_URL),
+                        Media.from_url(OTHER_PICTURE_URL),
+                    ),
+                ),
+            )
+
+        assert (first.call_count, second.call_count, parent.call_count) == (1, 1, 2)
+        put_out = dict(httpx.QueryParams(publish.calls.last.request.content.decode()))
+        assert put_out["creation_id"] == PARENT_CONTAINER
 
 
 class TestSettingsOnAPost:
@@ -1483,6 +1696,7 @@ class TestWhenThreadsSaysNo:
             network.post(api(f"/{USER_ID}/threads")).mock(
                 return_value=httpx.Response(200, json={"id": CONTAINER})
             )
+            stub_ready(network, CONTAINER)
             network.post(api(f"/{USER_ID}/threads_publish")).mock(
                 return_value=httpx.Response(200, json={"ok": True})
             )
@@ -1849,6 +2063,7 @@ class TestThreadsBehavesLikeTheOthers(PlatformChecks):
             {
                 f"GET /v1.0/{USER_ID}/threads_publishing_limit": ALLOWANCE,
                 f"POST /v1.0/{USER_ID}/threads": {"id": CONTAINER},
+                f"GET /v1.0/{CONTAINER}": {"status": "FINISHED"},
                 f"POST /v1.0/{USER_ID}/threads_publish": {"id": POST_ID},
             }
         )
