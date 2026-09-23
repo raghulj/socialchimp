@@ -426,10 +426,121 @@ Almost nothing else about it lives where the rest of Meta lives:
   both numbers.
 - **Deleting works**, which it does not on Instagram. 100 a day per account.
 - **No scheduling** — there is no call for it.
+- **Replying works.** `Post(text=..., reply_to=post_id)` sends `reply_to_id`
+  on the top-level container — the whole post, or a carousel's parent, never
+  one of its pieces — and it is counted against the 1,000-a-day reply
+  allowance rather than the 250-a-day post one. See Meta's
+  [Create replies](https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/create-replies).
+  **You can only reply where you own the root post**, unless the app also
+  holds `threads_manage_mentions` or `threads_keyword_search` — neither is a
+  default scope, so add one to `scopes` at sign-in to answer a mention on
+  somebody else's post.
+- **Reading replies back** is `account.read_replies(post_id)` — the
+  top-level replies, or every depth flattened with
+  `whole_conversation=True` — and `account.fetch_updates(since)`, which polls
+  the account's latest posts instead. Both build the same `Update` shape the
+  `replies` webhook does, so one handler and one `SeenUpdates` answer a reply
+  once whichever way it arrived. See Meta's
+  [Replies and conversations](https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/replies-and-conversations).
+- **Answering and moderating** go through the same names every platform
+  here uses: `account.reply_to_update(update, text)` publishes a reply to a
+  `replies` or `mentions` update, and `account.set_comment_visibility(update,
+  hidden=True)` hides one — `POST /{id}/manage_reply`, which only works on a
+  top-level reply and hides whatever was said back to it along with it. See
+  Meta's [Reply management](https://developers.facebook.com/docs/threads/reply-management).
+  `account.delete_comment(update)` always refuses: Threads has no call for
+  removing somebody else's reply, only for hiding it.
+- **A post's own numbers**: `account.read_stats(post_id)` reads six metrics
+  in one request and maps three of them — `likes`, `replies` as `comments`,
+  `reposts` as `shares`. `views`, `quotes` and the share button's own count
+  stay on `raw`. See Meta's [Insights](https://developers.facebook.com/docs/threads/insights).
 - **Webhooks are narrower than the rest of Meta's**: only `replies`,
   `mentions`, `publish` and `delete`, and **nothing at all where a private
-  account is involved**. Verify with `check_signature` on the raw bytes,
-  before anything parses them.
+  account is involved** — a reply or a mention on media owned by a private
+  account never arrives, whatever your app subscribes to. Verify with
+  `check_signature` on the raw bytes, before anything parses them. See
+  Meta's [Threads webhooks](https://developers.facebook.com/docs/threads/webhooks).
+- **`fetch_updates` costs `1 + recent_posts` requests at most, every poll** —
+  one to list the account's latest posts, one per post to read its
+  conversation. `recent_posts` is 25 by default; lower it if that is more
+  than your allowance wants to spend on a timer.
+
+### Replies and numbers, worked
+
+Posting a reply is an ordinary post with `reply_to` set:
+
+```python
+result = await account.post(
+    Post(text="Thanks for the kind words!", reply_to="17900000000000000")
+)
+```
+
+Reading the replies to one post — top-level only, or the whole thread:
+
+```python
+top_level = await account.read_replies("17900000000000000")
+whole_thread = await account.read_replies("17900000000000000", whole_conversation=True)
+```
+
+Polling an account for what is new, the way `Poller` calls it, costs one
+request to list the account's recent posts and one per post:
+
+```python
+new_replies = await account.fetch_updates(since=last_checked_at)
+```
+
+Answering one, and hiding one that should not be public:
+
+```python
+await account.reply_to_update(update, "Glad you liked it!")
+await account.set_comment_visibility(update, hidden=True)
+```
+
+A post's numbers, with the three unmodelled metrics read off `raw`:
+
+```python
+stats = await account.read_stats("17900000000000000")
+print(stats.likes, stats.comments, stats.shares)  # likes, replies, reposts
+
+by_name = {entry["name"]: entry for entry in stats.raw["data"]}
+views = by_name.get("views")
+quotes = by_name.get("quotes")
+share_button = by_name.get("shares")  # the button, not the "reposts" metric
+```
+
+**What a `replies` webhook looks like**, and what socialchimp makes of it:
+
+```json
+{
+  "app_id": "123456",
+  "topic": "moderate",
+  "target_id": "78901",
+  "time": 1723226877,
+  "subscription_id": "234567",
+  "has_uid_field": false,
+  "values": {
+    "field": "replies",
+    "value": {
+      "id": "8901234",
+      "username": "test_username",
+      "text": "Reply",
+      "media_type": "TEXT_POST",
+      "permalink": "https://www.threads.net/@test_username/post/Pp",
+      "replied_to": {"id": "567890"},
+      "root_post": {"id": "123456", "owner_id": "123456"},
+      "shortcode": "Pp",
+      "timestamp": "2024-08-07T10:33:16+0000"
+    }
+  }
+}
+```
+
+`update.id` is `"78901:replies:8901234"` — the account, the field and the
+reply's own id, so the same reply pushed twice makes the same update.
+`update.raw` is exactly the `value` object above, whether that update came
+from this webhook, `read_replies`, or `fetch_updates` — so a handler reads
+`update.raw["text"]` the same way regardless of how the reply was heard
+about.
 
 ---
 

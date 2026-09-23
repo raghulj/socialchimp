@@ -4,6 +4,50 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.7.3 - unreleased
+
+### Added: reply to a Thread, read its replies, and read a post's numbers
+
+- **`account.post(Post(text=..., reply_to=post_id))`** now works on Threads:
+  `reply_to_id` goes on the top-level container - the whole post, or a
+  carousel's parent, never one of its pieces - and it is checked against the
+  1,000-a-day reply allowance rather than the 250-a-day post one, so
+  answering somebody never spends one of your 250 posts. `Feature.REPLY` is
+  on. **Read this first: Threads only lets you reply where you own the root
+  post**, unless the app also holds `threads_manage_mentions` or
+  `threads_keyword_search` - neither is in the default scopes, so add one to
+  `scopes` at sign-in to answer a mention on somebody else's post.
+- **`account.read_replies(post_id)`** is new, on every platform through
+  `socialchimp.platform.CanReadReplies`: the top-level replies to one post,
+  or every depth flattened with `whole_conversation=True`. Threads is the
+  first to implement it.
+- **`account.fetch_updates()`** now works on Threads: the replies on the
+  account's latest posts, as `UpdateKind.COMMENT_CREATED`. Same `update.id`
+  and `update.raw` as the `replies` webhook and as `read_replies`, so one
+  handler and one `SeenUpdates` serve all three. Reads the latest 25 posts by
+  default, `ThreadsPlatform(recent_posts=...)` changes that between 1 and
+  100; costs `1 + recent_posts` requests at most, every poll.
+- **`account.reply_to_update(update, text)`** now works on Threads, for a
+  `replies` or a `mentions` update - it publishes a reply through `post`
+  itself, so the allowance check and the waiting both happen. Anything else
+  is refused by name.
+- **`account.set_comment_visibility(update, hidden=True)`** now works on
+  Threads: `POST /{id}/manage_reply`. Meta says it only works on a top-level
+  reply, and hiding one hides whatever was said back to it along with it.
+  `account.delete_comment(update)` always refuses on Threads - there is no
+  call for removing somebody else's reply, only for hiding it.
+- **`account.read_stats(post_id)`** now works on Threads: `likes`, `replies`
+  as `comments`, and `reposts` as `shares`, from one request to
+  `GET /{post_id}/insights`. `views`, `quotes` and the share button's own
+  count are not modelled on `PostStats`; they are still on `raw`.
+  `Feature.READ_STATS` is on.
+
+**Not confirmed against a live account yet.** The reply, `read_replies`,
+`fetch_updates` and `insights` shapes here are built from Meta's own
+published reference pages rather than watched against a real response - see
+the links in `src/socialchimp/platforms/threads.py` and in
+`docs/platforms.md`'s Threads section.
+
 ## 0.7.2 - 2026-09-22
 
 ### Added: read comments and likes on a Facebook Page
