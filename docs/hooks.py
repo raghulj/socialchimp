@@ -61,8 +61,14 @@ from socialchimp.platform import (
     CanCheckState,
     CanCreateApp,
     CanDeletePosts,
+    CanEditBusinessInfo,
+    CanManageVerification,
+    CanModerateComments,
+    CanReadPushedUpdates,
+    CanReadReplies,
     CanReadStats,
     CanReadUpdates,
+    CanReplyToUpdates,
     CanResumeLogin,
 )
 from socialchimp.registry import available_platforms, get_platform_class
@@ -257,7 +263,7 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
     Returns:
         The names of the extras from `socialchimp.platform` this platform
         satisfies, in a fixed order shared with `/networks.json`'s own
-        listing of the eight extras.
+        listing of the fourteen extras.
     """
     satisfied: list[str] = []
     if Feature.CREATE_APP in features and isinstance(instance, CanCreateApp):
@@ -276,6 +282,20 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
         satisfied.append("CanDeletePosts")
     if Feature.READ_STATS in features and isinstance(instance, CanReadStats):
         satisfied.append("CanReadStats")
+    # The rest have no flag of their own: `Account` looks for the method and
+    # nothing else, so the method existing is the whole answer here too.
+    if isinstance(instance, CanReadReplies):
+        satisfied.append("CanReadReplies")
+    if isinstance(instance, CanReadPushedUpdates):
+        satisfied.append("CanReadPushedUpdates")
+    if isinstance(instance, CanReplyToUpdates):
+        satisfied.append("CanReplyToUpdates")
+    if isinstance(instance, CanModerateComments):
+        satisfied.append("CanModerateComments")
+    if isinstance(instance, CanEditBusinessInfo):
+        satisfied.append("CanEditBusinessInfo")
+    if isinstance(instance, CanManageVerification):
+        satisfied.append("CanManageVerification")
     return satisfied
 
 
