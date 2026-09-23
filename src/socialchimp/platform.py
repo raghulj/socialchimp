@@ -49,6 +49,7 @@ __all__ = [
     "CanManageVerification",
     "CanModerateComments",
     "CanReadPushedUpdates",
+    "CanReadReplies",
     "CanReadStats",
     "CanReadUpdates",
     "CanReplyToUpdates",
@@ -466,6 +467,47 @@ class CanReadStats(Protocol):
         Returns:
             The numbers that network keeps. Anything it does not count comes
             back as `None` rather than as a zero.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadReplies(Protocol):
+    """Extra for reading every reply to one post, not only the newest ones.
+
+    Threads is the first network with this. A reply arrives as an `Update`
+    the same way a webhook delivers one - the point is that sometimes an app
+    wants the whole list for a single post, to show a thread, rather than
+    polling an account for what changed since the last look.
+
+    Not the same as `CanReadUpdates.fetch_updates`, which asks a network what
+    is new across an account's recent posts. This is one post, and it can
+    read further back than a poll would bother to.
+
+    `Account.read_replies` is what your app calls.
+    """
+
+    async def read_replies(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        whole_conversation: bool = False,
+    ) -> Sequence[Update]:
+        """Read the replies to one post.
+
+        Args:
+            connection: The account the post belongs to.
+            post_id: The network's identifier for the post.
+            whole_conversation: `True` to read every depth of the thread -
+                a reply to a reply included - rather than only the ones
+                sent straight to the post.
+
+        Returns:
+            The replies, oldest first.
+
+        Raises:
+            SocialChimpError: If the network refuses the question.
         """
         ...
 

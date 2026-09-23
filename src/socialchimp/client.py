@@ -60,6 +60,7 @@ from socialchimp.platform import (
     CanManageVerification,
     CanModerateComments,
     CanReadPushedUpdates,
+    CanReadReplies,
     CanReadStats,
     CanReadUpdates,
     CanReplyToUpdates,
@@ -604,6 +605,47 @@ class Account:
                 ),
             )
         return await platform.fetch_updates(connection, since)
+
+    async def read_replies(
+        self,
+        post_id: str,
+        *,
+        whole_conversation: bool = False,
+    ) -> Sequence[Update]:
+        """Read the replies to one of this account's posts.
+
+        Different from `fetch_updates`, which asks the whole account what is
+        new. This reads one post, and can read further back than a poll
+        would bother to.
+
+        Args:
+            post_id: The network's identifier for the post, which is what
+                `post()` handed back.
+            whole_conversation: `True` to read every depth of the thread - a
+                reply to a reply included - rather than only the ones sent
+                straight to the post.
+
+        Returns:
+            The replies, oldest first.
+
+        Raises:
+            NotSupportedError: If this network keeps nothing an app can read
+                this way.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanReadReplies):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="reading the replies to one post",
+                suggestion=(
+                    "It keeps nothing worth reading this way, or its "
+                    "platform file has no read_replies yet."
+                ),
+            )
+        return await platform.read_replies(
+            connection, post_id, whole_conversation=whole_conversation
+        )
 
     async def delete_post(self, post_id: str) -> None:
         """Take a post back down again.
