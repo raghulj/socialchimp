@@ -333,6 +333,32 @@ class LyingCounter(FakePlatform):
     features = FakePlatform.features | Feature.READ_STATS
 
 
+class RepliesReadingPlatform(FakePlatform):
+    """A platform whose posts' replies can be read one at a time, like Threads."""
+
+    name = "reply-reader"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.read: list[tuple[Connection, str, bool]] = []
+
+    async def read_replies(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        whole_conversation: bool = False,
+    ) -> Sequence[Update]:
+        self.read.append((connection, post_id, whole_conversation))
+        return [an_update(connection.id)]
+
+
+def made_reply_reader() -> RepliesReadingPlatform:
+    platform = made("reply-reader")
+    assert isinstance(platform, RepliesReadingPlatform)
+    return platform
+
+
 class PushingPlatform(FakePlatform):
     """A platform that sends us requests, the way every Meta network does."""
 
@@ -654,6 +680,7 @@ FAKES: dict[str, type[FakePlatform]] = {
     "asker": PollingPlatform,
     "counter": CountingPlatform,
     "lying-counter": LyingCounter,
+    "reply-reader": RepliesReadingPlatform,
     "replier": ReplyingPlatform,
     "moderator": ModeratingPlatform,
     "business": BusinessPlatform,
@@ -1227,6 +1254,45 @@ class TestReadingAPostsNumbers:
             await sc.account("conn-1").read_stats("post-9")
 
         assert "read_stats" in str(broken.value)
+
+
+class TestReadingReplies:
+    async def test_an_account_can_read_the_replies_to_one_post(self) -> None:
+        storage = await storage_holding(a_connection(platform="reply-reader"))
+        sc = SocialChimp(storage)
+
+        found = await sc.account("conn-1").read_replies("post-9")
+
+        assert [update.connection_id for update in found] == ["conn-1"]
+        connection, post_id, whole_conversation = made_reply_reader().read[0]
+        assert connection.id == "conn-1"
+        assert post_id == "post-9"
+        assert whole_conversation is False
+
+    async def test_whole_conversation_is_passed_straight_on(self) -> None:
+        storage = await storage_holding(a_connection(platform="reply-reader"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_replies("post-9", whole_conversation=True)
+
+        _, _, whole_conversation = made_reply_reader().read[0]
+        assert whole_conversation is True
+
+    async def test_reading_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="reply-reader"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_replies("post-9")
+
+        connection, _, _ = made_reply_reader().read[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_keeps_no_replies_this_way_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError, match="fake"):
+            await sc.account("conn-1").read_replies("post-9")
 
 
 class TestAnsweringAReviewOrAQuestion:
