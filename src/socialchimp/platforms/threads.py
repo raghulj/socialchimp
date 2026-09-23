@@ -100,8 +100,77 @@ Counting characters here would send posts Threads turns away.
 out of the posts**. Both numbers are read rather than written down, because
 Meta has moved them before. Posts left lands on `Limits.posts_left_today`,
 and `check_post` refuses when there are none. `allowance` gives you both.
+`publish` checks the reply allowance rather than the post one whenever
+`Post.reply_to` is set, so answering somebody never spends one of the 250.
+
+## Replying, reading replies, and answering
+
+Reference:
+https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/create-replies
+
+Threads takes a `reply_to_id` on the top-level container - the whole post,
+or a carousel's parent, never one of its pieces - so `Post(reply_to=...)`
+sends it there and nowhere else. `Feature.REPLY` is on.
+
+**Replying needs permission on the post being answered.** Threads only lets
+an app reply where it owns the root post, unless it also asks for
+`threads_manage_mentions` or `threads_keyword_search` - and neither is in
+`DEFAULT_SCOPES`, because most apps only ever answer what was said about
+their own posts. Answering a mention on somebody else's post needs one of
+those two added to `scopes` when the account signs in.
+
+`read_replies(connection, post_id)` reads the replies to one post - see
+https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/replies-and-conversations
+with `GET /{post_id}/replies` for the top-level ones, or
+`GET /{post_id}/conversation` with `whole_conversation=True`, which flattens
+every depth into one list - a reply to a reply comes back the same as one
+sent straight to the post. Both build their `Update`s through the same
+`_update_from` the `replies` webhook uses, so `update.id` and `update.raw`
+match whichever way an app heard about a reply, and one handler and one
+`SeenUpdates` serve both.
+
+`fetch_updates(connection, since)` polls instead: the account's latest
+`recent_posts` posts (25 unless told otherwise, checked the way Facebook
+checks its own - between 1 and 100), each post's whole conversation read
+newest first and left as soon as a reply no newer than `since` turns up.
+`since=None` reads one page per post rather than the lot. It costs one
+request to list the posts, plus one per post - `1 + recent_posts` at most,
+every time it is polled.
+
+`reply_to_update` answers a `replies` or a `mentions` update by publishing a
+TEXT post with the update's own id as `reply_to`, through `publish` itself -
+so the allowance check and the waiting both happen the same as any other
+reply. Anything else, a `publish` or a `delete` update included, is refused
+by name.
+
+`set_comment_visibility` hides a reply with `POST /{id}/manage_reply` and
+`hide=true`, or shows it again with `hide=false` - see
+https://developers.facebook.com/docs/threads/reply-management. Meta says
+this only works on a top-level reply, and hiding one hides whatever was
+said back to it along with it. `delete_comment` always refuses: Threads has
+no call for removing somebody else's reply, only for hiding it - and a
+reply of your own is removed with `delete_post(update.raw["id"])` instead,
+the same as any other post.
+
+## A post's own numbers
+
+    GET /{post_id}/insights
+
+Reference: https://developers.facebook.com/docs/threads/insights
+
+Six metrics come back in one request: `views`, `likes`, `replies`,
+`reposts`, `quotes` and the share button's own count, which Threads also
+calls `shares`. Three of them land on `PostStats` - `likes`, `replies`
+becomes `comments`, and `reposts` becomes `shares`, because that is the
+number people mean by "how many times was this passed on". The rest -
+`views`, `quotes`, and the share-button metric - are not modelled here;
+read them off `PostStats.raw` if you want them. A metric Threads leaves out
+of its answer comes back `None`, never a made-up zero. Needs
+`threads_manage_insights`, already one of `DEFAULT_SCOPES`.
 
 ## Its webhooks are narrower than the rest of Meta's
+
+Reference: https://developers.facebook.com/docs/threads/webhooks
 
 Four topics and no more: `replies`, `mentions`, `publish` and `delete`, which
 reach your handlers as `COMMENT_CREATED`, `MENTION`, `POST_PUBLISHED` and
@@ -120,12 +189,12 @@ differently. `_meta.changes_in` cannot read it, and `_the_change_in` here can.
 
 - **No scheduling.** `Feature.SCHEDULE` is off. There is no call for it, and
   a post with `publish_at` is refused rather than quietly going out now.
-- **No replies yet.** `Feature.REPLY` is off. Threads really does take a
-  `reply_to_id`, and wiring it up belongs in the same step as reading replies
-  back, so that an app can answer what it hears about.
-- **No link attachments, topic tags or reply controls yet.** All three are
-  real Threads settings and none is wired up; `POST_OPTIONS` is the list of
-  what `Post.options` accepts today.
+- **No link attachments or topic tags yet.** Both are real Threads settings
+  and neither is wired up; `POST_OPTIONS` is the list of what `Post.options`
+  accepts today.
+- **Not confirmed against a live account yet.** The reply, `read_replies`,
+  `fetch_updates` and `insights` shapes here are built from Meta's published
+  reference rather than watched against a real response.
 """
 
 from __future__ import annotations
@@ -148,7 +217,7 @@ from socialchimp.errors import (
     SocialChimpError,
     TokenExpiredError,
 )
-from socialchimp.events import Update
+from socialchimp.events import Update, UpdateKind
 from socialchimp.events import answer_setup_check as echo_the_challenge
 from socialchimp.features import (
     Feature,
@@ -164,6 +233,7 @@ from socialchimp.models import (
     Post,
     PostResult,
     PostState,
+    PostStats,
     RawData,
     Token,
 )
@@ -178,6 +248,7 @@ from socialchimp.platforms._meta import (
     first_update,
     meta_errors,
     quota_left,
+    read_edge,
     required_text,
     sign_in_url,
     state_for,
@@ -186,7 +257,7 @@ from socialchimp.platforms._meta import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from socialchimp.http import Retries
     from socialchimp.models import AppCredentials
@@ -329,6 +400,37 @@ TOKEN_LIFE_SECONDS: Final = 60 * 24 * 60 * 60
 
 OLD_ENOUGH_TO_RENEW_SECONDS: Final = 24 * 60 * 60
 """How old a token has to be before Threads will renew it: 24 hours."""
+
+REPLY_FIELDS: Final = (
+    "id,text,username,permalink,timestamp,media_type,shortcode,replied_to,"
+    "root_post,is_reply,is_reply_owned_by_me,hide_status,has_replies"
+)
+"""What to ask about each reply, on `read_replies` and `fetch_updates`."""
+
+RECENT_POSTS_TO_CHECK: Final = 25
+"""How many of the account's latest posts `fetch_updates` looks at by default.
+
+Every post costs one request, every time it is asked, so this is a balance
+between how far back a reply is still noticed and how much of your hourly
+allowance a poll spends. Change it with `recent_posts` on the constructor.
+"""
+
+MOST_POSTS_TO_CHECK: Final = 100
+"""The most posts Threads lists in one request, and so the most we ask for."""
+
+REPLIES_PER_REQUEST: Final = 100
+"""How many replies to read at a time, on `read_replies` and `fetch_updates`."""
+
+MOST_REPLY_PAGES: Final = 10
+"""How many requests to spend reading one post's replies before moving on."""
+
+INSIGHTS_METRICS: Final = "views,likes,replies,reposts,quotes,shares"
+"""What `read_stats` asks Threads for.
+
+Six metrics for one request. Three of them land on `PostStats` - see
+`read_stats` for which - and the rest stay on `PostStats.raw` because
+nothing here has a field of its own for them.
+"""
 
 # What Threads calls a container it has finished with, one it has already
 # published, one it gave up on, and one it threw away. Anything else -
@@ -957,10 +1059,11 @@ class ThreadsPlatform:
     Attributes:
         name: `"threads"`.
         features: What Threads can do here. It takes a post of words alone,
-            which Instagram does not, and it can delete, which Instagram
-            cannot. There is no scheduling in its API, no app to register
-            anywhere in Meta, and replying is not wired up yet, so
-            `SCHEDULE`, `CREATE_APP` and `REPLY` are all missing.
+            which Instagram does not, it can delete, which Instagram cannot,
+            and it can reply - `Post(reply_to=...)` sends `reply_to_id` on
+            the top-level container. There is no scheduling in its API and
+            no app to register anywhere in Meta, so `SCHEDULE` and
+            `CREATE_APP` are both missing.
     """
 
     name: str = PLATFORM_NAME
@@ -969,7 +1072,9 @@ class ThreadsPlatform:
         Feature.POST_TEXT
         | Feature.POST_IMAGE
         | Feature.POST_VIDEO
+        | Feature.REPLY
         | Feature.DELETE_POST
+        | Feature.READ_STATS
         | Feature.PUSH_UPDATES
     )
 
@@ -981,6 +1086,7 @@ class ThreadsPlatform:
         transport: httpx.AsyncBaseTransport | None = None,
         check_every_seconds: float = HOW_OFTEN_TO_CHECK,
         wait_up_to_seconds: float = HOW_LONG_TO_WAIT,
+        recent_posts: int = RECENT_POSTS_TO_CHECK,
     ) -> None:
         """Set Threads up for one app.
 
@@ -998,12 +1104,27 @@ class ThreadsPlatform:
             wait_up_to_seconds: How long to keep asking before giving up.
                 Raise it if you post long video, and read `_stopped_waiting`
                 first - giving up here does not mean the post failed.
+            recent_posts: How many of the account's latest posts
+                `fetch_updates` reads replies from, between 1 and 100. Each
+                one costs a request every time you poll.
+
+        Raises:
+            ConfigError: If `recent_posts` is outside 1 to 100.
         """
+        if not 1 <= recent_posts <= MOST_POSTS_TO_CHECK:
+            message = (
+                f"recent_posts is {recent_posts}, but it has to be between 1 "
+                f"and {MOST_POSTS_TO_CHECK} - Threads lists no more than "
+                f"that many posts in one request."
+            )
+            raise ConfigError(message)
+
         self._timeout = timeout
         self._retries = retries
         self._transport = transport
         self._check_every = check_every_seconds
         self._wait_up_to = wait_up_to_seconds
+        self._recent_posts = recent_posts
         self._usage: Usage | None = None
 
     @property
@@ -1473,6 +1594,13 @@ class ThreadsPlatform:
             that only another request would tell us. Ask for it with
             `GET /{id}?fields=permalink` if you need it.
 
+        A post with `reply_to` set is a reply, and Threads takes it out of
+        the 1,000-a-day reply allowance rather than the 250-a-day post one -
+        so the check below asks the right number before sending it.
+
+        Reference:
+        https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/create-replies
+
         Raises:
             ConfigError: If the connection names no Threads account.
             InvalidPostError: If the post breaks one of Threads' limits, if a
@@ -1516,12 +1644,17 @@ class ThreadsPlatform:
                 left = _allowance_in(await self._ask_the_limit(graph, account_id))
                 # The daily allowance is the one rule we cannot know without
                 # asking, so it is checked here rather than above, now that
-                # we have the number.
+                # we have the number. A reply is counted against the reply
+                # allowance, not the post one - answering a thousand people
+                # never spends one of the 250 posts.
+                left_for_this_post = (
+                    left.replies_left if post.reply_to is not None else left.posts_left
+                )
                 check_post(
                     post,
                     platform=PLATFORM_NAME,
                     features=self.features,
-                    limits=_what_it_allows(left.posts_left),
+                    limits=_what_it_allows(left_for_this_post),
                 )
 
                 container = await self._build(
@@ -1545,7 +1678,9 @@ class ThreadsPlatform:
         Args:
             graph: A conversation signed with the account's token.
             account_id: Which Threads account.
-            post: What to publish.
+            post: What to publish. `reply_to`, when set, is put on the
+                top-level container - the whole post, or a carousel's
+                parent - and nowhere else.
             things: The pictures and videos, already checked. Empty for a
                 post of words alone.
             as_carousel: Whether these go out as one carousel.
@@ -1559,15 +1694,17 @@ class ThreadsPlatform:
             SocialChimpError: If Threads refuses one of the requests.
         """
         if not things:
-            container = await self._start(
-                graph, account_id, {"media_type": _TEXT}, post.text
-            )
+            form = {"media_type": _TEXT}
+            _add_reply_to(form, post)
+            container = await self._start(graph, account_id, form, post.text)
             await self._wait_for(graph, container, video=False)
             return container
 
         if not as_carousel:
             only = things[0]
-            container = await self._start(graph, account_id, _form_for(only), post.text)
+            form = _form_for(only)
+            _add_reply_to(form, post)
+            container = await self._start(graph, account_id, form, post.text)
             await self._wait_for(graph, container, video=only.kind is MediaKind.VIDEO)
             return container
 
@@ -1575,18 +1712,16 @@ class ThreadsPlatform:
         for item in things:
             form = _form_for(item)
             form["is_carousel_item"] = "true"
-            # No text on a piece: the words belong to the carousel.
+            # No text on a piece: the words belong to the carousel, and so
+            # does what it is replying to.
             child = await self._start(graph, account_id, form, None)
             # Each one has to be finished before the parent can name it.
             await self._wait_for(graph, child, video=item.kind is MediaKind.VIDEO)
             children.append(child)
 
-        parent = await self._start(
-            graph,
-            account_id,
-            {"media_type": _CAROUSEL, "children": ",".join(children)},
-            post.text,
-        )
+        parent_form = {"media_type": _CAROUSEL, "children": ",".join(children)}
+        _add_reply_to(parent_form, post)
+        parent = await self._start(graph, account_id, parent_form, post.text)
         # The parent is a container of its own, and as capable of not being
         # finished with as anything inside it - pictures and words included.
         await self._wait_for(
@@ -1751,6 +1886,276 @@ class ThreadsPlatform:
             await graph.json("DELETE", f"/{post_id}")
             self._note(graph)
 
+    async def read_stats(self, connection: Connection, post_id: str) -> PostStats:
+        """Ask Threads how a post is doing.
+
+        One request, for six numbers Threads calls metrics: `views`,
+        `likes`, `replies`, `reposts`, `quotes` and the share button's own
+        count, which Threads also calls `shares`. Three of them land on the
+        fields every platform here uses - `likes` stays `likes`, `replies`
+        becomes `comments`, and `reposts` becomes `shares`, because that is
+        the number people mean by "how many times was this passed on".
+        `views`, `quotes` and the share-button `shares` metric are not
+        modelled here; read them off `raw` if you want them.
+
+        Needs `threads_manage_insights`, already one of `DEFAULT_SCOPES`.
+
+        Reference: https://developers.facebook.com/docs/threads/insights
+
+        Args:
+            connection: The account the post is on.
+            post_id: Threads' id for the post, as `publish` handed it back.
+
+        Returns:
+            `likes`, `comments` and `shares`, each `None` rather than a
+            guess when Threads left the metric out of its answer.
+
+        Raises:
+            SocialChimpError: If Threads refuses the question.
+        """
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                reply = await graph.json(
+                    "GET",
+                    f"/{post_id}/insights",
+                    params={"metric": INSIGHTS_METRICS},
+                )
+            finally:
+                self._note(graph)
+
+        return PostStats(
+            id=post_id,
+            likes=_metric_value(reply, "likes"),
+            comments=_metric_value(reply, "replies"),
+            shares=_metric_value(reply, "reposts"),
+            raw=reply,
+        )
+
+    async def read_replies(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        whole_conversation: bool = False,
+    ) -> Sequence[Update]:
+        """Read the replies to one post.
+
+        `GET /{post_id}/replies` by default, which is only the top-level
+        replies - the ones sent straight to the post, not to another reply
+        underneath it. Pass `whole_conversation=True` for
+        `GET /{post_id}/conversation` instead, which flattens every depth
+        into one list, a reply to a reply included.
+
+        Every reply comes back through the same `_update_from` the `replies`
+        webhook builds its updates with, so `update.id` and `update.raw`
+        match whichever way an app heard about it - one handler and one
+        `SeenUpdates` serve both.
+
+        Reference:
+        https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/replies-and-conversations
+
+        Args:
+            connection: The account that owns the post.
+            post_id: Threads' id for the post, as `publish` handed it back.
+            whole_conversation: `True` to read every depth of the thread
+                rather than only what was sent straight to the post.
+
+        Returns:
+            The replies, oldest first.
+
+        Raises:
+            ConfigError: If the connection names no Threads account.
+            SocialChimpError: If Threads refuses the question.
+        """
+        account_id = _account_of(connection)
+        edge = "conversation" if whole_conversation else "replies"
+
+        updates: list[Update] = []
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                after: str | None = None
+                for _ in range(MOST_REPLY_PAGES):
+                    params: dict[str, object] = {
+                        "fields": REPLY_FIELDS,
+                        "reverse": "false",
+                        "limit": REPLIES_PER_REQUEST,
+                    }
+                    if after is not None:
+                        params["after"] = after
+                    found, after = await read_edge(
+                        graph, f"/{post_id}/{edge}", params=params
+                    )
+                    updates.extend(_replies_to_updates(found, account_id=account_id))
+                    if after is None:
+                        break
+            finally:
+                self._note(graph)
+
+        updates.sort(key=lambda update: update.created_at)
+        return updates
+
+    async def fetch_updates(
+        self,
+        connection: Connection,
+        since: datetime | None,
+    ) -> Sequence[Update]:
+        """Read the replies on the account's latest posts.
+
+        Threads can push these to you, and this is for when you would rather
+        ask, or cannot receive a request from the internet. What comes back
+        has the same shape a webhook's would - and the same `id`, so a
+        `Dispatcher` given a `SeenUpdates` answers a reply once even when it
+        turns up both ways.
+
+        The latest `recent_posts` posts are read (`GET /{account}/threads`),
+        one request to list them and then each post's whole conversation
+        read newest first, left as soon as a reply no newer than `since`
+        turns up - so a poll of a quiet account costs `1 + recent_posts`
+        requests at most, and a poll of a busy one costs more.
+
+        Reference:
+        https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/replies-and-conversations
+
+        Args:
+            connection: The account to read.
+            since: Only return replies newer than this. `None` on the first
+                call, when there is no marker saved yet - the latest page of
+                replies on each post, rather than the whole history.
+
+        Returns:
+            The replies, oldest first, as `UpdateKind.COMMENT_CREATED`.
+
+        Raises:
+            ConfigError: If the connection names no Threads account.
+            SocialChimpError: If Threads refuses.
+        """
+        account_id = _account_of(connection)
+
+        found: list[Update] = []
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                posts, _ = await read_edge(
+                    graph,
+                    f"/{account_id}/threads",
+                    params={"fields": "id", "limit": self._recent_posts},
+                )
+                for post in posts:
+                    post_id = post.get("id")
+                    if isinstance(post_id, str) and post_id:
+                        found.extend(
+                            await _replies_on(graph, account_id, post_id, since)
+                        )
+            finally:
+                self._note(graph)
+
+        found.sort(key=lambda update: update.created_at)
+        return found
+
+    async def reply_to_update(
+        self,
+        connection: Connection,
+        update: Update,
+        text: str,
+    ) -> None:
+        """Answer a reply or a mention by publishing a reply of your own.
+
+        Goes through `publish` itself, with `reply_to` set to the update's
+        own id - so this spends part of the daily reply allowance, and waits
+        for Threads to finish with it, the same as any other reply.
+
+        **Replying needs permission on the post being answered.** Threads
+        only allows it where the app owns the root post, unless it also
+        holds `threads_manage_mentions` or `threads_keyword_search` - see
+        the module's own docstring.
+
+        Reference:
+        https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/create-replies
+
+        Args:
+            connection: The account to answer as.
+            update: The update to answer, exactly as `fetch_updates` or
+                `read_updates` handed it back. Its `raw["id"]` is what this
+                answers.
+            text: The reply.
+
+        Raises:
+            NotSupportedError: If this is not a reply or a mention - a
+                `publish` or a `delete` update, or one Threads has no name
+                for.
+            PlatformError: If the update carries no id to reply to.
+            SocialChimpError: If Threads refuses the reply, including for
+                lacking permission on the post being answered.
+        """
+        if update.kind not in (UpdateKind.COMMENT_CREATED, UpdateKind.MENTION):
+            raise NotSupportedError(
+                platform=PLATFORM_NAME,
+                what=f"answering an update of kind {update.kind_name!r}",
+                suggestion="Only a reply or a mention can be answered here.",
+            )
+
+        await self.publish(connection, Post(text=text, reply_to=_id_on(update)))
+
+    async def delete_comment(self, connection: Connection, update: Update) -> None:
+        """Say, plainly, that Threads has no way to remove somebody else's reply.
+
+        Args:
+            connection: Ignored.
+            update: Ignored.
+
+        Raises:
+            NotSupportedError: Always. The message says to hide the reply
+                instead, and how to remove one of your own.
+        """
+        raise NotSupportedError(
+            platform=PLATFORM_NAME,
+            what="removing a reply that is not yours",
+            suggestion=(
+                "There is no call for it. Hide it instead with "
+                "set_comment_visibility(hidden=True), which is the "
+                "moderation Threads actually offers. For a reply you "
+                "published yourself, use delete_post(update.raw['id']) - "
+                "it is a post like any other."
+            ),
+        )
+
+    async def set_comment_visibility(
+        self,
+        connection: Connection,
+        update: Update,
+        *,
+        hidden: bool,
+    ) -> None:
+        """Hide a reply from public view, or show one again.
+
+        `POST /{reply}/manage_reply` with `hide=true` or `hide=false`. Meta
+        says this only works on a top-level reply - one sent straight to the
+        post rather than to another reply underneath it - and hiding one
+        hides whatever was said back to it along with it.
+
+        Reference: https://developers.facebook.com/docs/threads/reply-management
+
+        Args:
+            connection: The account the reply belongs to.
+            update: The reply to hide or show, exactly as `fetch_updates` or
+                `read_updates` handed it back. Its `raw["id"]` is which one.
+            hidden: `True` to hide it, `False` to show it again.
+
+        Raises:
+            PlatformError: If the update carries no id to act on.
+            SocialChimpError: If Threads refuses.
+        """
+        reply_id = _id_on(update)
+
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                await graph.json(
+                    "POST",
+                    f"/{reply_id}/manage_reply",
+                    data={"hide": "true" if hidden else "false"},
+                )
+            finally:
+                self._note(graph)
+
     def check_signature(
         self,
         body: bytes,
@@ -1818,6 +2223,8 @@ class ThreadsPlatform:
         Instagram, which batch. This still hands back a list, so that an app
         written against one Meta network works against all three.
 
+        Reference: https://developers.facebook.com/docs/threads/webhooks
+
         Args:
             body: The request body, untouched. Check its signature first.
 
@@ -1877,6 +2284,21 @@ def _form_for(item: _Attachment) -> dict[str, str]:
     return form
 
 
+def _add_reply_to(form: dict[str, str], post: Post) -> None:
+    """Say which post this one answers, on the top-level container's form.
+
+    Only ever called on the container that is about to be published - the
+    whole post, or a carousel's parent - never on one of a carousel's
+    pieces, which have nothing of their own to reply to.
+
+    Args:
+        form: The form about to be sent, changed in place.
+        post: The post being published, which may carry `reply_to`.
+    """
+    if post.reply_to is not None:
+        form["reply_to_id"] = post.reply_to
+
+
 def _allowance_in(reply: RawData) -> Allowance:
     """Read both of today's allowances out of one answer from Threads.
 
@@ -1893,3 +2315,141 @@ def _allowance_in(reply: RawData) -> Allowance:
             reply, used="reply_quota_usage", allowed_in="reply_config"
         ),
     )
+
+
+def _id_on(update: Update) -> str:
+    """Read the id an update names, and complain plainly if it has none.
+
+    Args:
+        update: The update naming a reply.
+
+    Returns:
+        The id.
+
+    Raises:
+        PlatformError: If there is none. `update.raw` should be what
+            `fetch_updates` or `read_updates` handed back, with Threads' own
+            id for the reply still on it.
+    """
+    found = update.raw.get("id")
+    if isinstance(found, str) and found:
+        return found
+
+    message = (
+        "This update carries no id, so there is nothing to act on. "
+        "update.raw should be what fetch_updates or read_updates handed "
+        "back, with Threads' own id for the reply or mention still on it."
+    )
+    raise PlatformError(message, platform=PLATFORM_NAME, raw=update.raw)
+
+
+def _replies_to_updates(found: list[RawData], *, account_id: str) -> list[Update]:
+    """Turn one page of replies into updates, in the same shape the webhook uses.
+
+    Args:
+        found: One page of replies, as Threads answered.
+        account_id: The account the post being read belongs to.
+
+    Returns:
+        The replies as updates, in the order Threads listed them.
+    """
+    envelope = {"target_id": account_id}
+    return [_update_from(envelope, "replies", value) for value in found]
+
+
+async def _replies_on(
+    graph: Graph,
+    account_id: str,
+    post_id: str,
+    since: datetime | None,
+) -> list[Update]:
+    """Read the replies on one post that are newer than a moment.
+
+    Args:
+        graph: A conversation signed with the account's token.
+        account_id: Which Threads account the post belongs to.
+        post_id: Which post.
+        since: Only replies newer than this, or `None` for the latest page
+            of them.
+
+    Returns:
+        The replies as updates, in the order Threads listed them - newest
+        first, because that is what lets a caller stop early.
+    """
+    updates: list[Update] = []
+    after: str | None = None
+    # With nothing to compare against there is no natural place to stop, so
+    # a first call reads one page - the latest - rather than a whole history.
+    most_pages = 1 if since is None else MOST_REPLY_PAGES
+
+    for _ in range(most_pages):
+        params: dict[str, object] = {
+            "fields": REPLY_FIELDS,
+            "reverse": "true",
+            "limit": REPLIES_PER_REQUEST,
+        }
+        if after is not None:
+            params["after"] = after
+        entries, after = await read_edge(
+            graph, f"/{post_id}/conversation", params=params
+        )
+
+        caught_up = False
+        for entry in _replies_to_updates(entries, account_id=account_id):
+            if since is not None and entry.created_at <= since:
+                caught_up = True
+                break
+            updates.append(entry)
+        if caught_up or after is None:
+            break
+    return updates
+
+
+def _metric_value(reply: RawData, name: str) -> int | None:
+    """Read one number out of a Threads insights reply.
+
+    Args:
+        reply: What Threads answered.
+        name: Which metric to look for, such as `"likes"`.
+
+    Returns:
+        The number, or `None` when the metric is missing from the reply, or
+        its value could not be read. Never a guess: a made-up number here
+        would show a count Threads never gave.
+    """
+    entries = reply.get("data")
+    if not isinstance(entries, list):
+        return None
+
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("name") != name:
+            continue
+
+        total = entry.get("total_value")
+        if isinstance(total, dict):
+            found = _whole_number(total.get("value"))
+            if found is not None:
+                return found
+
+        values = entry.get("values")
+        if isinstance(values, list) and values and isinstance(values[0], dict):
+            found = _whole_number(values[0].get("value"))
+            if found is not None:
+                return found
+
+    return None
+
+
+def _whole_number(value: object) -> int | None:
+    """Read a value that should be a count.
+
+    Args:
+        value: Whatever arrived under that key.
+
+    Returns:
+        The number, or `None` for anything that is not one. `True` is not a
+        number here, whatever Python thinks.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None

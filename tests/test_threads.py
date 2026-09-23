@@ -26,9 +26,11 @@ from socialchimp import (
     Post,
     PostState,
     RateLimitError,
+    RawData,
     SignatureError,
     Token,
     TokenExpiredError,
+    Update,
     UpdateKind,
 )
 from socialchimp.features import TextCount
@@ -37,7 +39,12 @@ from socialchimp.platform import (
     CanAnswerSetupCheck,
     CanCheckSignature,
     CanDeletePosts,
+    CanModerateComments,
     CanReadPushedUpdates,
+    CanReadReplies,
+    CanReadStats,
+    CanReadUpdates,
+    CanReplyToUpdates,
     CanResumeLogin,
     Finished,
     LoginRequest,
@@ -50,8 +57,14 @@ from socialchimp.platforms.threads import (
     DEFAULT_SCOPES,
     HOW_LONG_TO_WAIT,
     HOW_OFTEN_TO_CHECK,
+    INSIGHTS_METRICS,
     MAX_TEXT_BYTES,
     MOST_IN_A_CAROUSEL,
+    MOST_POSTS_TO_CHECK,
+    MOST_REPLY_PAGES,
+    RECENT_POSTS_TO_CHECK,
+    REPLIES_PER_REQUEST,
+    REPLY_FIELDS,
     SIGN_IN_PAGE,
     THREADS_API,
     THREADS_HOST,
@@ -108,6 +121,22 @@ USED_UP: dict[str, Any] = {
         }
     ]
 }
+
+# The posts are wide open; the replies are the ones used up. A reply is
+# refused here and an ordinary post is not, which is the point of counting
+# them apart.
+REPLIES_USED_UP: dict[str, Any] = {
+    "data": [
+        {
+            "quota_usage": 4,
+            "config": {"quota_total": 250, "quota_duration": 86_400},
+            "reply_quota_usage": 1_000,
+            "reply_config": {"quota_total": 1_000, "quota_duration": 86_400},
+        }
+    ]
+}
+
+REPLIED_TO_ID = "18500"
 
 
 def api(path: str) -> str:
@@ -376,7 +405,9 @@ class TestWhatThreadsSaysItCanDo:
         [
             Feature.POST_IMAGE,
             Feature.POST_VIDEO,
+            Feature.REPLY,
             Feature.DELETE_POST,
+            Feature.READ_STATS,
             Feature.PUSH_UPDATES,
         ],
     )
@@ -389,7 +420,7 @@ class TestWhatThreadsSaysItCanDo:
 
     @pytest.mark.parametrize(
         "feature",
-        [Feature.SCHEDULE, Feature.CREATE_APP, Feature.REPLY, Feature.READ_POSTS],
+        [Feature.SCHEDULE, Feature.CREATE_APP, Feature.READ_POSTS],
     )
     def test_what_it_does_not_claim(
         self,
@@ -405,6 +436,11 @@ class TestWhatThreadsSaysItCanDo:
         assert isinstance(platform, Platform)
         assert isinstance(platform, CanCheckSignature)
         assert isinstance(platform, CanDeletePosts)
+        assert isinstance(platform, CanReadStats)
+        assert isinstance(platform, CanReadReplies)
+        assert isinstance(platform, CanReadUpdates)
+        assert isinstance(platform, CanReplyToUpdates)
+        assert isinstance(platform, CanModerateComments)
 
     def test_a_sign_in_never_pauses_to_ask_which_account(
         self,
@@ -1414,6 +1450,175 @@ class TestPublishingACarousel:
             assert not network.calls
 
 
+class TestPublishingAReply:
+    async def test_a_reply_sends_reply_to_id_on_the_text_container(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            build = a_publishing_network(network)["build"]
+            stub_ready(network, CONTAINER)
+
+            await platform.publish(
+                account, Post(text="Thanks!", reply_to=REPLIED_TO_ID)
+            )
+
+        made = dict(httpx.QueryParams(build.calls.last.request.content.decode()))
+        assert made["reply_to_id"] == REPLIED_TO_ID
+
+    async def test_an_ordinary_post_carries_no_reply_to_id_at_all(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            build = a_publishing_network(network)["build"]
+            stub_ready(network, CONTAINER)
+
+            await platform.publish(account, Post(text="Fresh cakes today"))
+
+        made = dict(httpx.QueryParams(build.calls.last.request.content.decode()))
+        assert "reply_to_id" not in made
+
+    async def test_a_reply_with_a_picture_sends_reply_to_id_on_its_one_container(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            build = a_publishing_network(network)["build"]
+            stub_ready(network, CONTAINER)
+
+            await platform.publish(
+                account,
+                Post(
+                    text="Here you go",
+                    media=(Media.from_url(PICTURE_URL),),
+                    reply_to=REPLIED_TO_ID,
+                ),
+            )
+
+        made = dict(httpx.QueryParams(build.calls.last.request.content.decode()))
+        assert made["reply_to_id"] == REPLIED_TO_ID
+        assert made["media_type"] == "IMAGE"
+
+    async def test_a_reply_that_is_a_carousel_puts_reply_to_id_on_the_parent_only(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            routes = a_publishing_network(
+                network,
+                containers=[
+                    httpx.Response(200, json={"id": CONTAINER}),
+                    httpx.Response(200, json={"id": OTHER_CONTAINER}),
+                    httpx.Response(200, json={"id": PARENT_CONTAINER}),
+                ],
+            )
+            build = routes["build"]
+            stub_ready(network, CONTAINER, OTHER_CONTAINER, PARENT_CONTAINER)
+
+            await platform.publish(
+                account,
+                Post(
+                    text="Two cakes",
+                    media=(
+                        Media.from_url(PICTURE_URL),
+                        Media.from_url(OTHER_PICTURE_URL),
+                    ),
+                    reply_to=REPLIED_TO_ID,
+                ),
+            )
+
+        sent = [
+            dict(httpx.QueryParams(call.request.content.decode()))
+            for call in build.calls
+        ]
+        assert "reply_to_id" not in sent[0]
+        assert "reply_to_id" not in sent[1]
+        assert sent[2]["media_type"] == "CAROUSEL"
+        assert sent[2]["reply_to_id"] == REPLIED_TO_ID
+
+    async def test_a_reply_is_checked_against_the_reply_allowance(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        # 250 posts are all used up, but replies are wide open, and this is
+        # a reply - so it goes out rather than being refused.
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}/threads_publishing_limit")).mock(
+                return_value=httpx.Response(200, json=USED_UP)
+            )
+            network.post(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(200, json={"id": CONTAINER})
+            )
+            stub_ready(network, CONTAINER)
+            network.post(api(f"/{USER_ID}/threads_publish")).mock(
+                return_value=httpx.Response(200, json={"id": POST_ID})
+            )
+
+            result = await platform.publish(
+                account, Post(text="Thanks!", reply_to=REPLIED_TO_ID)
+            )
+
+        assert result.id == POST_ID
+
+    async def test_no_replies_left_today_is_refused_with_what_to_do(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        # Posts are wide open, but this is a reply, and replies are used up.
+        with respx.mock(base_url=THREADS_HOST, assert_all_called=False) as network:
+            limit = network.get(api(f"/{USER_ID}/threads_publishing_limit")).mock(
+                return_value=httpx.Response(200, json=REPLIES_USED_UP)
+            )
+            build = network.post(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(200, json={"id": CONTAINER})
+            )
+
+            with pytest.raises(InvalidPostError, match="tomorrow"):
+                await platform.publish(
+                    account, Post(text="One more", reply_to=REPLIED_TO_ID)
+                )
+
+        assert limit.called
+        assert not build.called
+
+    async def test_a_post_with_replies_used_up_is_not_refused(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        # The replies are used up and this is an ordinary post, so it is
+        # judged against the posts allowance, which still has room.
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}/threads_publishing_limit")).mock(
+                return_value=httpx.Response(200, json=REPLIES_USED_UP)
+            )
+            network.post(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(200, json={"id": CONTAINER})
+            )
+            stub_ready(network, CONTAINER)
+            network.post(api(f"/{USER_ID}/threads_publish")).mock(
+                return_value=httpx.Response(200, json={"id": POST_ID})
+            )
+
+            result = await platform.publish(account, Post(text="Fresh cakes today"))
+
+        assert result.id == POST_ID
+
+
 # ---------------------------------------------------------------------------
 # Publishing: a container is not ready the instant Threads says it has one
 # ---------------------------------------------------------------------------
@@ -1661,14 +1866,6 @@ class TestWhenThreadsSaysNo:
                 Post(text="Later", publish_at=datetime.now(UTC) + timedelta(hours=2)),
             )
 
-    async def test_replying_is_refused_rather_than_posted_on_its_own(
-        self,
-        platform: ThreadsPlatform,
-        account: Connection,
-    ) -> None:
-        with pytest.raises(NotSupportedError, match="replying"):
-            await platform.publish(account, Post(text="Thanks", reply_to=POST_ID))
-
     async def test_a_container_reply_with_no_id_says_so(
         self,
         platform: ThreadsPlatform,
@@ -1738,6 +1935,601 @@ class TestWhenThreadsSaysNo:
         seen = platform.usage
         assert seen is not None
         assert seen.calls == 63
+
+
+# ---------------------------------------------------------------------------
+# A post's own numbers
+# ---------------------------------------------------------------------------
+
+
+def an_insights_reply(**metrics: int) -> dict[str, Any]:
+    """One Threads insights reply, with a `values` entry for each metric given."""
+    return {
+        "data": [
+            {
+                "name": name,
+                "period": "lifetime",
+                "values": [{"value": value}],
+                "title": name,
+                "description": name,
+                "id": f"{POST_ID}/insights/{name}",
+            }
+            for name, value in metrics.items()
+        ]
+    }
+
+
+class TestReadingAPostsNumbers:
+    async def test_it_asks_for_all_six_metrics_in_one_request(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            route = network.get(api(f"/{POST_ID}/insights")).mock(
+                return_value=httpx.Response(200, json=an_insights_reply(likes=12))
+            )
+
+            await platform.read_stats(account, POST_ID)
+
+        assert route.calls.last.request.url.params["metric"] == INSIGHTS_METRICS
+
+    async def test_likes_replies_and_reposts_land_on_the_named_fields(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{POST_ID}/insights")).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=an_insights_reply(
+                        views=900, likes=12, replies=3, reposts=5, quotes=1, shares=2
+                    ),
+                )
+            )
+
+            stats = await platform.read_stats(account, POST_ID)
+
+        assert stats.id == POST_ID
+        assert stats.likes == 12
+        assert stats.comments == 3
+        assert stats.shares == 5
+
+    async def test_views_quotes_and_the_share_button_stay_on_raw(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{POST_ID}/insights")).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=an_insights_reply(views=900, quotes=1, shares=2, likes=12),
+                )
+            )
+
+            stats = await platform.read_stats(account, POST_ID)
+
+        raw_names = {entry["name"] for entry in stats.raw["data"]}
+        assert {"views", "quotes", "shares"} <= raw_names
+
+    async def test_a_metric_left_out_of_the_reply_is_none_not_zero(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{POST_ID}/insights")).mock(
+                return_value=httpx.Response(200, json=an_insights_reply(likes=12))
+            )
+
+            stats = await platform.read_stats(account, POST_ID)
+
+        assert stats.comments is None
+        assert stats.shares is None
+
+    async def test_a_metric_carried_as_a_total_value_is_read_too(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        reply = {
+            "data": [
+                {"name": "likes", "total_value": {"value": 40}},
+                {"name": "replies", "values": [{"value": 7}]},
+            ]
+        }
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{POST_ID}/insights")).mock(
+                return_value=httpx.Response(200, json=reply)
+            )
+
+            stats = await platform.read_stats(account, POST_ID)
+
+        assert stats.likes == 40
+        assert stats.comments == 7
+
+    async def test_a_metric_whose_numbers_cannot_be_read_is_none(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        # Two entries for the same metric, neither carrying a number we can
+        # read - a total_value that is not one, then a values list that
+        # is not one either - and a third entry afterwards, so the search
+        # keeps going past both rather than stopping at the first.
+        reply = {
+            "data": [
+                {"name": "likes", "total_value": {"value": "nope"}},
+                {"name": "likes", "values": [{"value": "also not a number"}]},
+                {"name": "views", "values": [{"value": 5}]},
+            ]
+        }
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{POST_ID}/insights")).mock(
+                return_value=httpx.Response(200, json=reply)
+            )
+
+            stats = await platform.read_stats(account, POST_ID)
+
+        assert stats.likes is None
+
+    async def test_a_reply_shaped_oddly_is_not_a_guess(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{POST_ID}/insights")).mock(
+                return_value=httpx.Response(200, json={"data": "not a list"})
+            )
+
+            stats = await platform.read_stats(account, POST_ID)
+
+        assert stats.likes is None
+        assert stats.comments is None
+        assert stats.shares is None
+
+
+# ---------------------------------------------------------------------------
+# Reading and answering replies
+# ---------------------------------------------------------------------------
+
+
+def a_reply(reply_id: str, *, timestamp: str = "2024-08-07T10:33:16+0000") -> RawData:
+    """One reply, in the shape Threads answers `/replies` and `/conversation` with."""
+    return {
+        "id": reply_id,
+        "text": "Looks lovely",
+        "username": "someone",
+        "permalink": f"https://www.threads.net/@someone/post/{reply_id}",
+        "timestamp": timestamp,
+        "media_type": "TEXT_POST",
+    }
+
+
+def a_page(
+    entries: list[RawData],
+    *,
+    after: str | None = None,
+) -> httpx.Response:
+    """One page of replies, with or without a cursor to the next one."""
+    body: dict[str, Any] = {"data": entries}
+    if after is not None:
+        body["paging"] = {"cursors": {"after": after}, "next": "..."}
+    return httpx.Response(200, json=body)
+
+
+def a_reply_update(
+    *,
+    kind: str = "comment_created",
+    raw: RawData | None = None,
+) -> Update:
+    """An update your app might hand `reply_to_update` or `set_comment_visibility`."""
+    return Update.from_network(
+        update_id="made-up",
+        kind_name=kind,
+        platform="threads",
+        connection_id=f"threads:{USER_ID}",
+        created_at=NOW,
+        raw=raw if raw is not None else {"id": REPLIED_TO_ID},
+    )
+
+
+class TestReadingRepliesToOnePost:
+    async def test_it_reads_the_top_level_replies_by_default(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            route = network.get(api(f"/{POST_ID}/replies")).mock(
+                return_value=a_page([a_reply("8901234")])
+            )
+
+            found = await platform.read_replies(account, POST_ID)
+
+        asked = route.calls.last.request.url.params
+        assert asked["fields"] == REPLY_FIELDS
+        assert asked["reverse"] == "false"
+        assert asked["limit"] == str(REPLIES_PER_REQUEST)
+        assert len(found) == 1
+        assert found[0].raw["id"] == "8901234"
+        assert found[0].kind is UpdateKind.COMMENT_CREATED
+
+    async def test_whole_conversation_reads_every_depth_instead(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST, assert_all_called=False) as network:
+            replies_route = network.get(api(f"/{POST_ID}/replies"))
+            conversation = network.get(api(f"/{POST_ID}/conversation")).mock(
+                return_value=a_page([a_reply("1")])
+            )
+
+            await platform.read_replies(account, POST_ID, whole_conversation=True)
+
+        assert conversation.called
+        assert not replies_route.called
+
+    async def test_replies_come_back_oldest_first(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{POST_ID}/replies")).mock(
+                return_value=a_page(
+                    [
+                        a_reply("2", timestamp="2024-08-07T12:00:00+0000"),
+                        a_reply("1", timestamp="2024-08-07T10:00:00+0000"),
+                    ]
+                )
+            )
+
+            found = await platform.read_replies(account, POST_ID)
+
+        assert [update.raw["id"] for update in found] == ["1", "2"]
+
+    async def test_the_update_matches_what_the_webhook_would_have_made(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{POST_ID}/replies")).mock(
+                return_value=a_page([a_reply("8901234")])
+            )
+
+            (found,) = await platform.read_replies(account, POST_ID)
+
+        from_the_webhook = platform.read_update(
+            pushed("replies", a_reply("8901234")), {}
+        )
+        assert found.id == from_the_webhook.id
+        assert found.raw == from_the_webhook.raw
+        assert found.connection_id == f"threads:{USER_ID}"
+
+    async def test_paging_follows_the_cursor(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            route = network.get(api(f"/{POST_ID}/replies")).mock(
+                side_effect=[
+                    a_page([a_reply("1")], after="cursor-1"),
+                    a_page([a_reply("2")]),
+                ]
+            )
+
+            found = await platform.read_replies(account, POST_ID)
+
+        assert route.call_count == 2
+        assert route.calls[1].request.url.params["after"] == "cursor-1"
+        assert {update.raw["id"] for update in found} == {"1", "2"}
+
+    async def test_paging_stops_at_the_cap_rather_than_going_forever(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        def always_more(request: httpx.Request) -> httpx.Response:
+            return a_page([a_reply("x")], after="cursor")
+
+        with respx.mock(base_url=THREADS_HOST) as network:
+            route = network.get(api(f"/{POST_ID}/replies")).mock(
+                side_effect=always_more
+            )
+
+            await platform.read_replies(account, POST_ID)
+
+        assert route.call_count == MOST_REPLY_PAGES
+
+    async def test_a_connection_naming_no_account_says_which_key_to_set(
+        self,
+        platform: ThreadsPlatform,
+    ) -> None:
+        nowhere = Connection(
+            id="threads:broken",
+            platform="threads",
+            host=None,
+            account_id="",
+            account_name="",
+            token=Token(access_token="long-lived"),
+        )
+
+        with pytest.raises(ConfigError):
+            await platform.read_replies(nowhere, POST_ID)
+
+
+class TestPollingForReplies:
+    async def test_it_lists_the_latest_posts_then_reads_each_ones_conversation(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            posts = network.get(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(
+                    200, json={"data": [{"id": "post-a"}, {"id": "post-b"}]}
+                )
+            )
+            first = network.get(api("/post-a/conversation")).mock(
+                return_value=a_page(
+                    [a_reply("1", timestamp="2024-08-07T10:00:00+0000")]
+                )
+            )
+            network.get(api("/post-b/conversation")).mock(
+                return_value=a_page(
+                    [a_reply("2", timestamp="2024-08-07T11:00:00+0000")]
+                )
+            )
+
+            found = await platform.fetch_updates(account, None)
+
+        listed = posts.calls.last.request.url.params
+        assert listed["fields"] == "id"
+        assert listed["limit"] == str(RECENT_POSTS_TO_CHECK)
+        assert first.calls.last.request.url.params["reverse"] == "true"
+        assert [update.raw["id"] for update in found] == ["1", "2"]
+
+    async def test_since_none_reads_one_page_per_post(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(200, json={"data": [{"id": "post-a"}]})
+            )
+            conversation = network.get(api("/post-a/conversation")).mock(
+                return_value=a_page([a_reply("1")], after="cursor-1")
+            )
+
+            await platform.fetch_updates(account, None)
+
+        assert conversation.call_count == 1
+
+    async def test_it_stops_as_soon_as_a_reply_no_newer_than_since_turns_up(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        seen_up_to = datetime(2024, 8, 7, 10, 30, tzinfo=UTC)
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(200, json={"data": [{"id": "post-a"}]})
+            )
+            conversation = network.get(api("/post-a/conversation")).mock(
+                return_value=a_page(
+                    [
+                        a_reply("new", timestamp="2024-08-07T12:00:00+0000"),
+                        a_reply("old", timestamp="2024-08-07T09:00:00+0000"),
+                    ],
+                    after="cursor-1",
+                )
+            )
+
+            found = await platform.fetch_updates(account, seen_up_to)
+
+        assert [update.raw["id"] for update in found] == ["new"]
+        # Caught up on the first page, so the cursor is never followed.
+        assert conversation.call_count == 1
+
+    async def test_it_pages_on_when_nothing_yet_is_old_enough(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        seen_up_to = datetime(2024, 8, 7, 9, 0, tzinfo=UTC)
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(200, json={"data": [{"id": "post-a"}]})
+            )
+            conversation = network.get(api("/post-a/conversation")).mock(
+                side_effect=[
+                    a_page(
+                        [a_reply("new", timestamp="2024-08-07T12:00:00+0000")],
+                        after="cursor-1",
+                    ),
+                    a_page([a_reply("older", timestamp="2024-08-07T08:00:00+0000")]),
+                ]
+            )
+
+            found = await platform.fetch_updates(account, seen_up_to)
+
+        assert [update.raw["id"] for update in found] == ["new"]
+        assert conversation.call_count == 2
+
+    async def test_updates_come_back_oldest_first_across_posts(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(
+                    200, json={"data": [{"id": "post-a"}, {"id": "post-b"}]}
+                )
+            )
+            network.get(api("/post-a/conversation")).mock(
+                return_value=a_page(
+                    [a_reply("later", timestamp="2024-08-07T12:00:00+0000")]
+                )
+            )
+            network.get(api("/post-b/conversation")).mock(
+                return_value=a_page(
+                    [a_reply("earlier", timestamp="2024-08-07T09:00:00+0000")]
+                )
+            )
+
+            found = await platform.fetch_updates(account, None)
+
+        assert [update.raw["id"] for update in found] == ["earlier", "later"]
+
+    async def test_a_post_with_no_readable_id_is_skipped(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}/threads")).mock(
+                return_value=httpx.Response(
+                    200, json={"data": [{"no-id": "here"}, {"id": "post-a"}]}
+                )
+            )
+            network.get(api("/post-a/conversation")).mock(
+                return_value=a_page([a_reply("1")])
+            )
+
+            found = await platform.fetch_updates(account, None)
+
+        assert [update.raw["id"] for update in found] == ["1"]
+
+    def test_recent_posts_outside_the_range_is_refused(self) -> None:
+        with pytest.raises(ConfigError, match=f"between 1 and {MOST_POSTS_TO_CHECK}"):
+            ThreadsPlatform(recent_posts=0)
+
+    def test_recent_posts_can_be_set_to_something_else(self) -> None:
+        assert ThreadsPlatform(recent_posts=10)._recent_posts == 10
+
+
+class TestAnsweringAReply:
+    async def test_it_publishes_a_reply_with_the_updates_own_id(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            build = a_publishing_network(network)["build"]
+            stub_ready(network, CONTAINER)
+
+            await platform.reply_to_update(
+                account, a_reply_update(), "Thank you for saying so!"
+            )
+
+        made = dict(httpx.QueryParams(build.calls.last.request.content.decode()))
+        assert made["reply_to_id"] == REPLIED_TO_ID
+        assert made["text"] == "Thank you for saying so!"
+
+    async def test_it_also_answers_a_mention(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+        clock: dict[str, datetime],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            build = a_publishing_network(network)["build"]
+            stub_ready(network, CONTAINER)
+
+            await platform.reply_to_update(
+                account, a_reply_update(kind="mention"), "Hi!"
+            )
+
+        made = dict(httpx.QueryParams(build.calls.last.request.content.decode()))
+        assert made["reply_to_id"] == REPLIED_TO_ID
+
+    async def test_a_published_post_update_cannot_be_answered(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with pytest.raises(NotSupportedError, match="answering"):
+            await platform.reply_to_update(
+                account, a_reply_update(kind="post_published"), "Hi!"
+            )
+
+    async def test_an_update_with_no_id_on_it_says_so(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with pytest.raises(PlatformError, match="id"):
+            await platform.reply_to_update(
+                account, a_reply_update(raw={"text": "no id here"}), "Hi!"
+            )
+
+
+class TestModeratingReplies:
+    async def test_it_hides_a_reply(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            manage = network.post(api(f"/{REPLIED_TO_ID}/manage_reply")).mock(
+                return_value=httpx.Response(200, json={"success": True})
+            )
+
+            await platform.set_comment_visibility(
+                account, a_reply_update(), hidden=True
+            )
+
+        sent = dict(httpx.QueryParams(manage.calls.last.request.content.decode()))
+        assert sent["hide"] == "true"
+
+    async def test_it_shows_a_reply_again(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            manage = network.post(api(f"/{REPLIED_TO_ID}/manage_reply")).mock(
+                return_value=httpx.Response(200, json={"success": True})
+            )
+
+            await platform.set_comment_visibility(
+                account, a_reply_update(), hidden=False
+            )
+
+        sent = dict(httpx.QueryParams(manage.calls.last.request.content.decode()))
+        assert sent["hide"] == "false"
+
+    async def test_hiding_an_update_with_no_id_on_it_says_so(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with pytest.raises(PlatformError, match="id"):
+            await platform.set_comment_visibility(
+                account, a_reply_update(raw={}), hidden=True
+            )
+
+    async def test_deleting_somebody_elses_reply_is_refused(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with pytest.raises(NotSupportedError, match="removing") as refused:
+            await platform.delete_comment(account, a_reply_update())
+
+        said = str(refused.value)
+        assert "set_comment_visibility" in said
+        assert "delete_post" in said
 
 
 # ---------------------------------------------------------------------------
@@ -2065,5 +2857,7 @@ class TestThreadsBehavesLikeTheOthers(PlatformChecks):
                 f"POST /v1.0/{USER_ID}/threads": {"id": CONTAINER},
                 f"GET /v1.0/{CONTAINER}": {"status": "FINISHED"},
                 f"POST /v1.0/{USER_ID}/threads_publish": {"id": POST_ID},
+                f"GET /v1.0/{USER_ID}/threads": {"data": []},
+                f"GET /v1.0/{POST_ID}/insights": {"data": []},
             }
         )
