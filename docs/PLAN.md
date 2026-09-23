@@ -149,14 +149,17 @@ against**, not partway through as first planned. See
 [the promise about changes](adding-a-platform.md#what-we-promise-about-changes)
 for what that means for a platform written today.
 
-Four releases have tested that promise since: 0.2.0 added `CanCheckState`,
+Six releases have tested that promise since: 0.2.0 added `CanCheckState`,
 `CanAnswerSetupCheck` and `CanReadPushedUpdates`, 0.3.0 added
 `Feature.NEEDS_NO_APP` for a network with no app to register, 0.4.0
 added `CanReadStats` for reading a post's numbers back, and 0.6.0 added
 `CanReplyToUpdates`, `CanEditBusinessInfo` and `CanManageVerification` for
 Google Business Profile - the first network where reading is not enough, a
 post is not the whole of what there is to manage, and there is a
-verification process with nothing to do with signing in. All four were
+verification process with nothing to do with signing in. 0.7.0 added
+`CanModerateComments` for hiding and removing comments on TikTok Business,
+and 0.7.3 added `CanReadReplies` for reading one post's replies on Threads.
+All six were
 additions a platform written against 0.1.0 did not have to do anything
 about, which is exactly what the promise says should happen.
 
