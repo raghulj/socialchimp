@@ -111,6 +111,7 @@ import httpx
 from socialchimp.errors import (
     AuthError,
     BlockedError,
+    ConfigError,
     InvalidPostError,
     MissingPermissionError,
     NotFoundError,
@@ -1524,13 +1525,40 @@ def _parse_marker(marker: str) -> tuple[str, str] | None:
 
     Returns:
         The moment and the address, or `None` if this is not a marker this
-        platform recognises - treated the same as no marker at all, since
-        there is nothing safe to resume from.
+        platform recognises.
     """
     when, separator, uri = marker.partition(_MARKER_SEPARATOR)
     if not separator or not when or not uri:
         return None
     return when, uri
+
+
+# What we say when a marker was not built by this platform. Treating it the
+# same as `None` would silently restart from the latest page and drop
+# whatever came after it, so this refuses instead - loudly, on the first
+# call that sees it, rather than quietly on every call after.
+_BAD_MARKER_MESSAGE: Final = (
+    "This marker was not made by Bluesky's platform, so there is nothing "
+    "safe to resume from. Pass None to start afresh."
+)
+
+
+def _own_marker(marker: str) -> tuple[str, str]:
+    """Parse a marker, insisting it is one this platform built.
+
+    Args:
+        marker: The marker to check.
+
+    Returns:
+        The moment and the address it names.
+
+    Raises:
+        ConfigError: If this is not a marker this platform recognises.
+    """
+    parsed = _parse_marker(marker)
+    if parsed is None:
+        raise ConfigError(_BAD_MARKER_MESSAGE)
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -2538,11 +2566,16 @@ class BlueskyPlatform:
         another call straight away rather than this one holding a request
         open indefinitely.
 
+        A notification sharing its `indexedAt` with the marker can come
+        back again on the next call, alongside whatever is genuinely new -
+        that is a repeat, never a loss. `SeenUpdates` and `Dispatcher` (see
+        `socialchimp.events`) dedupe by `Update.id`, so handling the same
+        update twice costs nothing.
+
         Args:
             connection: The account to ask about.
             marker: The marker from the last call's `UpdateBatch.marker`.
-                `None` on the first call. A marker this platform did not
-                write itself is treated the same as `None`.
+                `None` on the first call.
             limit: A cap on how many notifications come back per page.
                 `None` uses this platform's own default; more than 100 is
                 capped at 100.
@@ -2550,13 +2583,19 @@ class BlueskyPlatform:
         Returns:
             The new updates, oldest first, and a marker to store for next
             time.
+
+        Raises:
+            ConfigError: If `marker` is not `None` and not a marker this
+                platform built. Treating it like `None` would silently
+                restart from the latest page and drop whatever came after
+                it, so this refuses instead of guessing.
         """
         page_limit = (
             min(limit, _MAX_LIKES_PAGE)
             if limit is not None
             else (self._updates_per_check)
         )
-        parsed_marker = _parse_marker(marker) if marker is not None else None
+        parsed_marker = _own_marker(marker) if marker is not None else None
 
         collected: list[RawData] = []
         cursor: str | None = None
@@ -2627,11 +2666,12 @@ class BlueskyPlatform:
         Args:
             connection: The account to mark it for.
             marker: The marker that has been handled. Its `indexedAt` half
-                is what is sent as `seenAt`; a marker this platform did not
-                write itself is sent to Bluesky exactly as given.
+                is what is sent as `seenAt`.
+
+        Raises:
+            ConfigError: If `marker` is not a marker this platform built.
         """
-        parsed = _parse_marker(marker)
-        seen_at = parsed[0] if parsed is not None else marker
+        seen_at, _uri = _own_marker(marker)
 
         async with self._client(
             _clean_host(connection.host), connection.token.access_token

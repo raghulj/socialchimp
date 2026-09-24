@@ -17,6 +17,7 @@ from socialchimp import (
     AppCredentials,
     AuthError,
     BlockedError,
+    ConfigError,
     Connection,
     Feature,
     InMemoryStorage,
@@ -2329,18 +2330,18 @@ class TestFetchUpdatesAfterAMarker:
         assert route.calls.call_count == bluesky_module._MAX_MARKER_PAGES
         assert batch.more is True
 
-    async def test_a_malformed_marker_is_treated_like_none(
+    async def test_a_malformed_marker_raises_instead_of_starting_over(
         self, platform: BlueskyPlatform, account: Connection
     ) -> None:
-        items = [notification("like", at="2026-08-31T12:00:00Z")]
-        with respx.mock(base_url=XRPC) as network:
-            route = network.get("/app.bsky.notification.listNotifications").mock(
-                return_value=httpx.Response(200, json={"notifications": items})
-            )
-            batch = await platform.fetch_updates_after(account, "not-a-real-marker")
+        # Treating this like None would silently restart from the latest
+        # page and drop whatever came after it - the opposite of safe.
+        with respx.mock(base_url=XRPC, assert_all_called=False) as network:
+            route = network.get("/app.bsky.notification.listNotifications")
 
-        assert route.calls.call_count == 1
-        assert len(batch.updates) == 1
+            with pytest.raises(ConfigError, match="None"):
+                await platform.fetch_updates_after(account, "not-a-real-marker")
+
+        assert route.call_count == 0
 
     async def test_the_marker_stays_put_when_nothing_new_is_found(
         self, platform: BlueskyPlatform, account: Connection
@@ -2394,16 +2395,16 @@ class TestMarkingAMarkerSeen:
 
         assert sent_json(route) == {"seenAt": "2026-08-31T12:00:00Z"}
 
-    async def test_a_marker_it_did_not_write_is_sent_as_is(
+    async def test_a_marker_it_did_not_write_raises_instead_of_being_sent(
         self, platform: BlueskyPlatform, account: Connection
     ) -> None:
-        with respx.mock(base_url=XRPC) as network:
-            route = network.post("/app.bsky.notification.updateSeen").mock(
-                return_value=httpx.Response(200, json={})
-            )
-            await platform.mark_seen(account, "some-other-marker")
+        with respx.mock(base_url=XRPC, assert_all_called=False) as network:
+            route = network.post("/app.bsky.notification.updateSeen")
 
-        assert sent_json(route) == {"seenAt": "some-other-marker"}
+            with pytest.raises(ConfigError, match="None"):
+                await platform.mark_seen(account, "some-other-marker")
+
+        assert route.call_count == 0
 
 
 # ---------------------------------------------------------------------------
