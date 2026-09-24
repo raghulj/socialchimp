@@ -129,12 +129,18 @@ __all__ = ["MastodonPlatform", "mastodon_errors", "post_fingerprint"]
 
 PLATFORM_NAME: Final = "mastodon"
 
-DEFAULT_SCOPES: Final = ("read", "write")
-"""Enough to read an account's own timeline and to post as them.
+DEFAULT_SCOPES: Final = ("read", "write", "push")
+"""Enough to read an account's own timeline, post as them, and use Web Push.
 
 Mastodon also has narrower scopes such as `write:statuses`. Ask for those
 instead if your app only ever posts - people are more likely to say yes to a
 smaller request.
+
+`push` is not used by anything in this release - Web Push arrives in a later
+one, together with Meta's webhooks. It is asked for now anyway, on the
+owner's decision, so a connection made today does not have to be remade the
+day Web Push ships. A server that refuses it grants what it can; see
+`Connection.scopes` for what actually came back.
 """
 
 VISIBILITIES: Final = ("public", "unlisted", "private", "direct")

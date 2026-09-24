@@ -274,7 +274,7 @@ class TestRegisteringAnApp:
         assert app.client_id == "public-half"
         assert app.client_secret == "private-half"
 
-    async def test_it_asks_for_read_and_write_when_you_say_nothing(
+    async def test_it_asks_for_read_write_and_push_when_you_say_nothing(
         self,
         platform: MastodonPlatform,
     ) -> None:
@@ -288,7 +288,7 @@ class TestRegisteringAnApp:
             await platform.create_app(name="My App", redirect_uri=REDIRECT, host=HOST)
 
         sent = form_of(route.calls.last.request)
-        assert sent["scopes"] == ["read write"]
+        assert sent["scopes"] == ["read write push"]
         # No website was set, so none is sent.
         assert "website" not in sent
 
@@ -380,7 +380,7 @@ class TestStartingALogin:
         assert query["response_type"] == ["code"]
         assert query["client_id"] == ["client-id"]
         assert query["redirect_uri"] == [REDIRECT]
-        assert query["scope"] == ["read write"]
+        assert query["scope"] == ["read write push"]
         assert query["state"] == ["my-state"]
         assert query["code_challenge_method"] == ["S256"]
         assert step.state == "my-state"
@@ -470,7 +470,7 @@ class TestFinishingALogin:
         assert sent["client_id"] == ["client-id"]
         assert sent["client_secret"] == ["client-secret"]
         assert sent["redirect_uri"] == [REDIRECT]
-        assert sent["scope"] == ["read write"]
+        assert sent["scope"] == ["read write push"]
         # The secret we send now must hash to the challenge we sent earlier.
         # That is the whole point of it: it proves the code came back to the
         # same place that asked for it.
