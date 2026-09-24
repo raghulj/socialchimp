@@ -22,6 +22,13 @@ a schema nobody could verify, it is left out. `features` carries no
 not because TikTok has no such number, but because this platform will not
 claim one it cannot back with a source.
 
+**No name or picture, for the same reason.** `finish_login` never asks
+who the advertiser account belongs to - there is no confirmed identity
+endpoint for it either - so `account_name` is left as a placeholder and
+`Connection.avatar_url` stays `None`. This platform does not implement
+`read_profile`, so `Account.profile` raises `NotSupportedError` here rather
+than pretending to know a name it never asked for.
+
 Reference links:
 - https://business-api.tiktok.com/portal/docs (main portal)
 - https://business-api.tiktok.com/portal/docs/organic-api/v1.3 (Accounts API)
@@ -382,6 +389,10 @@ class TikTokBusinessPlatform:
             token=token,
             scopes=(),
             extra={},
+            # No identity endpoint means no picture either. `avatar_url`
+            # defaults to `None`, and this platform has no `read_profile`
+            # to refresh it later - see the module docstring.
+            avatar_url=None,
         )
 
         return Finished(connection=connection)

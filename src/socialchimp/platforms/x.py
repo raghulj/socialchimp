@@ -165,6 +165,7 @@ from socialchimp.http import (
     retry_after_seconds,
 )
 from socialchimp.models import (
+    AccountProfile,
     Connection,
     Media,
     MediaKind,
@@ -173,6 +174,7 @@ from socialchimp.models import (
     PostState,
     RawData,
     Token,
+    picture_url,
 )
 from socialchimp.platform import Finished, LoginRequest, SendToNetwork
 
@@ -208,6 +210,10 @@ TWEETS_PATH: Final = "/tweets"
 MEDIA_PATH: Final = "/media/upload"
 MEDIA_METADATA_PATH: Final = "/media/metadata"
 ME_PATH: Final = "/users/me"
+
+PROFILE_FIELDS: Final = {"user.fields": "profile_image_url"}
+"""Asked for on every `/users/me` call, so a picture comes back alongside
+who signed in - at login and whenever `read_profile` is asked again."""
 
 DEFAULT_SCOPES: Final = ("tweet.read", "tweet.write", "users.read", "offline.access")
 """Enough to read an account's mentions and to post as them.
@@ -1136,6 +1142,7 @@ class XPlatform:
                     "GET",
                     ME_PATH,
                     headers={"Authorization": f"Bearer {access_token}"},
+                    params=PROFILE_FIELDS,
                 )
             )
 
@@ -1162,6 +1169,7 @@ class XPlatform:
                 ),
                 scopes=scopes,
                 extra={"profile_url": f"https://x.com/{handle}"},
+                avatar_url=picture_url(me.get("profile_image_url")),
             )
         )
 
@@ -1633,6 +1641,32 @@ class XPlatform:
         """
         async with self._client(connection.token.access_token) as http:
             await http.delete(f"{TWEETS_PATH}/{post_id}")
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask X for this account's current name and picture.
+
+        Makes exactly one request - the same `/users/me` a sign-in reads -
+        so a picture address that has gone stale can always be read fresh.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The name, in the same `@handle` form `account_name` uses, and
+            the picture X has on file right now. `None` for the picture
+            when X has none set.
+
+        Raises:
+            SocialChimpError: If X refuses the question.
+        """
+        async with self._client(connection.token.access_token) as http:
+            me = _inside(await http.json("GET", ME_PATH, params=PROFILE_FIELDS))
+
+        handle = _text(me, "username", "say who this account is")
+        return AccountProfile(
+            name=f"@{handle}",
+            avatar_url=picture_url(me.get("profile_image_url")),
+        )
 
     # X can also hold a socket open (its filtered stream) and post to a URL
     # of yours (account activity). Both are separate products on paid plans

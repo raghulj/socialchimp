@@ -17,6 +17,7 @@ import pytest
 import respx
 
 from socialchimp import (
+    AccountProfile,
     AppCredentials,
     AuthError,
     ConfigError,
@@ -41,6 +42,7 @@ from socialchimp.http import Retries
 from socialchimp.platform import (
     CanCheckState,
     CanCreateApp,
+    CanReadProfile,
     CanReadUpdates,
     CanResumeLogin,
     ChooseAccount,
@@ -234,10 +236,12 @@ class TestWhatItSaysItCanDo:
         checked: Platform = platform
         reads: CanReadUpdates = platform
         resumes: CanResumeLogin = platform
+        reads_profile: CanReadProfile = platform
 
         assert isinstance(checked, Platform)
         assert isinstance(reads, CanReadUpdates)
         assert isinstance(resumes, CanResumeLogin)
+        assert isinstance(reads_profile, CanReadProfile)
         assert platform.name == "youtube"
 
     def test_it_lists_the_features_youtube_really_has(
@@ -662,6 +666,290 @@ class TestChoosingAChannel:
             await platform.resume_login(
                 login(), resume_token=packed, account_id=CHANNEL
             )
+
+
+def _channel_with_thumbnails(
+    channel_id: str, thumbnails: dict[str, Any]
+) -> dict[str, Any]:
+    """One channel from `channels.list`, carrying picture data."""
+    return {
+        "id": channel_id,
+        "snippet": {"title": f"Channel {channel_id}", "thumbnails": thumbnails},
+    }
+
+
+class TestTheChannelsPicture:
+    async def test_it_carries_the_picture_through_to_the_finished_connection(
+        self, platform: YouTubePlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post("https://oauth2.googleapis.com/token").mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            _channel_with_thumbnails(
+                                CHANNEL,
+                                {
+                                    "default": {"url": "https://img.example/d.jpg"},
+                                    "medium": {"url": "https://img.example/m.jpg"},
+                                    "high": {"url": "https://img.example/h.jpg"},
+                                },
+                            )
+                        ]
+                    },
+                )
+            )
+
+            step = await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "v"}
+            )
+
+        done = await platform.resume_login(
+            login(), resume_token=step.resume_token, account_id=CHANNEL
+        )
+
+        assert isinstance(done, Finished)
+        assert done.connection.avatar_url == "https://img.example/d.jpg"
+
+    async def test_it_prefers_medium_when_there_is_no_default(
+        self, platform: YouTubePlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post("https://oauth2.googleapis.com/token").mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            _channel_with_thumbnails(
+                                CHANNEL,
+                                {"medium": {"url": "https://img.example/m.jpg"}},
+                            )
+                        ]
+                    },
+                )
+            )
+
+            step = await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "v"}
+            )
+
+        done = await platform.resume_login(
+            login(), resume_token=step.resume_token, account_id=CHANNEL
+        )
+
+        assert done.connection.avatar_url == "https://img.example/m.jpg"
+
+    async def test_it_falls_back_to_high_when_that_is_all_there_is(
+        self, platform: YouTubePlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post("https://oauth2.googleapis.com/token").mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            _channel_with_thumbnails(
+                                CHANNEL,
+                                {"high": {"url": "https://img.example/h.jpg"}},
+                            )
+                        ]
+                    },
+                )
+            )
+
+            step = await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "v"}
+            )
+
+        done = await platform.resume_login(
+            login(), resume_token=step.resume_token, account_id=CHANNEL
+        )
+
+        assert done.connection.avatar_url == "https://img.example/h.jpg"
+
+    async def test_no_thumbnails_at_all_gives_no_picture(
+        self, platform: YouTubePlatform
+    ) -> None:
+        with respx.mock() as network:
+            step = await sign_in(platform, network)
+
+        done = await platform.resume_login(
+            login(), resume_token=step.resume_token, account_id=CHANNEL
+        )
+
+        assert done.connection.avatar_url is None
+
+    async def test_thumbnails_that_are_not_an_object_give_no_picture(
+        self, platform: YouTubePlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post("https://oauth2.googleapis.com/token").mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {
+                                "id": CHANNEL,
+                                "snippet": {"title": "Ada", "thumbnails": "nope"},
+                            }
+                        ]
+                    },
+                )
+            )
+
+            step = await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "v"}
+            )
+
+        done = await platform.resume_login(
+            login(), resume_token=step.resume_token, account_id=CHANNEL
+        )
+
+        assert done.connection.avatar_url is None
+
+    async def test_a_malformed_thumbnail_gives_no_picture(
+        self, platform: YouTubePlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post("https://oauth2.googleapis.com/token").mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            _channel_with_thumbnails(CHANNEL, {"default": {"url": ""}})
+                        ]
+                    },
+                )
+            )
+
+            step = await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "v"}
+            )
+
+        done = await platform.resume_login(
+            login(), resume_token=step.resume_token, account_id=CHANNEL
+        )
+
+        assert done.connection.avatar_url is None
+
+    async def test_an_old_resume_token_with_no_picture_data_still_works(
+        self, platform: YouTubePlatform
+    ) -> None:
+        # A resume_token made before avatar_url existed packed a plain name
+        # rather than {"name": ..., "avatar_url": ...}. It has to keep
+        # working, and just carries no picture.
+        packed = (
+            base64.urlsafe_b64encode(
+                json.dumps(
+                    {
+                        "access_token": "access-old",
+                        "refresh_token": "refresh-old",
+                        "expires_at": "2099-01-01T00:00:00+00:00",
+                        "scopes": [],
+                        "channels": {CHANNEL: "Ada's Channel"},
+                    },
+                    sort_keys=True,
+                ).encode()
+            )
+            .decode()
+            .rstrip("=")
+        )
+
+        done = await platform.resume_login(
+            login(), resume_token=packed, account_id=CHANNEL
+        )
+
+        assert isinstance(done, Finished)
+        assert done.connection.account_name == "Ada's Channel"
+        assert done.connection.avatar_url is None
+
+
+class TestReadingTheProfile:
+    async def test_it_makes_exactly_one_request(
+        self, platform: YouTubePlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            route = network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            _channel_with_thumbnails(
+                                CHANNEL,
+                                {"default": {"url": "https://img.example/d.jpg"}},
+                            )
+                        ]
+                    },
+                )
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert route.call_count == 1
+        asked = route.calls.last.request
+        assert asked.url.path == "/youtube/v3/channels"
+        assert asked.url.params["part"] == "snippet"
+        assert asked.url.params["id"] == CHANNEL
+        assert asked.headers["authorization"] == "Bearer access-one"
+        assert profile == AccountProfile(
+            name=f"Channel {CHANNEL}", avatar_url="https://img.example/d.jpg"
+        )
+
+    async def test_the_name_matches_what_a_login_would_have_used(
+        self, platform: YouTubePlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(200, json={"items": [{"id": CHANNEL}]})
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == CHANNEL
+
+    async def test_no_picture_gives_none(
+        self, platform: YouTubePlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"items": [{"id": CHANNEL, "snippet": {"title": "Ada"}}]},
+                )
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
+
+    async def test_a_channel_that_has_gone_falls_back_to_its_id(
+        self, platform: YouTubePlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            network.get("https://www.googleapis.com/youtube/v3/channels").mock(
+                return_value=httpx.Response(200, json={"items": []})
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == CHANNEL
+        assert profile.avatar_url is None
 
 
 # ---------------------------------------------------------------------------

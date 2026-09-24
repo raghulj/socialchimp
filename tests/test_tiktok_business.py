@@ -24,6 +24,7 @@ from socialchimp import (
 from socialchimp.events import Update, UpdateKind
 from socialchimp.http import Retries
 from socialchimp.platform import (
+    CanReadProfile,
     Finished,
     LoginRequest,
     SendToNetwork,
@@ -222,6 +223,42 @@ class TestFinishLogin:
             )
 
             assert result.connection.token.expires_at is None
+
+    @pytest.mark.asyncio
+    async def test_the_finished_connection_carries_no_picture(
+        self, platform: TikTokBusinessPlatform
+    ) -> None:
+        """finish_login leaves avatar_url as None, with no identity call made."""
+        with respx.mock:
+            respx.post(
+                "https://business-api.tiktok.com/open_api/v1.3/oauth2/access_token/"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "code": 0,
+                        "message": "ok",
+                        "request_id": "req-1",
+                        "data": {
+                            "access_token": "new-access-token",
+                            "refresh_token": "new-refresh-token",
+                        },
+                    },
+                )
+            )
+
+            result = await platform.finish_login(
+                login(),
+                callback={"auth_code": "the-code", "state": "my-state"},
+            )
+
+            assert result.connection.avatar_url is None
+
+    def test_it_does_not_offer_reading_the_profile_again(
+        self, platform: TikTokBusinessPlatform
+    ) -> None:
+        """There is no identity endpoint, so CanReadProfile is not offered."""
+        assert not isinstance(platform, CanReadProfile)
 
     @pytest.mark.asyncio
     async def test_raises_error_on_non_zero_code(

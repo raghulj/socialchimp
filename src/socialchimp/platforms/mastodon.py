@@ -114,6 +114,7 @@ from socialchimp.features import (
 )
 from socialchimp.http import HttpClient, error_from_response, read_body
 from socialchimp.models import (
+    AccountProfile,
     AppCredentials,
     Attachment,
     Connection,
@@ -135,6 +136,7 @@ from socialchimp.models import (
     Thread,
     Token,
     Visibility,
+    picture_url,
 )
 from socialchimp.platform import Finished, LoginRequest, SendToNetwork
 
@@ -1738,6 +1740,7 @@ class MastodonPlatform:
                 token=Token(access_token=access_token),
                 scopes=scopes,
                 extra={"profile_url": me.get("url")},
+                avatar_url=picture_url(me.get("avatar")),
             )
         )
 
@@ -1762,6 +1765,32 @@ class MastodonPlatform:
             The token the connection already holds.
         """
         return connection.token
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask this account's server for its current name and picture.
+
+        One request: `GET /api/v1/accounts/verify_credentials`.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The name, in the same form as `Connection.account_name`, and
+            the picture - or `None` where the account has none set.
+
+        Raises:
+            ConfigError: If the connection has no server on it.
+            PlatformError: If the server answered without an `acct`.
+        """
+        server = _host_of(connection)
+        async with self._client(server, connection.token.access_token) as http:
+            reply = await http.json("GET", "/api/v1/accounts/verify_credentials")
+
+        handle = _text(reply, "acct", "read this account's profile")
+        return AccountProfile(
+            name=f"@{handle}@{server}",
+            avatar_url=picture_url(reply.get("avatar")),
+        )
 
     async def limits(self, connection: Connection) -> Limits:
         """Ask a server what it currently allows.

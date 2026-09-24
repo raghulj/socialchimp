@@ -15,6 +15,7 @@ import pytest
 import respx
 
 from socialchimp import (
+    AccountProfile,
     AppCredentials,
     AuthError,
     ConfigError,
@@ -38,6 +39,7 @@ from socialchimp.http import Retries
 from socialchimp.platform import (
     CanCreateApp,
     CanDeletePosts,
+    CanReadProfile,
     CanReadUpdates,
     LoginRequest,
     Platform,
@@ -159,13 +161,19 @@ def a_token(**extra: object) -> dict[str, Any]:
     }
 
 
-def stub_me(network: respx.Router) -> respx.Route:
-    """Answer the "who just signed in?" question."""
+def stub_me(network: respx.Router, *, avatar_url: object = None) -> respx.Route:
+    """Answer the "who just signed in?" question.
+
+    Args:
+        network: Where to add the mock.
+        avatar_url: What to put in `profile_image_url`. Left out, X sends
+            none at all - the shape a picture-less account takes.
+    """
+    data: dict[str, Any] = {"id": ACCOUNT_ID, "username": HANDLE, "name": "Ada"}
+    if avatar_url is not None:
+        data["profile_image_url"] = avatar_url
     return network.get(f"{API}/users/me").mock(
-        return_value=httpx.Response(
-            200,
-            json={"data": {"id": ACCOUNT_ID, "username": HANDLE, "name": "Ada"}},
-        )
+        return_value=httpx.Response(200, json={"data": data})
     )
 
 
@@ -177,10 +185,12 @@ class TestWhatItSaysItCanDo:
         checked: Platform = platform
         deletes: CanDeletePosts = platform
         reads: CanReadUpdates = platform
+        reads_profile: CanReadProfile = platform
 
         assert isinstance(checked, Platform)
         assert isinstance(deletes, CanDeletePosts)
         assert isinstance(reads, CanReadUpdates)
+        assert isinstance(reads_profile, CanReadProfile)
         assert platform.name == "x"
 
     def test_it_lists_the_features_x_really_has(self, platform: XPlatform) -> None:
@@ -400,6 +410,72 @@ class TestFinishingTheSignIn:
         assert connection.token.expires_at is not None
         assert connection.scopes == DEFAULT_SCOPES
         assert connection.extra["profile_url"] == f"https://x.com/{HANDLE}"
+        # X sent no profile_image_url at all here.
+        assert connection.avatar_url is None
+
+    async def test_it_asks_for_the_profile_picture_alongside_who_signed_in(
+        self,
+        platform: XPlatform,
+    ) -> None:
+        with respx.mock() as network:
+            network.post(f"{API}/oauth2/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+            me = stub_me(network, avatar_url="https://img.example/a.jpg")
+
+            await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "s"}
+            )
+
+        assert me.calls.last.request.url.params["user.fields"] == "profile_image_url"
+
+    async def test_the_picture_is_carried_onto_the_finished_connection(
+        self,
+        platform: XPlatform,
+    ) -> None:
+        with respx.mock() as network:
+            network.post(f"{API}/oauth2/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+            stub_me(network, avatar_url="https://img.example/a.jpg")
+
+            done = await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "s"}
+            )
+
+        assert done.connection.avatar_url == "https://img.example/a.jpg"
+
+    async def test_an_empty_picture_is_no_picture(
+        self,
+        platform: XPlatform,
+    ) -> None:
+        with respx.mock() as network:
+            network.post(f"{API}/oauth2/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+            stub_me(network, avatar_url="")
+
+            done = await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "s"}
+            )
+
+        assert done.connection.avatar_url is None
+
+    async def test_a_picture_that_is_not_text_is_no_picture(
+        self,
+        platform: XPlatform,
+    ) -> None:
+        with respx.mock() as network:
+            network.post(f"{API}/oauth2/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+            stub_me(network, avatar_url=123)
+
+            done = await platform.finish_login(
+                login(), {"code": "the-code"}, {"code_verifier": "s"}
+            )
+
+        assert done.connection.avatar_url is None
 
     async def test_an_app_with_no_secret_names_itself_in_the_form(
         self,
@@ -1475,6 +1551,75 @@ class TestRemovingAPost:
 
             with pytest.raises(NotFoundError):
                 await platform.delete_post(account, "1")
+
+
+class TestReadingTheProfile:
+    async def test_it_makes_exactly_one_request(
+        self,
+        platform: XPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            route = stub_me(network, avatar_url="https://img.example/a.jpg")
+
+            profile = await platform.read_profile(account)
+
+        assert route.call_count == 1
+        asked = route.calls.last.request
+        assert asked.url.path == "/2/users/me"
+        assert asked.url.params["user.fields"] == "profile_image_url"
+        assert asked.headers["authorization"] == "Bearer access-one"
+        assert profile == AccountProfile(
+            name=f"@{HANDLE}", avatar_url="https://img.example/a.jpg"
+        )
+
+    async def test_the_name_matches_account_names_own_format(
+        self,
+        platform: XPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            stub_me(network)
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == account.account_name
+
+    async def test_no_picture_gives_none(
+        self,
+        platform: XPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            stub_me(network)
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
+
+    async def test_an_empty_picture_gives_none(
+        self,
+        platform: XPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            stub_me(network, avatar_url="")
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
+
+    async def test_a_malformed_picture_gives_none(
+        self,
+        platform: XPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            stub_me(network, avatar_url=["not", "a", "url"])
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
 
 
 class TestReadingWhatHappened:

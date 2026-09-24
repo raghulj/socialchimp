@@ -12,6 +12,7 @@ import pytest
 import respx
 
 from socialchimp import (
+    AccountProfile,
     AppCredentials,
     BusinessLocation,
     ConfigError,
@@ -59,6 +60,7 @@ from socialchimp.platform import (
     SendToNetwork,
 )
 from socialchimp.registry import register_platform, unregister_platform
+from socialchimp.testing import RecordingStorage
 
 HOST = "fake.example"
 BASE = f"https://{HOST}"
@@ -421,6 +423,29 @@ class LyingPostReader(FakePlatform):
 def made_post_reader() -> PostReadingPlatform:
     platform = made("post-reader")
     assert isinstance(platform, PostReadingPlatform)
+    return platform
+
+
+class ProfileReadingPlatform(FakePlatform):
+    """A platform that can read the account's own name and picture back."""
+
+    name = "profile-reader"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.profiles_read: list[Connection] = []
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        self.profiles_read.append(connection)
+        return AccountProfile(
+            name=connection.account_name,
+            avatar_url="https://profile-reader.example/me.jpg",
+        )
+
+
+def made_profile_reader() -> ProfileReadingPlatform:
+    platform = made("profile-reader")
+    assert isinstance(platform, ProfileReadingPlatform)
     return platform
 
 
@@ -1063,6 +1088,7 @@ FAKES: dict[str, type[FakePlatform]] = {
     "broken": BrokenPlatform,
     "post-reader": PostReadingPlatform,
     "lying-post-reader": LyingPostReader,
+    "profile-reader": ProfileReadingPlatform,
     "thread-reader": ThreadReadingPlatform,
     "lying-thread-reader": LyingThreadReader,
     "comment-replier": CommentReplyingPlatform,
@@ -1559,6 +1585,47 @@ class TestAskingHowAPostIsGettingOn:
 
         assert "fake" in str(refused.value)
         assert "publish" in str(refused.value)
+
+
+class TestReadingTheProfile:
+    async def test_an_account_can_read_its_name_and_picture(self) -> None:
+        storage = await storage_holding(a_connection(platform="profile-reader"))
+        sc = SocialChimp(storage)
+
+        profile = await sc.account("conn-1").profile()
+
+        assert profile.name == "someone"
+        assert profile.avatar_url == "https://profile-reader.example/me.jpg"
+        assert made_profile_reader().profiles_read[0].id == "conn-1"
+
+    async def test_reading_it_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="profile-reader"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").profile()
+
+        asked = made_profile_reader().profiles_read[0]
+        assert asked.token.access_token == NEW_ACCESS
+
+    async def test_reading_it_writes_nothing_to_storage(self) -> None:
+        storage = RecordingStorage(
+            connections=[a_connection(platform="profile-reader")]
+        )
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").profile()
+
+        assert "save_connection" not in storage.names()
+
+    async def test_a_network_that_cannot_be_asked_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").profile()
+
+        assert "fake" in str(refused.value)
+        assert "name and picture" in str(refused.value)
 
 
 class TestAskingWhatHasHappened:

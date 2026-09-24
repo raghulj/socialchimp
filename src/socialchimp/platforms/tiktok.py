@@ -218,6 +218,7 @@ from socialchimp.http import (
     retry_after_seconds,
 )
 from socialchimp.models import (
+    AccountProfile,
     Connection,
     Media,
     MediaKind,
@@ -226,6 +227,7 @@ from socialchimp.models import (
     PostState,
     RawData,
     Token,
+    picture_url,
 )
 from socialchimp.platform import Finished, LoginRequest, SendToNetwork
 
@@ -260,14 +262,21 @@ SIGNATURE_HEADER: Final = "TikTok-Signature"
 DEFAULT_SCOPES: Final = ("user.info.basic", "video.upload", "video.publish")
 """Enough to know who somebody is and to post for them.
 
-- `user.info.basic` - their name and open id, so a connection has something
-  a person would recognise on it.
+- `user.info.basic` - their name, open id and picture, so a connection has
+  something a person would recognise on it.
 - `video.upload` - put a video in their drafts for them to finish.
 - `video.publish` - put a video straight on their profile.
 
 Ask for fewer if your app only ever fills the drafts: leaving out
 `video.publish` is the difference between a permission TikTok grants readily
 and one it looks at harder.
+"""
+
+USER_INFO_FIELDS: Final = "open_id,display_name,username,avatar_url"
+"""What `finish_login` and `read_profile` both ask `/user/info/` for.
+
+All four sit under `user.info.basic`, so asking for a picture alongside a
+name never needs a second scope.
 """
 
 TO_DRAFTS: Final = "drafts"
@@ -1528,7 +1537,7 @@ class TikTokPlatform:
             about = await http.json(
                 "GET",
                 "/user/info/",
-                params={"fields": "open_id,display_name,username"},
+                params={"fields": USER_INFO_FIELDS},
             )
 
         person = _data_in(about).get("user")
@@ -1559,7 +1568,44 @@ class TikTokPlatform:
                 ),
                 scopes=tuple(given),
                 extra=extra,
+                avatar_url=picture_url(person.get("avatar_url")),
             )
+        )
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask TikTok for this account's current name and picture.
+
+        Makes exactly one request - the same `/user/info/` call
+        `finish_login` makes to greet a freshly connected account, asked
+        with the same access token this connection already carries.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The name, worked out the same way `finish_login` works it out -
+            the display name, falling back to the username and then to the
+            open id - together with the picture, or `None` when TikTok has
+            none on file.
+
+        Raises:
+            PlatformError: If TikTok answers without a user.
+        """
+        async with self._client(connection.token.access_token) as http:
+            about = await http.json(
+                "GET",
+                "/user/info/",
+                params={"fields": USER_INFO_FIELDS},
+            )
+
+        person = _data_in(about).get("user")
+        person = person if isinstance(person, dict) else {}
+        username = person.get("username")
+        display_name = person.get("display_name")
+
+        return AccountProfile(
+            name=str(display_name or username or connection.account_id),
+            avatar_url=picture_url(person.get("avatar_url")),
         )
 
     async def refresh(

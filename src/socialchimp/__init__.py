@@ -58,6 +58,7 @@ from socialchimp.features import (
     measure_text,
 )
 from socialchimp.models import (
+    AccountProfile,
     AppCredentials,
     Attachment,
     BusinessLocation,
@@ -84,6 +85,7 @@ from socialchimp.models import (
     Verification,
     VerificationOption,
     Visibility,
+    picture_url,
     require_timezone,
 )
 from socialchimp.registry import available_platforms, register_platform
@@ -97,10 +99,11 @@ from socialchimp.storage import (
 )
 from socialchimp.tokens import TokenManager
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "Account",
+    "AccountProfile",
     "AppCredentials",
     "Attachment",
     "AuthError",
@@ -168,6 +171,7 @@ __all__ = [
     "count_graphemes",
     "in_a_thread",
     "measure_text",
+    "picture_url",
     "poll",
     "register_platform",
     "require_timezone",

@@ -39,6 +39,7 @@ from socialchimp.platform import (
     CanCheckSignature,
     CanCheckState,
     CanDeletePosts,
+    CanReadProfile,
     CanReadPushedUpdates,
     CanReadStats,
     CanReadUpdates,
@@ -222,12 +223,14 @@ class TestWhatItSaysItCanDo:
         deletes: CanDeletePosts = platform
         listens: CanCheckSignature = platform
         answers: CanCheckState = platform
+        reads_profile: CanReadProfile = platform
 
         assert isinstance(checked, Platform)
         assert isinstance(resumes, CanResumeLogin)
         assert isinstance(deletes, CanDeletePosts)
         assert isinstance(listens, CanCheckSignature)
         assert isinstance(answers, CanCheckState)
+        assert isinstance(reads_profile, CanReadProfile)
         assert platform.name == "facebook"
 
     def test_it_lists_the_features_facebook_really_has(
@@ -632,6 +635,50 @@ class TestChoosingAPage:
         assert isinstance(step, Finished)
         assert step.connection.token.expires_at is None
 
+    async def test_it_saves_the_pages_picture_off_the_same_lookup(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        # No second request: page_by_id already asks for picture{url}.
+        page = {
+            **PAGES["data"][0],
+            "picture": {"data": {"url": "https://example.com/cake.jpg"}},
+        }
+        with respx.mock(base_url=GRAPH_API) as network:
+            lookup = network.get(f"/{PAGE_ID}").mock(
+                return_value=httpx.Response(200, json=page)
+            )
+
+            step = await platform.resume_login(
+                a_request(), resume_token="long", account_id=PAGE_ID
+            )
+
+        assert isinstance(step, Finished)
+        assert step.connection.avatar_url == "https://example.com/cake.jpg"
+        assert lookup.call_count == 1
+
+    @pytest.mark.parametrize(
+        "picture",
+        [None, {}, {"data": {}}, {"data": {"url": ""}}, {"data": {"url": "nope"}}],
+    )
+    async def test_no_usable_picture_leaves_the_avatar_unset(
+        self,
+        platform: FacebookPlatform,
+        picture: dict[str, Any] | None,
+    ) -> None:
+        page: dict[str, Any] = {**PAGES["data"][0]}
+        if picture is not None:
+            page["picture"] = picture
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get(f"/{PAGE_ID}").mock(return_value=httpx.Response(200, json=page))
+
+            step = await platform.resume_login(
+                a_request(), resume_token="long", account_id=PAGE_ID
+            )
+
+        assert isinstance(step, Finished)
+        assert step.connection.avatar_url is None
+
     async def test_a_page_they_do_not_manage_says_what_to_do(
         self,
         platform: FacebookPlatform,
@@ -654,6 +701,76 @@ class TestChoosingAPage:
             await platform.resume_login(
                 a_request(), resume_token="", account_id=PAGE_ID
             )
+
+
+# ---------------------------------------------------------------------------
+# Reading the profile back
+# ---------------------------------------------------------------------------
+
+
+class TestReadingTheProfile:
+    async def test_it_makes_exactly_one_request(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            route = network.get(f"/{PAGE_ID}").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "name": "Ada's Cakes",
+                        "picture": {"data": {"url": "https://example.com/cake.jpg"}},
+                    },
+                )
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert route.call_count == 1
+        asked = route.calls.last.request
+        assert asked.headers["Authorization"] == f"Bearer {PAGE_TOKEN}"
+        assert asked.url.params["fields"] == "name,picture{url}"
+        assert profile.name == "Ada's Cakes"
+        assert profile.avatar_url == "https://example.com/cake.jpg"
+
+    async def test_no_picture_gives_no_avatar(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get(f"/{PAGE_ID}").mock(
+                return_value=httpx.Response(200, json={"name": "Ada's Cakes"})
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
+
+    async def test_a_reply_with_no_name_is_shown_by_its_id(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get(f"/{PAGE_ID}").mock(return_value=httpx.Response(200, json={}))
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == PAGE_ID
+
+    async def test_it_refuses_a_connection_that_names_no_page(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        with (
+            respx.mock(assert_all_called=False) as network,
+            pytest.raises(ConfigError),
+        ):
+            await platform.read_profile(an_account(page_id="", extra={}))
+
+        assert not network.calls
 
 
 # ---------------------------------------------------------------------------

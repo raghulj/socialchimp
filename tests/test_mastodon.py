@@ -16,6 +16,7 @@ import pytest
 import respx
 
 from socialchimp import (
+    AccountProfile,
     AppCredentials,
     AuthError,
     ConfigError,
@@ -54,6 +55,7 @@ from socialchimp.platform import (
     CanMessage,
     CanReadLikes,
     CanReadPost,
+    CanReadProfile,
     CanReadStats,
     CanReadThread,
     CanReadUpdates,
@@ -70,6 +72,7 @@ from socialchimp.platforms.mastodon import MastodonPlatform, post_fingerprint
 HOST = "mastodon.social"
 OTHER = "fosstodon.org"
 REDIRECT = "https://app.example/callback"
+AVATAR = "https://files.mastodon.social/accounts/avatars/ada/original/avatar.jpg"
 
 # The server and account the social-inbox fixtures were built around - see
 # tests/fixtures/mastodon/README.md.
@@ -239,6 +242,7 @@ class TestWhatItSaysItCanDo:
         reads_after: CanReadUpdatesAfter = platform
         messages: CanMessage = platform
         starts: CanStartConversations = platform
+        reads_profile: CanReadProfile = platform
 
         assert isinstance(checked, Platform)
         assert isinstance(creates, CanCreateApp)
@@ -253,6 +257,7 @@ class TestWhatItSaysItCanDo:
         assert isinstance(reads_after, CanReadUpdatesAfter)
         assert isinstance(messages, CanMessage)
         assert isinstance(starts, CanStartConversations)
+        assert isinstance(reads_profile, CanReadProfile)
         assert platform.name == "mastodon"
 
     def test_it_lists_the_features_mastodon_really_has(
@@ -538,6 +543,7 @@ class TestFinishingALogin:
                         "acct": "ada",
                         "username": "ada",
                         "url": f"https://{HOST}/@ada",
+                        "avatar": AVATAR,
                     },
                 )
             )
@@ -572,6 +578,36 @@ class TestFinishingALogin:
         assert connection.token.refresh_token is None
         assert connection.token.expires_at is None
         assert connection.extra["profile_url"] == f"https://{HOST}/@ada"
+        assert connection.avatar_url == AVATAR
+
+    @pytest.mark.parametrize(
+        "avatar",
+        [None, "", 4],
+        ids=["missing", "empty", "not-a-string"],
+    )
+    async def test_a_picture_it_cannot_use_becomes_none(
+        self,
+        platform: MastodonPlatform,
+        avatar: object,
+    ) -> None:
+        started = await start(platform, login())
+        me: dict[str, Any] = {"id": "1", "acct": "ada"}
+        if avatar is not None:
+            me["avatar"] = avatar
+
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.post("/oauth/token").mock(
+                return_value=httpx.Response(200, json={"access_token": "user-token"})
+            )
+            network.get("/api/v1/accounts/verify_credentials").mock(
+                return_value=httpx.Response(200, json=me)
+            )
+
+            step = await platform.finish_login(
+                login(), {"code": "the-code", "state": started.state}, started.remember
+            )
+
+        assert step.connection.avatar_url is None
 
     async def test_the_secret_survives_a_trip_through_your_app(
         self,
@@ -687,6 +723,63 @@ class TestTokensThatNeverExpire:
 
         assert token is account.token
         assert not catch_all.called
+
+
+class TestReadingProfile:
+    async def test_it_makes_exactly_one_request_and_returns_name_and_avatar(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            route = network.get("/api/v1/accounts/verify_credentials").mock(
+                return_value=httpx.Response(
+                    200, json={"id": "1", "acct": "ada", "avatar": AVATAR}
+                )
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert route.calls.call_count == 1
+        assert route.calls.last.request.headers["authorization"] == "Bearer user-token"
+        assert profile == AccountProfile(name="@ada@mastodon.social", avatar_url=AVATAR)
+
+    @pytest.mark.parametrize(
+        "avatar",
+        [None, "", 4],
+        ids=["missing", "empty", "not-a-string"],
+    )
+    async def test_a_picture_it_cannot_use_becomes_none(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+        avatar: object,
+    ) -> None:
+        me: dict[str, Any] = {"id": "1", "acct": "ada"}
+        if avatar is not None:
+            me["avatar"] = avatar
+
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.get("/api/v1/accounts/verify_credentials").mock(
+                return_value=httpx.Response(200, json=me)
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
+
+    async def test_it_says_so_when_the_reply_has_no_acct(
+        self,
+        platform: MastodonPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=f"https://{HOST}") as network:
+            network.get("/api/v1/accounts/verify_credentials").mock(
+                return_value=httpx.Response(200, json={"id": "1"})
+            )
+
+            with pytest.raises(PlatformError, match="acct"):
+                await platform.read_profile(account)
 
 
 class TestLimits:

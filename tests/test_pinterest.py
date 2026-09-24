@@ -34,6 +34,7 @@ from socialchimp.http import Retries
 from socialchimp.platform import (
     CanCreateApp,
     CanDeletePosts,
+    CanReadProfile,
     CanReadUpdates,
     LoginRequest,
     Platform,
@@ -142,18 +143,20 @@ def a_token(**extra: object) -> dict[str, Any]:
     }
 
 
-def stub_me(network: respx.Router) -> respx.Route:
+AVATAR = "https://i.pinimg.example/ada.jpg"
+
+
+def stub_me(network: respx.Router, **extra: object) -> respx.Route:
     """Answer the "who just signed in?" question."""
+    account: dict[str, Any] = {
+        "username": ACCOUNT,
+        "id": "700000000000000000",
+        "account_type": "BUSINESS",
+        "profile_image": AVATAR,
+    }
+    account.update(extra)
     return network.get(f"{API}/user_account").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "username": ACCOUNT,
-                "id": "700000000000000000",
-                "account_type": "BUSINESS",
-                "profile_image": "https://i.pinimg.example/ada.jpg",
-            },
-        )
+        return_value=httpx.Response(200, json=account)
     )
 
 
@@ -396,6 +399,7 @@ class TestFinishingTheSignIn:
             connection.extra["profile_url"] == f"https://www.pinterest.com/{ACCOUNT}/"
         )
         assert connection.extra["account_type"] == "BUSINESS"
+        assert connection.avatar_url == AVATAR
 
     async def test_it_does_not_choose_a_board_for_anybody(
         self,
@@ -545,6 +549,115 @@ class TestFinishingTheSignIn:
 
             with pytest.raises(PlatformError, match="access_token"):
                 await platform.finish_login(login(), {"code": "c"})
+
+
+class TestThePictureFromSigningIn:
+    async def test_no_profile_image_at_all_leaves_the_picture_empty(
+        self,
+        platform: PinterestPlatform,
+    ) -> None:
+        with respx.mock() as network:
+            network.post(f"{API}/oauth/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+            network.get(f"{API}/user_account").mock(
+                return_value=httpx.Response(
+                    200, json={"username": ACCOUNT, "account_type": "BUSINESS"}
+                )
+            )
+
+            done = await platform.finish_login(login(), {"code": "the-code"})
+
+        assert done.connection.avatar_url is None
+
+    async def test_a_blank_profile_image_leaves_the_picture_empty(
+        self,
+        platform: PinterestPlatform,
+    ) -> None:
+        with respx.mock() as network:
+            network.post(f"{API}/oauth/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+            stub_me(network, profile_image="")
+
+            done = await platform.finish_login(login(), {"code": "the-code"})
+
+        assert done.connection.avatar_url is None
+
+    async def test_a_profile_image_that_is_not_a_string_leaves_the_picture_empty(
+        self,
+        platform: PinterestPlatform,
+    ) -> None:
+        with respx.mock() as network:
+            network.post(f"{API}/oauth/token").mock(
+                return_value=httpx.Response(200, json=a_token())
+            )
+            stub_me(network, profile_image=123)
+
+            done = await platform.finish_login(login(), {"code": "the-code"})
+
+        assert done.connection.avatar_url is None
+
+
+class TestReadingTheProfileAgain:
+    async def test_it_offers_reading_the_profile_again(
+        self,
+        platform: PinterestPlatform,
+    ) -> None:
+        assert isinstance(platform, CanReadProfile)
+
+    async def test_it_makes_exactly_one_request(
+        self,
+        platform: PinterestPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            route = stub_me(network)
+
+            await platform.read_profile(account)
+
+        assert route.call_count == 1
+        sent = route.calls.last.request
+        assert sent.url.path == "/v5/user_account"
+        assert sent.headers["Authorization"] == "Bearer access-one"
+
+    async def test_it_hands_back_the_username_and_picture(
+        self,
+        platform: PinterestPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            stub_me(network)
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == ACCOUNT
+        assert profile.avatar_url == AVATAR
+
+    async def test_no_profile_image_leaves_the_picture_empty(
+        self,
+        platform: PinterestPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            stub_me(network, profile_image=None)
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
+
+    async def test_a_reply_with_no_username_says_so_plainly(
+        self,
+        platform: PinterestPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock() as network:
+            network.get(f"{API}/user_account").mock(
+                return_value=httpx.Response(200, json={"account_type": "BUSINESS"})
+            )
+
+            with pytest.raises(PlatformError, match="username"):
+                await platform.read_profile(account)
 
 
 class TestRenewingAToken:
