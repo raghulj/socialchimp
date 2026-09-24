@@ -35,3 +35,10 @@ need to.
 ::: socialchimp.events.SeenUpdates
 
 ::: socialchimp.events.InMemorySeenUpdates
+
+## Polling with a resumable marker
+
+What `account.fetch_updates_after(...)` hands back - added in 0.8.0. See the
+[social inbox use case](../use-cases/social-inbox.md) for a worked example.
+
+::: socialchimp.events.UpdateBatch
