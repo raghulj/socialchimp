@@ -62,14 +62,22 @@ from socialchimp.platform import (
     CanCreateApp,
     CanDeletePosts,
     CanEditBusinessInfo,
+    CanLike,
     CanManageVerification,
+    CanMessage,
     CanModerateComments,
+    CanReadLikes,
+    CanReadPost,
     CanReadPushedUpdates,
     CanReadReplies,
     CanReadStats,
+    CanReadThread,
     CanReadUpdates,
+    CanReadUpdatesAfter,
+    CanReply,
     CanReplyToUpdates,
     CanResumeLogin,
+    CanStartConversations,
 )
 from socialchimp.registry import available_platforms, get_platform_class
 
@@ -247,14 +255,14 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
     """List which optional extras this platform actually satisfies.
 
     Mirrors exactly what `SocialChimp` itself checks before calling one of
-    these - three of them (`create_app`, `delete_post`, `read_stats`) are
-    gated on a `Feature` flag as well as the method existing, because a
-    network that
-    cannot do a thing may still carry a method that only exists to explain
-    that in a clear error rather than an `AttributeError`. Facebook's
-    `create_app` is exactly this: present, and always refuses, because Meta
-    has no way to register an app for you. Checking the method alone would
-    have called that "yes".
+    these - eleven of them (`create_app`, `delete_post`, `read_stats`, and
+    the eight social-inbox extras added in 0.8.0) are gated on a `Feature`
+    flag as well as the method existing, because a network that cannot do a
+    thing may still carry a method that only exists to explain that in a
+    clear error rather than an `AttributeError`. Facebook's `create_app` is
+    exactly this: present, and always refuses, because Meta has no way to
+    register an app for you. Checking the method alone would have called
+    that "yes".
 
     Args:
         instance: A platform built with no arguments.
@@ -263,7 +271,7 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
     Returns:
         The names of the extras from `socialchimp.platform` this platform
         satisfies, in a fixed order shared with `/networks.json`'s own
-        listing of the fourteen extras.
+        listing of the twenty-two extras.
     """
     satisfied: list[str] = []
     if Feature.CREATE_APP in features and isinstance(instance, CanCreateApp):
@@ -282,6 +290,26 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
         satisfied.append("CanDeletePosts")
     if Feature.READ_STATS in features and isinstance(instance, CanReadStats):
         satisfied.append("CanReadStats")
+    if Feature.READ_POST in features and isinstance(instance, CanReadPost):
+        satisfied.append("CanReadPost")
+    if Feature.READ_THREAD in features and isinstance(instance, CanReadThread):
+        satisfied.append("CanReadThread")
+    if Feature.REPLY_TO_COMMENTS in features and isinstance(instance, CanReply):
+        satisfied.append("CanReply")
+    if Feature.LIKE in features and isinstance(instance, CanLike):
+        satisfied.append("CanLike")
+    if Feature.READ_LIKES in features and isinstance(instance, CanReadLikes):
+        satisfied.append("CanReadLikes")
+    if Feature.READ_UPDATES_AFTER in features and isinstance(
+        instance, CanReadUpdatesAfter
+    ):
+        satisfied.append("CanReadUpdatesAfter")
+    if Feature.MESSAGES in features and isinstance(instance, CanMessage):
+        satisfied.append("CanMessage")
+    if Feature.START_CONVERSATIONS in features and isinstance(
+        instance, CanStartConversations
+    ):
+        satisfied.append("CanStartConversations")
     # The rest have no flag of their own: `Account` looks for the method and
     # nothing else, so the method existing is the whole answer here too.
     if isinstance(instance, CanReadReplies):
@@ -499,6 +527,12 @@ _CURATED_SECTIONS: Final[tuple[tuple[str, tuple[tuple[str, str], ...]], ...]] = 
             (
                 "use-cases/youtube-shorts-flask.md",
                 "A worked example: publishing YouTube Shorts from Flask.",
+            ),
+            (
+                "use-cases/social-inbox.md",
+                "Reading a post and its thread, replying, likes, polling for "
+                "updates with a resumable marker, and direct messages - on "
+                "Mastodon and Bluesky, with FakePlatform for testing.",
             ),
         ),
     ),
