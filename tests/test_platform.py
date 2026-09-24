@@ -3,18 +3,29 @@
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
+import pytest
+
 from socialchimp import (
     AppCredentials,
     Connection,
+    Conversation,
     Feature,
+    Like,
+    LikeResult,
     Limits,
+    Media,
+    Message,
+    Page,
+    Person,
     Post,
+    PostDetails,
     PostResult,
     PostState,
     RawData,
+    Thread,
     Token,
 )
-from socialchimp.events import Update, UpdateKind
+from socialchimp.events import Update, UpdateBatch, UpdateKind
 from socialchimp.platform import (
     AccountChoice,
     AskForDetails,
@@ -22,8 +33,16 @@ from socialchimp.platform import (
     CanCheckSignature,
     CanCheckState,
     CanCreateApp,
+    CanLike,
+    CanMessage,
+    CanReadLikes,
+    CanReadPost,
     CanReadPushedUpdates,
+    CanReadThread,
     CanReadUpdates,
+    CanReadUpdatesAfter,
+    CanReply,
+    CanStartConversations,
     ChooseAccount,
     Finished,
     LoginField,
@@ -32,6 +51,7 @@ from socialchimp.platform import (
     Platform,
     SendToNetwork,
 )
+from socialchimp.registry import available_platforms, get_platform_class
 
 
 class FakePlatform:
@@ -319,3 +339,283 @@ class TestRememberingBetweenTheTwoHalves:
         step = SendToNetwork(url="https://example.com/auth", state="abc")
 
         assert step.remember == {}
+
+
+def _a_person() -> Person:
+    return Person(id="1", handle="ada", display_name="Ada", avatar_url=None, url=None)
+
+
+def _a_post_details(post_id: str = "1") -> PostDetails:
+    return PostDetails(
+        id=post_id,
+        cid=None,
+        url=None,
+        author=_a_person(),
+        text="hi",
+        html=None,
+        links=(),
+        attachments=(),
+        created_at=datetime.now(UTC),
+        visibility=None,
+        parent_id=None,
+        root_id=post_id,
+        reply_count=None,
+        like_count=None,
+        repost_count=None,
+        quote_count=None,
+        liked_by_me=None,
+        my_like_id=None,
+        is_mine=False,
+        unavailable=None,
+    )
+
+
+def _a_message() -> Message:
+    return Message(
+        id="m1",
+        conversation_id="c1",
+        sender=_a_person(),
+        text="hi",
+        sent_at=datetime.now(UTC),
+        is_mine=True,
+        deleted=False,
+        attachments=(),
+    )
+
+
+class TestReadingOnePostBack:
+    def test_a_platform_that_cannot_read_one_post_back_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanReadPost)
+
+    def test_a_platform_that_can_read_one_post_back_says_so(self) -> None:
+        class ReadsPosts(FakePlatform):
+            async def read_post(
+                self, connection: Connection, post_id: str
+            ) -> PostDetails:
+                return _a_post_details(post_id)
+
+        assert isinstance(ReadsPosts(), CanReadPost)
+
+
+class TestReadingAThread:
+    def test_a_platform_that_cannot_read_a_thread_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanReadThread)
+
+    def test_a_platform_that_can_read_a_thread_says_so(self) -> None:
+        class ReadsThreads(FakePlatform):
+            async def read_thread(
+                self,
+                connection: Connection,
+                post_id: str,
+                *,
+                depth: int | None = None,
+                limit: int | None = None,
+            ) -> Thread:
+                return Thread(post=_a_post_details(post_id), replies=(), complete=True)
+
+        assert isinstance(ReadsThreads(), CanReadThread)
+
+
+class TestReplyingToAComment:
+    def test_a_platform_that_cannot_reply_to_a_comment_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanReply)
+
+    def test_a_platform_that_can_reply_to_a_comment_says_so(self) -> None:
+        class Replies(FakePlatform):
+            async def reply(
+                self,
+                connection: Connection,
+                post_id: str,
+                text: str,
+                *,
+                media: tuple[Media, ...] = (),
+                options: RawData | None = None,
+            ) -> PostResult:
+                return PostResult(id="new")
+
+        assert isinstance(Replies(), CanReply)
+
+
+class TestLikingAPost:
+    def test_a_platform_that_cannot_like_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanLike)
+
+    def test_a_platform_that_can_like_says_so(self) -> None:
+        class Likes(FakePlatform):
+            async def like(self, connection: Connection, post_id: str) -> LikeResult:
+                return LikeResult(post_id=post_id, like_id=None)
+
+            async def unlike(
+                self,
+                connection: Connection,
+                post_id: str,
+                *,
+                like_id: str | None = None,
+            ) -> None:
+                return None
+
+        assert isinstance(Likes(), CanLike)
+
+    def test_a_platform_that_cannot_list_who_liked_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanReadLikes)
+
+    def test_a_platform_that_can_list_who_liked_says_so(self) -> None:
+        class ReadsLikes(FakePlatform):
+            async def read_likes(
+                self,
+                connection: Connection,
+                post_id: str,
+                *,
+                after: str | None = None,
+                limit: int | None = None,
+            ) -> Page[Like]:
+                return Page(items=())
+
+        assert isinstance(ReadsLikes(), CanReadLikes)
+
+
+class TestReadingUpdatesAfterAMarker:
+    def test_a_platform_that_cannot_be_asked_this_way_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanReadUpdatesAfter)
+
+    def test_a_platform_that_can_be_asked_this_way_says_so(self) -> None:
+        class ReadsUpdatesAfter(FakePlatform):
+            async def fetch_updates_after(
+                self,
+                connection: Connection,
+                marker: str | None,
+                *,
+                limit: int | None = None,
+            ) -> UpdateBatch:
+                return UpdateBatch(updates=(), marker=marker, more=False)
+
+            async def mark_seen(self, connection: Connection, marker: str) -> None:
+                return None
+
+        assert isinstance(ReadsUpdatesAfter(), CanReadUpdatesAfter)
+
+
+class TestDirectMessages:
+    def test_a_platform_that_cannot_message_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanMessage)
+
+    def test_a_platform_that_can_message_says_so(self) -> None:
+        class Messages(FakePlatform):
+            async def read_conversations(
+                self,
+                connection: Connection,
+                *,
+                after: str | None = None,
+                limit: int | None = None,
+            ) -> Page[Conversation]:
+                return Page(items=())
+
+            async def read_messages(
+                self,
+                connection: Connection,
+                conversation_id: str,
+                *,
+                after: str | None = None,
+                limit: int | None = None,
+            ) -> Page[Message]:
+                return Page(items=())
+
+            async def send_message(
+                self,
+                connection: Connection,
+                conversation_id: str,
+                text: str,
+                *,
+                options: RawData | None = None,
+            ) -> Message:
+                return _a_message()
+
+            async def mark_read(
+                self, connection: Connection, conversation_id: str
+            ) -> None:
+                return None
+
+        assert isinstance(Messages(), CanMessage)
+
+    def test_a_platform_that_cannot_start_a_conversation_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanStartConversations)
+
+    def test_a_platform_that_can_start_a_conversation_says_so(self) -> None:
+        class StartsConversations(FakePlatform):
+            async def start_conversation(
+                self,
+                connection: Connection,
+                person_ids: Sequence[str],
+                text: str,
+            ) -> Message:
+                return _a_message()
+
+        assert isinstance(StartsConversations(), CanStartConversations)
+
+
+# Every new (Feature, Protocol) pair social inbox added. Each flag matches
+# exactly one protocol, and the two must always agree - a platform saying it
+# can do something it has no method for, or having the method without saying
+# so, is a mistake in that platform file.
+NEW_FEATURE_PROTOCOL_PAIRS: tuple[tuple[Feature, type], ...] = (
+    (Feature.READ_POST, CanReadPost),
+    (Feature.READ_THREAD, CanReadThread),
+    (Feature.REPLY_TO_COMMENTS, CanReply),
+    (Feature.LIKE, CanLike),
+    (Feature.READ_LIKES, CanReadLikes),
+    (Feature.READ_UPDATES_AFTER, CanReadUpdatesAfter),
+    (Feature.MESSAGES, CanMessage),
+    (Feature.START_CONVERSATIONS, CanStartConversations),
+)
+
+
+class TestFlagAndProtocolAgree:
+    """Every built-in platform, checked pair by pair.
+
+    None of the built-in platforms implement any of this yet - Mastodon and
+    Bluesky get their social inbox methods in a later step - so today this
+    only proves that nobody has listed a flag with no method behind it, or
+    written a method and forgotten to say so. It keeps proving that once
+    they do.
+    """
+
+    @pytest.mark.parametrize("platform_name", sorted(available_platforms()))
+    def test_every_built_in_platform_agrees_with_itself(
+        self, platform_name: str
+    ) -> None:
+        platform = get_platform_class(platform_name)()
+        for feature, protocol in NEW_FEATURE_PROTOCOL_PAIRS:
+            has_the_flag = feature in platform.features
+            has_the_protocol = isinstance(platform, protocol)
+            assert has_the_flag == has_the_protocol, (
+                f"{platform_name} and {feature} disagree with {protocol.__name__}: "
+                f"flag={has_the_flag}, protocol={has_the_protocol}"
+            )
+
+    def test_a_flag_with_no_method_behind_it_is_caught(self) -> None:
+        class ClaimsLikingButCannot(FakePlatform):
+            features = Feature.POST_TEXT | Feature.LIKE
+
+        platform = ClaimsLikingButCannot()
+
+        assert Feature.LIKE in platform.features
+        assert not isinstance(platform, CanLike)
+
+    def test_a_method_with_no_flag_saying_so_is_caught(self) -> None:
+        class CanLikeButDoesNotSayIt(FakePlatform):
+            async def like(self, connection: Connection, post_id: str) -> LikeResult:
+                return LikeResult(post_id=post_id, like_id=None)
+
+            async def unlike(
+                self,
+                connection: Connection,
+                post_id: str,
+                *,
+                like_id: str | None = None,
+            ) -> None:
+                return None
+
+        platform = CanLikeButDoesNotSayIt()
+
+        assert Feature.LIKE not in platform.features
+        assert isinstance(platform, CanLike)
