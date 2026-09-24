@@ -57,14 +57,22 @@ from socialchimp.platform import (
     CanCreateApp,
     CanDeletePosts,
     CanEditBusinessInfo,
+    CanLike,
     CanManageVerification,
+    CanMessage,
     CanModerateComments,
+    CanReadLikes,
+    CanReadPost,
     CanReadPushedUpdates,
     CanReadReplies,
     CanReadStats,
+    CanReadThread,
     CanReadUpdates,
+    CanReadUpdatesAfter,
+    CanReply,
     CanReplyToUpdates,
     CanResumeLogin,
+    CanStartConversations,
     Finished,
     LoginRequest,
 )
@@ -78,15 +86,23 @@ if TYPE_CHECKING:
 
     import httpx
 
-    from socialchimp.events import Update
+    from socialchimp.events import Update, UpdateBatch
     from socialchimp.features import Limits
     from socialchimp.models import (
         AppCredentials,
         BusinessLocation,
         Connection,
+        Conversation,
+        Like,
+        LikeResult,
+        Media,
+        Message,
+        Page,
         Post,
+        PostDetails,
         PostStats,
         RawData,
+        Thread,
         Token,
         Verification,
         VerificationOption,
@@ -647,6 +663,386 @@ class Account:
             connection, post_id, whole_conversation=whole_conversation
         )
 
+    async def read_post(self, post_id: str) -> PostDetails:
+        """Read one post back in full, not only what publishing it returned.
+
+        Args:
+            post_id: The network's identifier for the post or comment.
+
+        Returns:
+            The post, in full.
+
+        Raises:
+            NotSupportedError: If this network cannot be asked for a post
+                this way.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.READ_POST, "reading one post back in full")
+        if not isinstance(platform, CanReadPost):
+            raise _missing_method(platform, "read_post")
+        return await platform.read_post(connection, post_id)
+
+    async def read_thread(
+        self,
+        post_id: str,
+        *,
+        depth: int | None = None,
+        limit: int | None = None,
+    ) -> Thread:
+        """Read a post together with the replies underneath it.
+
+        Args:
+            post_id: The network's identifier for the post to read.
+            depth: How many reply levels to fetch. `None` uses the
+                network's own default.
+            limit: A cap on how many replies come back.
+
+        Returns:
+            The post and its replies. `Thread.complete` is `False` if
+            `depth`, `limit` or one of the network's own caps cut the
+            replies off before the end.
+
+        Raises:
+            NotSupportedError: If this network cannot be asked for a whole
+                thread this way.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(
+            platform, Feature.READ_THREAD, "reading a post together with its replies"
+        )
+        if not isinstance(platform, CanReadThread):
+            raise _missing_method(platform, "read_thread")
+        return await platform.read_thread(connection, post_id, depth=depth, limit=limit)
+
+    async def reply(
+        self,
+        post_id: str,
+        text: str,
+        *,
+        media: tuple[Media, ...] = (),
+        options: RawData | None = None,
+    ) -> PostResult:
+        """Reply to any post or comment, at any depth.
+
+        `post()` with `Post(reply_to=...)` keeps working. This is the
+        recommended way to reply once a network provides it, because it can
+        do things `post()` cannot know to - keeping a Mastodon reply's
+        visibility no wider than its parent's, or mentioning the people
+        already in the thread.
+
+        Args:
+            post_id: The post or comment being replied to, at any depth.
+            text: The reply's words.
+            media: Pictures or videos to attach to the reply.
+            options: Settings for one network only.
+
+        Returns:
+            What the network said about the new reply.
+
+        Raises:
+            NotSupportedError: If this network has no way to reply to a
+                comment this way.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.REPLY_TO_COMMENTS, "replying to a comment")
+        if not isinstance(platform, CanReply):
+            raise _missing_method(platform, "reply")
+        return await platform.reply(
+            connection, post_id, text, media=media, options=options
+        )
+
+    async def like(self, post_id: str) -> LikeResult:
+        """Like a post or a comment.
+
+        Liking something already liked succeeds and does nothing.
+
+        Args:
+            post_id: The post or comment to like.
+
+        Returns:
+            What the network said about the like.
+
+        Raises:
+            NotSupportedError: If this network cannot like a post.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.LIKE, "liking a post")
+        if not isinstance(platform, CanLike):
+            raise _missing_method(platform, "like")
+        return await platform.like(connection, post_id)
+
+    async def unlike(self, post_id: str, *, like_id: str | None = None) -> None:
+        """Take back a like on a post or a comment.
+
+        Unliking something not liked succeeds and does nothing.
+
+        Args:
+            post_id: The post or comment to unlike.
+            like_id: The like's own identifier, from `LikeResult.like_id`,
+                where passing it saves a lookup.
+
+        Raises:
+            NotSupportedError: If this network cannot unlike a post.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.LIKE, "unliking a post")
+        if not isinstance(platform, CanLike):
+            raise _missing_method(platform, "unlike")
+        await platform.unlike(connection, post_id, like_id=like_id)
+
+    async def read_likes(
+        self,
+        post_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Like]:
+        """List who liked a post.
+
+        Args:
+            post_id: The post or comment to list likes for.
+            after: A `Page.next` from a previous call, to read further in.
+            limit: A cap on how many come back. `None` uses the network's
+                own default.
+
+        Returns:
+            One page of likes.
+
+        Raises:
+            NotSupportedError: If this network cannot list who liked a post.
+                Some networks that can like something cannot list who did.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.READ_LIKES, "listing who liked a post")
+        if not isinstance(platform, CanReadLikes):
+            raise _missing_method(platform, "read_likes")
+        return await platform.read_likes(connection, post_id, after=after, limit=limit)
+
+    async def fetch_updates_after(
+        self,
+        marker: str | None,
+        *,
+        limit: int | None = None,
+    ) -> UpdateBatch:
+        """Read what has happened since a marker, resumable across a restart.
+
+        Unlike `fetch_updates`, which takes a moment in time, this takes an
+        opaque marker your app stores and passes back - see
+        `socialchimp.events.UpdateBatch`. A moment in time can miss or
+        repeat updates around the edges; a marker cannot.
+
+        Args:
+            marker: The marker from the last call's
+                `UpdateBatch.marker`. `None` on the first call, when there
+                is nothing saved yet - the network answers with its latest
+                page instead, which sets a starting point.
+            limit: A cap on how many updates come back in this page.
+
+        Returns:
+            The new updates, and a marker to store for next time.
+
+        Raises:
+            NotSupportedError: If this network cannot be polled with a
+                marker this way.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(
+            platform,
+            Feature.READ_UPDATES_AFTER,
+            "being asked what has happened since a marker",
+        )
+        if not isinstance(platform, CanReadUpdatesAfter):
+            raise _missing_method(platform, "fetch_updates_after")
+        return await platform.fetch_updates_after(connection, marker, limit=limit)
+
+    async def mark_seen(self, marker: str) -> None:
+        """Tell the network a marker from `fetch_updates_after` has been seen.
+
+        Args:
+            marker: The marker that has been handled.
+
+        Raises:
+            NotSupportedError: If this network has no marker to mark seen.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.READ_UPDATES_AFTER, "marking a marker as seen")
+        if not isinstance(platform, CanReadUpdatesAfter):
+            raise _missing_method(platform, "mark_seen")
+        await platform.mark_seen(connection, marker)
+
+    async def read_conversations(
+        self,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Conversation]:
+        """List this account's direct message conversations.
+
+        Args:
+            after: A `Page.next` from a previous call.
+            limit: A cap on how many come back.
+
+        Returns:
+            One page of conversations.
+
+        Raises:
+            NotSupportedError: If this network has no direct messages.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.MESSAGES, "reading direct message conversations")
+        if not isinstance(platform, CanMessage):
+            raise _missing_method(platform, "read_conversations")
+        return await platform.read_conversations(connection, after=after, limit=limit)
+
+    async def read_messages(
+        self,
+        conversation_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Message]:
+        """Read the messages in one conversation, newest first.
+
+        Args:
+            conversation_id: Which conversation to read.
+            after: A `Page.next` from a previous call. Passing it goes
+                further back in time.
+            limit: A cap on how many come back.
+
+        Returns:
+            One page of messages, newest first.
+
+        Raises:
+            NotSupportedError: If this network has no direct messages.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.MESSAGES, "reading direct messages")
+        if not isinstance(platform, CanMessage):
+            raise _missing_method(platform, "read_messages")
+        return await platform.read_messages(
+            connection, conversation_id, after=after, limit=limit
+        )
+
+    async def send_message(
+        self,
+        conversation_id: str,
+        text: str,
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send a message into an existing conversation.
+
+        Args:
+            conversation_id: Which conversation to send into.
+            text: The message's words.
+            options: Settings for one network only, such as a Meta message
+                tag.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            NotSupportedError: If this network has no direct messages.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.MESSAGES, "sending a direct message")
+        if not isinstance(platform, CanMessage):
+            raise _missing_method(platform, "send_message")
+        return await platform.send_message(
+            connection, conversation_id, text, options=options
+        )
+
+    async def mark_read(self, conversation_id: str) -> None:
+        """Mark a conversation as read.
+
+        Args:
+            conversation_id: Which conversation to mark.
+
+        Raises:
+            NotSupportedError: If this network has no direct messages.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.MESSAGES, "marking a conversation as read")
+        if not isinstance(platform, CanMessage):
+            raise _missing_method(platform, "mark_read")
+        await platform.mark_read(connection, conversation_id)
+
+    async def start_conversation(
+        self,
+        person_ids: Sequence[str],
+        text: str,
+    ) -> Message:
+        """Start a new conversation with one or more people.
+
+        Args:
+            person_ids: Who to start it with.
+            text: The first message's words.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            NotSupportedError: If this network cannot start a conversation.
+                Meta cannot: the customer has to write first.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.START_CONVERSATIONS, "starting a new conversation")
+        if not isinstance(platform, CanStartConversations):
+            raise _missing_method(platform, "start_conversation")
+        return await platform.start_conversation(connection, person_ids, text)
+
+    async def features(self) -> Feature:
+        """Ask what this account's network can do.
+
+        Looks the connection up lazily, the same as every other call here,
+        so this is safe to call before deciding which of the calls above to
+        make.
+
+        Returns:
+            The features this network supports.
+        """
+        connection = await self.connection()
+        return self._client.platform_for(connection.platform).features
+
     async def delete_post(self, post_id: str) -> None:
         """Take a post back down again.
 
@@ -994,6 +1390,26 @@ class SocialChimp:
             ready = get_platform_class(name)()
             self._platforms[name] = ready
         return ready
+
+    def features(self, platform: str) -> Feature:
+        """Ask what a network can do, by name, with no connection needed.
+
+        Useful for deciding which button to show before anyone has connected
+        an account. Once an account exists, `Account.features` is usually
+        the better call: this looks the platform up by name alone, so it
+        cannot tell you anything about that particular account.
+
+        Args:
+            platform: Which network, for example `"mastodon"`.
+
+        Returns:
+            The features that network supports.
+
+        Raises:
+            ConfigError: If nothing is installed or registered under that
+                name.
+        """
+        return self.platform_for(platform).features
 
     def _renewal_for(self, name: str) -> GetNewToken:
         """Bind your app's credentials into one platform's `refresh`.
