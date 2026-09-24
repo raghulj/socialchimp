@@ -1158,6 +1158,13 @@ def _kind_and_about(
 ) -> tuple[str, str | None]:
     """Work out what word to use for one notification, and what it concerns.
 
+    A `mention` notification whose status is `direct`-visibility always
+    comes out as `message_received`, even when that same status also
+    replies to one of the connected account's own posts. Direct wins over
+    reply: that precedence is intentional, not an oversight, so a direct
+    message never gets misread as a comment just because it happens to
+    quote-reply something we posted.
+
     Args:
         notification_type: Mastodon's own word for the notification.
         status: The notification's `status`, when it has one.

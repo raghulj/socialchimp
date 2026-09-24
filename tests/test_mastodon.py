@@ -2185,6 +2185,42 @@ class TestReadingUpdatesAfterAMarker:
         assert comment.kind is UpdateKind.COMMENT_CREATED
         assert comment.about_post_id == "113140123456789012"
 
+    async def test_a_direct_reply_to_our_own_post_is_still_a_message(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        # A status can be both direct-visibility and a reply to one of our
+        # own posts. Direct wins: it is a message, not a comment.
+        items = [
+            {
+                "id": "999000000000000001",
+                "type": "mention",
+                "created_at": "2026-09-24T00:00:00.000Z",
+                "account": {
+                    "id": "109612345678900006",
+                    "acct": "quietbuyer@other.example",
+                    "url": "https://other.example/@quietbuyer",
+                },
+                "status": {
+                    "id": "113140200000000099",
+                    "created_at": "2026-09-24T00:00:00.000Z",
+                    "visibility": "direct",
+                    "in_reply_to_id": "113140123456789012",
+                    "in_reply_to_account_id": FRIDGEDOOR_ID,
+                },
+            }
+        ]
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get("/api/v1/notifications").mock(
+                return_value=httpx.Response(200, json=items)
+            )
+            batch = await platform.fetch_updates_after(fridgedoor, None)
+
+        update = batch.updates[0]
+        assert update.kind is UpdateKind.MESSAGE_RECEIVED
+        assert update.about_post_id is None
+
     async def test_a_plain_mention_stays_a_mention(
         self,
         platform: MastodonPlatform,
