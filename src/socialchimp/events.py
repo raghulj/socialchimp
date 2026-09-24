@@ -34,7 +34,7 @@ from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from socialchimp.errors import SignatureError
-from socialchimp.models import RawData, require_timezone
+from socialchimp.models import Person, RawData, require_timezone
 
 __all__ = [
     "DeliverUpdate",
@@ -47,6 +47,7 @@ __all__ = [
     "SeenUpdates",
     "SignatureError",
     "Update",
+    "UpdateBatch",
     "UpdateKind",
     "answer_setup_check",
     "check_not_too_old",
@@ -127,6 +128,23 @@ class UpdateKind(Enum):
     ANSWER_CREATED = "answer_created"
     """Someone answered a question - not necessarily the business itself."""
 
+    REPOST_ADDED = "repost_added"
+    """Someone reposted, boosted or reblogged a post.
+
+    Mastodon and Bluesky reposts used to arrive as `REACTION_ADDED`; from
+    0.8.0 they have this kind of their own instead.
+    """
+
+    MESSAGE_RECEIVED = "message_received"
+    """A direct message arrived. `Update.conversation_id` names which
+    conversation, where the network says."""
+
+    FOLLOWED = "followed"
+    """Someone started following this account.
+
+    Used to arrive as `UNKNOWN`; from 0.8.0 it has this kind of its own.
+    """
+
     UNKNOWN = "unknown"
     """Something we have no name for yet. Look at `raw` to see what it was."""
 
@@ -173,6 +191,21 @@ class Update:
             the page and the time out there rather than on each change, so
             that is what this holds. Empty for a network that sends one
             thing on its own, and for an update found by asking.
+        actor: Who did it, when the network says. `None` when it is not
+            known or does not apply.
+        post_id: The thing that happened, as a post id - the reply, the
+            mention, or the message itself. `None` when this update is not
+            about one particular post.
+        about_post_id: The connected account's own post this concerns - the
+            one that was liked, reposted or replied to. `None` when there
+            is no such post, or the network did not say.
+        thread_root_id: The top of the thread this sits in, when that is
+            known without an extra request. `None` otherwise - Mastodon
+            leaves this `None` unless it is asked for, because finding it
+            needs a call of its own.
+        conversation_id: Which conversation this concerns, for a
+            `MESSAGE_RECEIVED` update. `None` when it does not apply, or the
+            network did not say.
     """
 
     id: str
@@ -183,6 +216,11 @@ class Update:
     raw: RawData = field(default_factory=dict, repr=False)
     kind_name: str = ""
     envelope: RawData = field(default_factory=dict, repr=False)
+    actor: Person | None = None
+    post_id: str | None = None
+    about_post_id: str | None = None
+    thread_root_id: str | None = None
+    conversation_id: str | None = None
 
     def __post_init__(self) -> None:
         """Check the time has a timezone and fill in the missing word.
@@ -207,6 +245,11 @@ class Update:
         created_at: datetime,
         raw: RawData | None = None,
         envelope: RawData | None = None,
+        actor: Person | None = None,
+        post_id: str | None = None,
+        about_post_id: str | None = None,
+        thread_root_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> Update:
         """Build an update from a word a network gave us.
 
@@ -225,6 +268,13 @@ class Update:
                 have to hunt through a list for its own change.
             envelope: The message it arrived in, where the network wraps
                 things up and puts the account and the time out there.
+            actor: Who did it, when the network says.
+            post_id: The thing that happened, as a post id.
+            about_post_id: The connected account's own post this concerns.
+            thread_root_id: The top of the thread this sits in, when known
+                without an extra request.
+            conversation_id: Which conversation this concerns, for a
+                message.
 
         Returns:
             The update, ready to deliver.
@@ -238,7 +288,36 @@ class Update:
             raw=raw if raw is not None else {},
             kind_name=kind_name,
             envelope=envelope if envelope is not None else {},
+            actor=actor,
+            post_id=post_id,
+            about_post_id=about_post_id,
+            thread_root_id=thread_root_id,
+            conversation_id=conversation_id,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateBatch:
+    """One page of updates read with `fetch_updates_after`.
+
+    Kept beside `Update` here rather than in `socialchimp.models`, because
+    `socialchimp.models` imports nothing from anywhere else in socialchimp -
+    see the note near the top of that file - and this shape is only ever
+    built from an `Update`.
+
+    Attributes:
+        updates: What happened, oldest first, only the ones newer than the
+            marker that was asked for.
+        marker: Store this and pass it back next time. `None` only when
+            nothing has ever been seen on this account.
+        more: `True` when the network has more new updates waiting beyond
+            this page - call `fetch_updates_after` again straight away
+            rather than waiting for the next round.
+    """
+
+    updates: tuple[Update, ...]
+    marker: str | None
+    more: bool
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:

@@ -113,6 +113,57 @@ class Feature(Flag):
     same updates anyway. Your code does not need to know which is happening.
     """
 
+    READ_POST = auto()
+    """Can read one post back in full, with `Account.read_post`."""
+
+    READ_THREAD = auto()
+    """Can read a post together with its replies, with `Account.read_thread`."""
+
+    REPLY_TO_COMMENTS = auto()
+    """Can reply to any post or comment at any depth, with `Account.reply`.
+
+    `publish(Post(reply_to=...))` keeps working without this; `reply()` is
+    the recommended way once a network has it.
+    """
+
+    LIKE = auto()
+    """Can like and unlike a post or a comment, with `Account.like` and
+    `Account.unlike`."""
+
+    READ_LIKES = auto()
+    """Can list who liked a post, with `Account.read_likes`.
+
+    Some networks that can like cannot list who did - a Facebook Page can
+    like a comment but only ever sees the count, so it lists `LIKE` without
+    this.
+    """
+
+    READ_UPDATES_AFTER = auto()
+    """Can be asked for everything new since a marker, with
+    `Account.fetch_updates_after`, and told a marker has been seen with
+    `Account.mark_seen`.
+
+    Unlike `Feature.PUSH_UPDATES`, this is a resumable poll rather than
+    something the network sends us - the marker is what makes it resumable
+    across a restart.
+    """
+
+    # SUBSCRIBE_UPDATES is reserved for the release that adds Meta webhooks
+    # and Mastodon Web Push, and is deliberately not added yet - see
+    # docs/social-inbox-contract.md section 6. Do not use this gap.
+
+    MESSAGES = auto()
+    """Can read and send direct messages, with `Account.read_conversations`,
+    `Account.read_messages`, `Account.send_message` and `Account.mark_read`."""
+
+    START_CONVERSATIONS = auto()
+    """Can start a new conversation, with `Account.start_conversation`.
+
+    Meta cannot: the customer has to write first. A network that has
+    `Feature.MESSAGES` but not this one can still be replied to - it just
+    cannot open the first message.
+    """
+
 
 class TextCount(Enum):
     """How a network counts the length of a post.

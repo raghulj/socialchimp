@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 # Safe in this direction only: `socialchimp.errors` imports nothing from
 # here, and nothing from anywhere else in socialchimp. Keep it that way -
@@ -28,18 +28,31 @@ from socialchimp.errors import ConfigError, InvalidPostError
 
 __all__ = [
     "AppCredentials",
+    "Attachment",
     "BusinessLocation",
     "Connection",
+    "Conversation",
+    "Like",
+    "LikeResult",
+    "LinkKind",
     "Media",
     "MediaKind",
+    "Message",
+    "Page",
+    "Person",
     "Post",
+    "PostDetails",
     "PostResult",
     "PostState",
     "PostStats",
     "RawData",
+    "TextLink",
+    "Thread",
     "Token",
+    "Unavailable",
     "Verification",
     "VerificationOption",
+    "Visibility",
     "require_timezone",
 ]
 
@@ -47,6 +60,11 @@ __all__ = [
 # We hand this back on every result so you are never blocked by a field we
 # did not think to model.
 RawData = dict[str, Any]
+
+# What one page of a list call is made of. Every list call takes
+# `after: str | None = None, limit: int | None = None` and hands back a
+# `Page` of whatever it lists.
+T = TypeVar("T")
 
 # File endings we can recognise without being told.
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"})
@@ -544,12 +562,16 @@ class PostResult:
         id: The network's identifier for the new post.
         url: Link to the post, where the network gives us one.
         state: Whether the network has finished with it.
+        cid: Bluesky's content hash for the new post. `None` everywhere
+            else. Added in 0.8.0; every existing way of building a
+            `PostResult` still works, because this defaults to `None`.
         raw: The network's untouched reply, for anything we did not model.
     """
 
     id: str
     url: str | None = None
     state: PostState = PostState.DONE
+    cid: str | None = None
     raw: RawData = field(default_factory=dict, repr=False)
 
     @property
@@ -651,3 +673,359 @@ class Verification:
     method: str
     state: str
     raw: RawData = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class Page(Generic[T]):
+    """One page of results from a list call.
+
+    Every list call - reading likes, reading replies, reading conversations,
+    reading messages - takes `after: str | None = None, limit: int | None =
+    None` and hands one of these back.
+
+    Attributes:
+        items: What this page holds.
+        next: Pass this back as `after=` to read the page after this one.
+            `None` means there is no more. Treat it as opaque - store it as
+            a string and never parse it. Mastodon fills it from the `Link`
+            header it sends back; Bluesky and Meta fill it from the
+            network's own cursor.
+    """
+
+    items: tuple[T, ...]
+    next: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Person:
+    """Someone on a social network.
+
+    The author of a post, the person behind a like, the other side of a
+    conversation - all of them are a `Person`.
+
+    Attributes:
+        id: The network's identifier for them - a Mastodon account id, a
+            Bluesky DID, or a Meta PSID, IGSID or user id.
+        handle: Something like `"user@host"` or `"name.bsky.social"`.
+            `None` where the network has no such thing, which is how Meta's
+            messaging works.
+        display_name: The name they chose to show, when the network gives
+            one.
+        avatar_url: Their picture, when the network gives one.
+        url: Their profile page, when the network has one.
+        raw: The network's untouched reply, for anything we did not model.
+    """
+
+    id: str
+    handle: str | None
+    display_name: str | None
+    avatar_url: str | None
+    url: str | None
+    raw: RawData = field(default_factory=dict, repr=False)
+
+
+class Visibility(Enum):
+    """Who a post was shared with.
+
+    `None` on `PostDetails.visibility` means the network has no such idea at
+    all - Bluesky and Meta do not model this the way Mastodon does.
+    """
+
+    PUBLIC = "public"
+    """Shown to anyone, including people who do not follow the author."""
+
+    UNLISTED = "unlisted"
+    """Public, but left out of public timelines and search. Mastodon only."""
+
+    FOLLOWERS = "followers"
+    """Shown only to people who follow the author. Mastodon calls this
+    `"private"` on the wire; socialchimp uses the clearer word."""
+
+    DIRECT = "direct"
+    """Shown only to the people mentioned in it. Mastodon calls this
+    `"direct"`."""
+
+
+class LinkKind(Enum):
+    """What a `TextLink` inside a post's text points at."""
+
+    MENTION = "mention"
+    """Names another person."""
+
+    LINK = "link"
+    """Points at a web address."""
+
+    TAG = "tag"
+    """A hashtag."""
+
+
+@dataclass(frozen=True, slots=True)
+class TextLink:
+    """A mention, a link or a tag, sitting inside `PostDetails.text`.
+
+    Attributes:
+        start: Where this link starts, as a Python string index into
+            `PostDetails.text` - character offsets, not bytes.
+        end: Where it ends, the same way.
+        kind: What sort of link this is.
+        target: What it points at: a URL for `LINK`, the mentioned person's
+            id for `MENTION`, or the tag's name with no leading `#` for
+            `TAG`.
+        url: A clickable address for this link, where one is known.
+    """
+
+    start: int
+    end: int
+    kind: LinkKind
+    target: str
+    url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class Attachment:
+    """A picture, video or other file attached to a post.
+
+    Attributes:
+        kind: What sort of file this is - `"image"`, `"video"`, `"gifv"`,
+            `"audio"`, `"link"` or `"unknown"`.
+        url: Where to fetch the file, when the network gives one.
+        preview_url: A smaller version to show before the full file loads,
+            when the network gives one.
+        alt_text: A description for people using a screen reader, when the
+            author wrote one.
+        width: The file's width in pixels, when known.
+        height: The file's height in pixels, when known.
+        raw: The network's untouched reply, for anything we did not model.
+    """
+
+    kind: str
+    url: str | None
+    preview_url: str | None
+    alt_text: str | None
+    width: int | None
+    height: int | None
+    raw: RawData = field(default_factory=dict, repr=False)
+
+
+class Unavailable(Enum):
+    """Why a post that should be here could not be shown.
+
+    Set on a `PostDetails` standing in for a post a thread could not
+    actually fetch - a placeholder rather than the real thing.
+    """
+
+    DELETED = "deleted"
+    """The post was removed, or never existed."""
+
+    BLOCKED = "blocked"
+    """The author blocked us, or we blocked them."""
+
+    HIDDEN = "hidden"
+    """Hidden by moderation - a hidden comment on Meta, or a Bluesky label
+    or threadgate."""
+
+
+@dataclass(frozen=True, slots=True)
+class PostDetails:
+    """A post, read back in full - not just what publishing it returned.
+
+    Attributes:
+        id: The network's identifier for it - a Mastodon status id, a
+            Bluesky `at://` uri, or a Meta object id.
+        cid: Bluesky's content hash. `None` everywhere else.
+        url: The permalink on the network's own website, when there is one.
+        author: Who wrote it. `None` only when `unavailable` is set.
+        text: The words, as plain text. Mastodon's HTML is converted to
+            plain text here. Empty when `unavailable` is set.
+        html: The network's own HTML, where it has one - Mastodon does.
+            **Untrusted**: sanitise it yourself before showing it to anyone.
+        links: The mentions, links and tags inside `text`.
+        attachments: The pictures, videos and other files on this post.
+        created_at: When it was posted, according to the network.
+        visibility: Who it was shared with. `None` when the network has no
+            such idea at all - Bluesky and Meta do not.
+        parent_id: The post this one replies to, when it replies to one.
+        root_id: The top of the thread this post sits in. The same as `id`
+            for a top-level post.
+        reply_count: How many replies it has. `None` means the network does
+            not say - never "zero".
+        like_count: How many people liked it. `None` means the network does
+            not say.
+        repost_count: How many times it was reposted. `None` means the
+            network does not say.
+        quote_count: How many times it was quoted. `None` means the network
+            does not say.
+        liked_by_me: Whether the connected account has liked it. `None`
+            means we do not know.
+        my_like_id: Bluesky's like-record uri for the connected account's
+            own like, when there is one. Pass it to `unlike` to save a
+            lookup.
+        is_mine: Whether the connected account wrote this post.
+        unavailable: Set when this is a placeholder standing in for a post a
+            thread could not actually fetch, and says why.
+        raw: The network's untouched reply, for anything we did not model.
+    """
+
+    id: str
+    cid: str | None
+    url: str | None
+    author: Person | None
+    text: str
+    html: str | None
+    links: tuple[TextLink, ...]
+    attachments: tuple[Attachment, ...]
+    created_at: datetime | None
+    visibility: Visibility | None
+    parent_id: str | None
+    root_id: str | None
+    reply_count: int | None
+    like_count: int | None
+    repost_count: int | None
+    quote_count: int | None
+    liked_by_me: bool | None
+    my_like_id: str | None
+    is_mine: bool
+    unavailable: Unavailable | None
+    raw: RawData = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """Check the post's time has a timezone.
+
+        Raises:
+            ConfigError: If `created_at` has no timezone.
+        """
+        require_timezone(self.created_at, "created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class Thread:
+    """A post together with its replies.
+
+    Attributes:
+        post: The post that was asked for.
+        replies: Every reply read back, flat and oldest first. Build the
+            tree yourself by matching each one's `parent_id`.
+        complete: `False` if `depth`, `limit` or one of the network's own
+            caps cut the replies off before the end.
+        raw: The network's untouched reply, for anything we did not model.
+    """
+
+    post: PostDetails
+    replies: tuple[PostDetails, ...]
+    complete: bool
+    raw: RawData = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class LikeResult:
+    """What came back after liking a post.
+
+    Attributes:
+        post_id: The post that was liked.
+        like_id: Bluesky's like-record uri, worth keeping so `unlike` can
+            skip a lookup. `None` on Mastodon and Meta - there is nothing to
+            keep.
+        raw: The network's untouched reply, for anything we did not model.
+    """
+
+    post_id: str
+    like_id: str | None
+    raw: RawData = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class Like:
+    """One person's like on a post.
+
+    Attributes:
+        person: Who liked it.
+        liked_at: When they liked it. Bluesky has this; Mastodon never does,
+            so it is always `None` there.
+        raw: The network's untouched reply, for anything we did not model.
+    """
+
+    person: Person
+    liked_at: datetime | None
+    raw: RawData = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """Check the time has a timezone.
+
+        Raises:
+            ConfigError: If `liked_at` has no timezone.
+        """
+        require_timezone(self.liked_at, "liked_at")
+
+
+@dataclass(frozen=True, slots=True)
+class Conversation:
+    """A direct message conversation with one or more people.
+
+    Attributes:
+        id: The network's identifier for this conversation.
+        people: Everyone in it except the connected account.
+        last_message: The most recent message, when there is one to show.
+        unread_count: How many messages are unread. Mastodon only says yes
+            or no, so it reports `1` or `0` rather than a real count.
+        updated_at: When this conversation last changed.
+        can_reply_until: Meta's 24-hour window to reply closes at this
+            moment. `None` means there is no deadline.
+        full_history: `False` on Mastodon, which has no "every message"
+            call - `read_messages` there only reaches as far as the last
+            status's own thread.
+        raw: The network's untouched reply, for anything we did not model.
+    """
+
+    id: str
+    people: tuple[Person, ...]
+    last_message: Message | None
+    unread_count: int | None
+    updated_at: datetime | None
+    can_reply_until: datetime | None
+    full_history: bool
+    raw: RawData = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """Check both times have a timezone.
+
+        Raises:
+            ConfigError: If `updated_at` or `can_reply_until` has no
+                timezone.
+        """
+        require_timezone(self.updated_at, "updated_at")
+        require_timezone(self.can_reply_until, "can_reply_until")
+
+
+@dataclass(frozen=True, slots=True)
+class Message:
+    """One message inside a `Conversation`.
+
+    Attributes:
+        id: The network's identifier for this message.
+        conversation_id: Which conversation it belongs to.
+        sender: Who sent it.
+        text: The words. Empty when `deleted` is set.
+        sent_at: When it was sent.
+        is_mine: Whether the connected account sent it.
+        deleted: Whether it has been deleted since.
+        attachments: Pictures, videos or other files sent with it.
+        raw: The network's untouched reply, for anything we did not model.
+    """
+
+    id: str
+    conversation_id: str
+    sender: Person
+    text: str
+    sent_at: datetime
+    is_mine: bool
+    deleted: bool
+    attachments: tuple[Attachment, ...]
+    raw: RawData = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """Check the time has a timezone.
+
+        Raises:
+            ConfigError: If `sent_at` has no timezone.
+        """
+        require_timezone(self.sent_at, "sent_at")
