@@ -52,7 +52,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
-from typing import TYPE_CHECKING, Final, NoReturn, Protocol
+from typing import TYPE_CHECKING, Final, NoReturn, Protocol, TypeVar
 
 import httpx
 
@@ -61,19 +61,37 @@ from socialchimp.errors import (
     InvalidPostError,
     NotFoundError,
     NotSupportedError,
+    PostGoneError,
     SocialChimpError,
 )
-from socialchimp.events import Update, answer_setup_check, verify_hmac_sha256
+from socialchimp.events import (
+    Update,
+    UpdateBatch,
+    UpdateKind,
+    answer_setup_check,
+    verify_hmac_sha256,
+)
 from socialchimp.features import Feature, Limits, TextCount, check_post, measure_text
 from socialchimp.http import HttpClient
 from socialchimp.models import (
     AppCredentials,
+    Attachment,
     Connection,
+    Conversation,
+    Like,
+    LikeResult,
     Media,
+    MediaKind,
+    Message,
+    Page,
+    Person,
     Post,
+    PostDetails,
     PostResult,
     PostState,
+    Thread,
     Token,
+    Visibility,
 )
 from socialchimp.platform import (
     AccountChoice,
@@ -82,9 +100,17 @@ from socialchimp.platform import (
     CanCheckState,
     CanCreateApp,
     CanDeletePosts,
+    CanLike,
+    CanMessage,
+    CanReadLikes,
+    CanReadPost,
     CanReadStats,
+    CanReadThread,
     CanReadUpdates,
+    CanReadUpdatesAfter,
+    CanReply,
     CanResumeLogin,
+    CanStartConversations,
     ChooseAccount,
     Finished,
     LoginField,
@@ -265,6 +291,29 @@ _CLAIMS: Final[tuple[_Claim, ...]] = (
     ),
     _Claim(Feature.DELETE_POST, CanDeletePosts, ("delete_post",), wants_async=True),
     _Claim(Feature.READ_STATS, CanReadStats, ("read_stats",), wants_async=True),
+    _Claim(Feature.READ_POST, CanReadPost, ("read_post",), wants_async=True),
+    _Claim(Feature.READ_THREAD, CanReadThread, ("read_thread",), wants_async=True),
+    _Claim(Feature.REPLY_TO_COMMENTS, CanReply, ("reply",), wants_async=True),
+    _Claim(Feature.LIKE, CanLike, ("like", "unlike"), wants_async=True),
+    _Claim(Feature.READ_LIKES, CanReadLikes, ("read_likes",), wants_async=True),
+    _Claim(
+        Feature.READ_UPDATES_AFTER,
+        CanReadUpdatesAfter,
+        ("fetch_updates_after", "mark_seen"),
+        wants_async=True,
+    ),
+    _Claim(
+        Feature.MESSAGES,
+        CanMessage,
+        ("read_conversations", "read_messages", "send_message", "mark_read"),
+        wants_async=True,
+    ),
+    _Claim(
+        Feature.START_CONVERSATIONS,
+        CanStartConversations,
+        ("start_conversation",),
+        wants_async=True,
+    ),
 )
 
 
@@ -625,7 +674,95 @@ _FAKE_FEATURES: Final = (
     | Feature.DELETE_POST
     | Feature.CREATE_APP
     | Feature.PUSH_UPDATES
+    | Feature.READ_POST
+    | Feature.READ_THREAD
+    | Feature.REPLY_TO_COMMENTS
+    | Feature.LIKE
+    | Feature.READ_LIKES
+    | Feature.READ_UPDATES_AFTER
+    | Feature.MESSAGES
+    | Feature.START_CONVERSATIONS
 )
+
+# Where this fake's clock starts. Every post, like, update, conversation and
+# message it makes up gets a moment in time built by counting seconds up
+# from here, rather than `datetime.now()` - so two tests seeding the same
+# things end up comparing the same timestamps, and "oldest first" always
+# comes out the same way twice.
+_FAKE_EPOCH: Final = datetime(2024, 1, 1, tzinfo=UTC)
+
+# What a page holds, unless a call says otherwise. Small on purpose: a test
+# with three likes and a page size of two sees a second page without having
+# to seed dozens of rows first.
+_FAKE_PAGE_SIZE: Final = 2
+
+_PageItem = TypeVar("_PageItem")
+
+
+@dataclass(frozen=True, slots=True)
+class _SeedPost:
+    """A post this fake knows about, whether seeded or made through it.
+
+    Kept apart from the public `PostDetails`, because `reply_count` and
+    `like_count` are never stored - they are counted afresh from
+    `FakePlatform._posts` and `FakePlatform._likes` every time a post is
+    read, so a like or a reply seeded after a post always shows up.
+    """
+
+    author: Person
+    text: str
+    html: str | None
+    attachments: tuple[Attachment, ...]
+    created_at: datetime
+    visibility: Visibility | None
+    parent_id: str | None
+    root_id: str
+    is_mine: bool
+    cid: str | None
+    url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredLike:
+    """One like this fake is holding, on its way into a `Like` or a count."""
+
+    like_id: str
+    person: Person
+    liked_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _SeedConversation:
+    """A conversation this fake knows about.
+
+    Its messages live apart from this, in `FakePlatform._messages`, so that
+    sending one never has to rebuild the conversation it belongs to.
+    """
+
+    id: str
+    people: tuple[Person, ...]
+    can_reply_until: datetime | None
+    full_history: bool
+    created_at: datetime
+
+
+def _attachment_from(media: Media) -> Attachment:
+    """Turn a `Media` about to be attached into the `Attachment` reading it back.
+
+    Args:
+        media: What was attached to a post or a reply.
+
+    Returns:
+        The same picture or video, in the shape a post read back uses.
+    """
+    return Attachment(
+        kind="image" if media.kind is MediaKind.IMAGE else "video",
+        url=media.url,
+        preview_url=None,
+        alt_text=media.alt_text,
+        width=None,
+        height=None,
+    )
 
 
 class FakePlatform:
@@ -655,6 +792,34 @@ class FakePlatform:
     `answers_setup_checks=False` and it has no `answer_setup_check` at all,
     so it is not a `CanAnswerSetupCheck` - the way TikTok is, which pushes
     without asking anything first.
+
+    It also reads back, replies to, likes and messages posts, the same as a
+    real inbox would. Nothing is there until a test puts it there:
+
+        platform = FakePlatform()
+        post = platform.add_post(text="hello")
+        await platform.like(platform.connection(), post.id)
+        read_back = await platform.read_post(platform.connection(), post.id)
+        assert read_back.liked_by_me
+
+    `add_post`, `add_reply`, `add_like`, `add_update`, `add_conversation`
+    and `add_message` are how a test puts something there. Publishing or
+    replying through the fake seeds the same way `publish` always has, so a
+    post your test publishes can be read straight back, replied to and
+    liked without seeding it twice. Reading, liking, replying to or
+    messaging an id nothing put there raises `PostGoneError` or
+    `NotFoundError`, the way a real network would for a post or a
+    conversation that never existed.
+
+    Give it `fail_next(method, error)` to make the next call to one of those
+    methods raise `error` instead of doing its normal thing, for testing the
+    error paths a real network sometimes answers with -
+    `RateLimitError`, `MissingPermissionError`, `BlockedError`,
+    `PostGoneError`:
+
+        platform.fail_next("like", RateLimitError("slow down", retry_after=30))
+        with pytest.raises(RateLimitError):
+            await platform.like(platform.connection(), post.id)
 
     Example:
         transport = RecordingTransport({"POST /posts": {"id": "1"}})
@@ -699,6 +864,16 @@ class FakePlatform:
             look them up.
         last_remember: What the last `finish_login` was handed back from
             `start_login`. `None` until one has happened.
+        replied: Every reply made through `reply`, as
+            (connection id, post id replied to, text).
+        liked: Every like made through `like`, as (connection id, post id).
+        unliked: Every unlike made through `unlike`, as
+            (connection id, post id).
+        marked_seen: Every marker handed to `mark_seen`, in order.
+        sent_messages: Every message sent through `send_message` or
+            `start_conversation`.
+        marked_read: The id of every conversation `mark_read` was asked to
+            mark, in order.
     """
 
     def __init__(
@@ -717,6 +892,7 @@ class FakePlatform:
         publish_fails_with: SocialChimpError | None = None,
         login_fails_with: SocialChimpError | None = None,
         answers_setup_checks: bool = True,
+        page_size: int = _FAKE_PAGE_SIZE,
     ) -> None:
         """Set up a fake network that behaves however you need it to.
 
@@ -742,6 +918,10 @@ class FakePlatform:
             answers_setup_checks: Whether this fake answers Meta's setup
                 check. `False` leaves it without an `answer_setup_check` at
                 all, the way TikTok has none.
+            page_size: How many rows `read_likes`, `read_conversations` and
+                `read_messages` hand back at a time, unless a call passes
+                its own `limit`. Kept small by default, so a test sees a
+                second page without having to seed dozens of rows.
         """
         self.name = name
         self.features = features
@@ -761,6 +941,12 @@ class FakePlatform:
         self.refreshed: list[str] = []
         self.refreshed_with: list[AppCredentials | None] = []
         self.last_remember: RawData | None = None
+        self.replied: list[tuple[str, str, str]] = []
+        self.liked: list[tuple[str, str]] = []
+        self.unliked: list[tuple[str, str]] = []
+        self.marked_seen: list[str] = []
+        self.sent_messages: list[Message] = []
+        self.marked_read: list[str] = []
         self._limits = (
             limits
             if limits is not None
@@ -770,6 +956,20 @@ class FakePlatform:
         self._live: set[str] = set()
         self._counter = 0
         self._state_asks = 0
+        self._page_size = page_size
+        self._clock = _FAKE_EPOCH
+        self._posts: dict[str, _SeedPost] = {}
+        self._likes: dict[str, list[_StoredLike]] = {}
+        self._post_seq = 0
+        self._like_seq = 0
+        self._update_queue: list[Update] = []
+        self._update_seq = 0
+        self._conversations: dict[str, _SeedConversation] = {}
+        self._messages: dict[str, list[Message]] = {}
+        self._unread: dict[str, int] = {}
+        self._conversation_seq = 0
+        self._message_seq = 0
+        self._next_failures: dict[str, SocialChimpError] = {}
         if accounts and not hasattr(self, "resume_login"):
             # Put on the instance rather than written as a method, so that a
             # fake with nothing to choose between has no `resume_login` at
@@ -797,6 +997,540 @@ class FakePlatform:
         if self.token_lifetime is None:
             return None
         return datetime.now(UTC) + self.token_lifetime
+
+    def _next_time(self) -> datetime:
+        """Move this fake's clock on by one second, and hand back the time.
+
+        Used for every `created_at`, `liked_at` and `sent_at` this fake
+        makes up on its own, so that two things it builds one after another
+        always compare as "oldest first" the same way twice.
+        """
+        self._clock += timedelta(seconds=1)
+        return self._clock
+
+    def _person_for(self, connection: Connection) -> Person:
+        """Build the `Person` a call through this fake is made as.
+
+        Args:
+            connection: The account making the call.
+
+        Returns:
+            That account, as the `Person` a post or message it made shows
+            as its author or sender.
+        """
+        return Person(
+            id=connection.account_id,
+            handle=connection.account_name,
+            display_name=connection.account_name,
+            avatar_url=None,
+            url=f"https://{self.name}.example/@{connection.account_id}",
+        )
+
+    def _post_gone(self, post_id: str) -> PostGoneError:
+        """Build the error `read_post` and friends raise for an unknown id.
+
+        Args:
+            post_id: The id nothing in this fake knows about.
+
+        Returns:
+            A `PostGoneError` naming it, ready to raise.
+        """
+        return PostGoneError(
+            f"{self.name} has no post {post_id!r}. It was never published, "
+            f"never seeded with add_post or add_reply, or has since been "
+            f"deleted.",
+            platform=self.name,
+        )
+
+    def _seed_for(self, post_id: str) -> _SeedPost:
+        """Look up what this fake knows about one post, or say it is gone.
+
+        Args:
+            post_id: The post or comment to look up.
+
+        Returns:
+            What was seeded or published for it.
+
+        Raises:
+            PostGoneError: If nothing in this fake knows that id.
+        """
+        found = self._posts.get(post_id)
+        if found is None:
+            raise self._post_gone(post_id)
+        return found
+
+    def _details_for(self, post_id: str, connection: Connection) -> PostDetails:
+        """Build the `PostDetails` a test or an app would read for one post.
+
+        Counts replies and likes afresh every time, rather than storing
+        them on the post, so a like or a reply seeded after the post always
+        shows up here.
+
+        Args:
+            post_id: The post or comment to read.
+            connection: Whose like, if any, `liked_by_me` reports on.
+
+        Returns:
+            The post, in full.
+
+        Raises:
+            PostGoneError: If nothing in this fake knows that id.
+        """
+        seed = self._seed_for(post_id)
+        reply_count = sum(
+            1 for other in self._posts.values() if other.parent_id == post_id
+        )
+        likes = self._likes.get(post_id, ())
+        mine = next(
+            (like for like in likes if like.person.id == connection.account_id), None
+        )
+        return PostDetails(
+            id=post_id,
+            cid=seed.cid,
+            url=seed.url,
+            author=seed.author,
+            text=seed.text,
+            html=seed.html,
+            links=(),
+            attachments=seed.attachments,
+            created_at=seed.created_at,
+            visibility=seed.visibility,
+            parent_id=seed.parent_id,
+            root_id=seed.root_id,
+            reply_count=reply_count,
+            like_count=len(likes),
+            repost_count=0,
+            quote_count=0,
+            liked_by_me=mine is not None,
+            my_like_id=mine.like_id if mine is not None else None,
+            is_mine=seed.is_mine,
+            unavailable=None,
+        )
+
+    def _thread_replies(self, post_id: str) -> list[tuple[int, str]]:
+        """Find every post under one, however deep, oldest first.
+
+        Args:
+            post_id: The top of the thread.
+
+        Returns:
+            (depth, id) for each descendant - depth 1 for a direct reply,
+            2 for a reply to that, and so on - in the order this fake
+            first heard about them, which is the order `add_post`,
+            `add_reply`, `publish` and `reply` were called in.
+        """
+        found: list[tuple[int, str]] = []
+        for candidate_id, candidate in self._posts.items():
+            depth = 0
+            parent_id = candidate.parent_id
+            while parent_id is not None:
+                depth += 1
+                if parent_id == post_id:
+                    found.append((depth, candidate_id))
+                    break
+                cursor = self._posts.get(parent_id)
+                parent_id = cursor.parent_id if cursor is not None else None
+        return found
+
+    def _page(
+        self,
+        items: Sequence[_PageItem],
+        *,
+        after: str | None,
+        limit: int | None,
+    ) -> Page[_PageItem]:
+        """Cut one page out of a sequence this fake built in full.
+
+        Args:
+            items: Every row there is, already in the order to hand back.
+            after: A `Page.next` from an earlier call to this same list.
+            limit: How many rows to hand back. `None` uses `page_size`.
+
+        Returns:
+            One page, with `next` set to carry on from where this one
+            stopped, or `None` once there is nothing left.
+        """
+        start = int(after) if after is not None else 0
+        size = limit if limit is not None else self._page_size
+        chunk = items[start : start + size]
+        after_chunk = start + size
+        following = str(after_chunk) if after_chunk < len(items) else None
+        return Page(items=tuple(chunk), next=following)
+
+    def _require_conversation(self, conversation_id: str) -> _SeedConversation:
+        """Look up one conversation, or say there is no such thing.
+
+        Args:
+            conversation_id: The conversation to look up.
+
+        Returns:
+            What `add_conversation` or `start_conversation` recorded for it.
+
+        Raises:
+            NotFoundError: If nothing in this fake knows that id.
+        """
+        found = self._conversations.get(conversation_id)
+        if found is None:
+            message = (
+                f"{self.name} has no conversation {conversation_id!r}. Seed "
+                f"one with add_conversation, or start one with "
+                f"start_conversation."
+            )
+            raise NotFoundError(message, platform=self.name)
+        return found
+
+    def _conversation_details(self, conversation_id: str) -> Conversation:
+        """Build the `Conversation` a test or an app would read for one id.
+
+        Args:
+            conversation_id: The conversation to read.
+
+        Returns:
+            The conversation, with its latest message and unread count.
+        """
+        seed = self._conversations[conversation_id]
+        messages = self._messages.get(conversation_id, [])
+        last = messages[-1] if messages else None
+        return Conversation(
+            id=seed.id,
+            people=seed.people,
+            last_message=last,
+            unread_count=self._unread.get(conversation_id, 0),
+            updated_at=last.sent_at if last is not None else seed.created_at,
+            can_reply_until=seed.can_reply_until,
+            full_history=seed.full_history,
+        )
+
+    def _maybe_fail(self, method: str) -> None:
+        """Raise the error `fail_next` queued for this method, once.
+
+        Args:
+            method: The name of the method about to run.
+
+        Raises:
+            SocialChimpError: Whatever `fail_next` was told to raise here,
+                if anything was.
+        """
+        error = self._next_failures.pop(method, None)
+        if error is not None:
+            raise error
+
+    def fail_next(self, method: str, error: SocialChimpError) -> None:
+        """Make the next call to one inbox method raise `error` instead.
+
+        For testing the error paths a real network sometimes answers with,
+        without a network to make answer that way:
+
+            platform.fail_next("like", RateLimitError("slow down"))
+            with pytest.raises(RateLimitError):
+                await platform.like(connection, post_id)
+
+        Only the inbox methods added in 0.8.0 look at this - `read_post`,
+        `read_thread`, `reply`, `like`, `unlike`, `read_likes`,
+        `fetch_updates_after`, `mark_seen`, `read_conversations`,
+        `read_messages`, `send_message`, `mark_read` and
+        `start_conversation`. `publish_fails_with` and `login_fails_with`
+        are still how you fail `publish` and signing in.
+
+        Args:
+            method: The method's name, such as `"like"`.
+            error: What it should raise, once, the next time it is called.
+        """
+        self._next_failures[method] = error
+
+    def add_post(
+        self,
+        *,
+        text: str = "",
+        post_id: str | None = None,
+        author: Person | None = None,
+        is_mine: bool = False,
+        visibility: Visibility | None = None,
+        created_at: datetime | None = None,
+        attachments: tuple[Attachment, ...] = (),
+    ) -> PostDetails:
+        """Put a top-level post into this fake.
+
+        Ready to be read, replied to or liked, straight away.
+
+        Args:
+            text: The post's words.
+            post_id: Its id. Left out, one is made up and returned to you.
+            author: Who wrote it. Left out, a person made up for this post.
+            is_mine: Whether the connected account wrote it.
+            visibility: Who it was shared with. Left out, `None` - the
+                network has no such idea.
+            created_at: When it was posted. Left out, this fake's own clock.
+            attachments: Pictures or videos on the post.
+
+        Returns:
+            The post, exactly as `read_post` would hand it back.
+        """
+        self._post_seq += 1
+        made_id = post_id if post_id is not None else f"post-{self._post_seq}"
+        made_author = (
+            author
+            if author is not None
+            else Person(
+                id=f"person-{self._post_seq}",
+                handle=f"person-{self._post_seq}@{self.name}.example",
+                display_name=None,
+                avatar_url=None,
+                url=None,
+            )
+        )
+        self._posts[made_id] = _SeedPost(
+            author=made_author,
+            text=text,
+            html=None,
+            attachments=attachments,
+            created_at=created_at if created_at is not None else self._next_time(),
+            visibility=visibility,
+            parent_id=None,
+            root_id=made_id,
+            is_mine=is_mine,
+            cid=None,
+            url=f"https://{self.name}.example/p/{made_id}",
+        )
+        return self._details_for(made_id, self.connection())
+
+    def add_reply(
+        self,
+        to: str,
+        *,
+        text: str = "",
+        post_id: str | None = None,
+        author: Person | None = None,
+        is_mine: bool = False,
+        created_at: datetime | None = None,
+    ) -> PostDetails:
+        """Put a reply into this fake, under a post or comment already there.
+
+        Args:
+            to: The post or comment this replies to.
+            text: The reply's words.
+            post_id: Its id. Left out, one is made up and returned to you.
+            author: Who wrote it. Left out, a person made up for this post.
+            is_mine: Whether the connected account wrote it.
+            created_at: When it was posted. Left out, this fake's own clock.
+
+        Returns:
+            The reply, exactly as `read_post` would hand it back.
+
+        Raises:
+            PostGoneError: If `to` is not a post this fake knows about.
+        """
+        parent = self._seed_for(to)
+        self._post_seq += 1
+        made_id = post_id if post_id is not None else f"post-{self._post_seq}"
+        made_author = (
+            author
+            if author is not None
+            else Person(
+                id=f"person-{self._post_seq}",
+                handle=f"person-{self._post_seq}@{self.name}.example",
+                display_name=None,
+                avatar_url=None,
+                url=None,
+            )
+        )
+        self._posts[made_id] = _SeedPost(
+            author=made_author,
+            text=text,
+            html=None,
+            attachments=(),
+            created_at=created_at if created_at is not None else self._next_time(),
+            visibility=None,
+            parent_id=to,
+            root_id=parent.root_id,
+            is_mine=is_mine,
+            cid=None,
+            url=f"https://{self.name}.example/p/{made_id}",
+        )
+        return self._details_for(made_id, self.connection())
+
+    def add_like(
+        self,
+        post_id: str,
+        person: Person | None = None,
+        *,
+        liked_at: datetime | None = None,
+    ) -> None:
+        """Put someone else's like on a post already in this fake.
+
+        For the connected account's own like, call `like` instead - that is
+        what makes `liked_by_me` and `my_like_id` true on a post read back.
+
+        Args:
+            post_id: The post or comment to like.
+            person: Who liked it. Left out, a person made up for this like.
+            liked_at: When they liked it. Left out, this fake's own clock.
+
+        Raises:
+            PostGoneError: If `post_id` is not a post this fake knows about.
+        """
+        self._seed_for(post_id)
+        self._like_seq += 1
+        made_person = (
+            person
+            if person is not None
+            else Person(
+                id=f"liker-{self._like_seq}",
+                handle=f"liker-{self._like_seq}@{self.name}.example",
+                display_name=None,
+                avatar_url=None,
+                url=None,
+            )
+        )
+        entry = _StoredLike(
+            like_id=f"like-{self._like_seq}",
+            person=made_person,
+            liked_at=liked_at if liked_at is not None else self._next_time(),
+        )
+        self._likes.setdefault(post_id, []).append(entry)
+
+    def add_update(
+        self,
+        kind: UpdateKind,
+        *,
+        update_id: str | None = None,
+        connection_id: str | None = None,
+        actor: Person | None = None,
+        post_id: str | None = None,
+        about_post_id: str | None = None,
+        thread_root_id: str | None = None,
+        conversation_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> Update:
+        """Queue an update for `fetch_updates_after` to hand back.
+
+        Args:
+            kind: What happened.
+            update_id: Its id. Left out, one is made up and returned to you.
+            connection_id: Which connection it concerns. Left out, this
+                fake's own default connection.
+            actor: Who did it.
+            post_id: The thing that happened, as a post id.
+            about_post_id: The connected account's own post this concerns.
+            thread_root_id: The top of the thread this sits in.
+            conversation_id: Which conversation this concerns.
+            created_at: When it happened. Left out, this fake's own clock.
+
+        Returns:
+            The update, exactly as `fetch_updates_after` would hand it back.
+        """
+        self._update_seq += 1
+        made = Update.from_network(
+            update_id=update_id
+            if update_id is not None
+            else f"update-{self._update_seq}",
+            kind_name=kind.value,
+            platform=self.name,
+            connection_id=(
+                connection_id if connection_id is not None else self.connection().id
+            ),
+            created_at=created_at if created_at is not None else self._next_time(),
+            actor=actor,
+            post_id=post_id,
+            about_post_id=about_post_id,
+            thread_root_id=thread_root_id,
+            conversation_id=conversation_id,
+        )
+        self._update_queue.append(made)
+        return made
+
+    def add_conversation(
+        self,
+        people: Sequence[Person],
+        *,
+        conversation_id: str | None = None,
+        unread_count: int = 0,
+        can_reply_until: datetime | None = None,
+        full_history: bool = True,
+    ) -> Conversation:
+        """Put a conversation into this fake, ready to be read or sent into.
+
+        Args:
+            people: Everyone in it except the connected account.
+            conversation_id: Its id. Left out, one is made up and returned
+                to you.
+            unread_count: How many messages start out unread.
+            can_reply_until: When a reply window closes. Left out, `None` -
+                there is no deadline.
+            full_history: Whether `read_messages` reaches every message
+                ever sent in it.
+
+        Returns:
+            The conversation, exactly as `read_conversations` would hand it
+            back.
+        """
+        self._conversation_seq += 1
+        made_id = (
+            conversation_id
+            if conversation_id is not None
+            else f"conversation-{self._conversation_seq}"
+        )
+        self._conversations[made_id] = _SeedConversation(
+            id=made_id,
+            people=tuple(people),
+            can_reply_until=can_reply_until,
+            full_history=full_history,
+            created_at=self._next_time(),
+        )
+        self._unread[made_id] = unread_count
+        return self._conversation_details(made_id)
+
+    def add_message(
+        self,
+        conversation_id: str,
+        sender: Person,
+        text: str,
+        *,
+        message_id: str | None = None,
+        sent_at: datetime | None = None,
+        is_mine: bool = False,
+        attachments: tuple[Attachment, ...] = (),
+    ) -> Message:
+        """Put a message into a conversation already in this fake.
+
+        A message from anyone but the connected account adds one to
+        `Conversation.unread_count`, the way a real message arriving would.
+        Call `mark_read` to clear it, or seed it already read with
+        `is_mine=True`.
+
+        Args:
+            conversation_id: The conversation to add it to.
+            sender: Who sent it.
+            text: Its words.
+            message_id: Its id. Left out, one is made up and returned to
+                you.
+            sent_at: When it was sent. Left out, this fake's own clock.
+            is_mine: Whether the connected account sent it.
+            attachments: Pictures, videos or other files sent with it.
+
+        Returns:
+            The message, exactly as `read_messages` would hand it back.
+
+        Raises:
+            NotFoundError: If `conversation_id` is not a conversation this
+                fake knows about.
+        """
+        self._require_conversation(conversation_id)
+        self._message_seq += 1
+        made = Message(
+            id=message_id if message_id is not None else f"message-{self._message_seq}",
+            conversation_id=conversation_id,
+            sender=sender,
+            text=text,
+            sent_at=sent_at if sent_at is not None else self._next_time(),
+            is_mine=is_mine,
+            deleted=False,
+            attachments=attachments,
+        )
+        self._messages.setdefault(conversation_id, []).append(made)
+        if not is_mine:
+            self._unread[conversation_id] = self._unread.get(conversation_id, 0) + 1
+        return made
 
     def connection(
         self,
@@ -1040,11 +1774,22 @@ class FakePlatform:
                 post_id = str(raw.get("id", post_id))
 
         self._live.add(post_id)
-        return PostResult(
-            id=post_id,
-            url=f"https://{self.name}.example/p/{post_id}",
-            raw=raw,
+        url = f"https://{self.name}.example/p/{post_id}"
+        parent = self._posts.get(post.reply_to) if post.reply_to is not None else None
+        self._posts[post_id] = _SeedPost(
+            author=self._person_for(connection),
+            text=post.text,
+            html=None,
+            attachments=tuple(_attachment_from(item) for item in post.media),
+            created_at=self._next_time(),
+            visibility=None,
+            parent_id=post.reply_to,
+            root_id=parent.root_id if parent is not None else post_id,
+            is_mine=True,
+            cid=None,
+            url=url,
         )
+        return PostResult(id=post_id, url=url, raw=raw)
 
     async def create_app(
         self,
@@ -1092,7 +1837,461 @@ class FakePlatform:
             )
             raise NotFoundError(message, platform=self.name)
         self._live.discard(post_id)
+        self._posts.pop(post_id, None)
         self.deleted.append(post_id)
+
+    async def read_post(self, connection: Connection, post_id: str) -> PostDetails:
+        """Read one post back in full.
+
+        Args:
+            connection: The account to read it as.
+            post_id: The post or comment to read.
+
+        Returns:
+            The post, in full.
+
+        Raises:
+            PostGoneError: If nothing in this fake knows that id.
+            SocialChimpError: Whatever `fail_next` queued for `read_post`.
+        """
+        self._maybe_fail("read_post")
+        return self._details_for(post_id, connection)
+
+    async def read_thread(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        depth: int | None = None,
+        limit: int | None = None,
+    ) -> Thread:
+        """Read a post together with every reply under it, oldest first.
+
+        Args:
+            connection: The account to read it as.
+            post_id: The post to read.
+            depth: How many reply levels to fetch. `None` fetches every
+                level this fake has.
+            limit: A cap on how many replies come back, across every level.
+
+        Returns:
+            The post and its replies. `Thread.complete` is `False` if
+            `depth` or `limit` left some of them out.
+
+        Raises:
+            PostGoneError: If nothing in this fake knows that id.
+            SocialChimpError: Whatever `fail_next` queued for `read_thread`.
+        """
+        self._maybe_fail("read_thread")
+        post = self._details_for(post_id, connection)
+        pairs = self._thread_replies(post_id)
+        complete = True
+        if depth is not None:
+            kept = [pair for pair in pairs if pair[0] <= depth]
+            if len(kept) != len(pairs):
+                complete = False
+            pairs = kept
+        if limit is not None and len(pairs) > limit:
+            pairs = pairs[:limit]
+            complete = False
+        replies = tuple(
+            self._details_for(reply_id, connection) for _, reply_id in pairs
+        )
+        return Thread(post=post, replies=replies, complete=complete)
+
+    async def reply(
+        self,
+        connection: Connection,
+        post_id: str,
+        text: str,
+        *,
+        media: tuple[Media, ...] = (),
+        options: RawData | None = None,
+    ) -> PostResult:
+        """Reply to a post or comment, as the connected account.
+
+        Args:
+            connection: The account to reply as.
+            post_id: The post or comment being replied to.
+            text: The reply's words.
+            media: Pictures or videos to attach to the reply.
+            options: Ignored. This fake has no per-network settings.
+
+        Returns:
+            What this fake says about the new reply.
+
+        Raises:
+            PostGoneError: If nothing in this fake knows `post_id`.
+            SocialChimpError: Whatever `fail_next` queued for `reply`.
+        """
+        self._maybe_fail("reply")
+        target = self._seed_for(post_id)
+        self._counter += 1
+        new_id = str(self._counter)
+        url = f"https://{self.name}.example/p/{new_id}"
+        self._posts[new_id] = _SeedPost(
+            author=self._person_for(connection),
+            text=text,
+            html=None,
+            attachments=tuple(_attachment_from(item) for item in media),
+            created_at=self._next_time(),
+            visibility=None,
+            parent_id=post_id,
+            root_id=target.root_id,
+            is_mine=True,
+            cid=None,
+            url=url,
+        )
+        self._live.add(new_id)
+        self.replied.append((connection.id, post_id, text))
+        return PostResult(id=new_id, url=url)
+
+    async def like(self, connection: Connection, post_id: str) -> LikeResult:
+        """Like a post or a comment, as the connected account.
+
+        Liking something already liked returns the existing like rather
+        than making a new one, the same as a real network.
+
+        Args:
+            connection: The account doing the liking.
+            post_id: The post or comment to like.
+
+        Returns:
+            What this fake says about the like.
+
+        Raises:
+            PostGoneError: If nothing in this fake knows that id.
+            SocialChimpError: Whatever `fail_next` queued for `like`.
+        """
+        self._maybe_fail("like")
+        self._seed_for(post_id)
+        self.liked.append((connection.id, post_id))
+        existing = next(
+            (
+                found
+                for found in self._likes.get(post_id, [])
+                if found.person.id == connection.account_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return LikeResult(post_id=post_id, like_id=existing.like_id)
+
+        self._like_seq += 1
+        entry = _StoredLike(
+            like_id=f"like-{self._like_seq}",
+            person=self._person_for(connection),
+            liked_at=self._next_time(),
+        )
+        self._likes.setdefault(post_id, []).append(entry)
+        return LikeResult(post_id=post_id, like_id=entry.like_id)
+
+    async def unlike(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        like_id: str | None = None,
+    ) -> None:
+        """Take back the connected account's like on a post or a comment.
+
+        Unliking something not liked succeeds and does nothing, the same as
+        a real network.
+
+        Args:
+            connection: The account taking the like back.
+            post_id: The post or comment to unlike.
+            like_id: The like's own identifier, from `LikeResult.like_id`.
+                Left out, the connected account's own like is removed,
+                wherever it is.
+
+        Raises:
+            PostGoneError: If nothing in this fake knows that id.
+            SocialChimpError: Whatever `fail_next` queued for `unlike`.
+        """
+        self._maybe_fail("unlike")
+        self._seed_for(post_id)
+        self.unliked.append((connection.id, post_id))
+        likes = self._likes.get(post_id, [])
+        if like_id is not None:
+            self._likes[post_id] = [
+                found for found in likes if found.like_id != like_id
+            ]
+        else:
+            self._likes[post_id] = [
+                found for found in likes if found.person.id != connection.account_id
+            ]
+
+    async def read_likes(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Like]:
+        """List who liked a post.
+
+        Args:
+            connection: The account to ask as.
+            post_id: The post or comment to list likes for.
+            after: A `Page.next` from a previous call.
+            limit: A cap on how many come back. `None` uses `page_size`.
+
+        Returns:
+            One page of likes.
+
+        Raises:
+            PostGoneError: If nothing in this fake knows that id.
+            SocialChimpError: Whatever `fail_next` queued for `read_likes`.
+        """
+        self._maybe_fail("read_likes")
+        self._seed_for(post_id)
+        items = tuple(
+            Like(person=found.person, liked_at=found.liked_at)
+            for found in self._likes.get(post_id, [])
+        )
+        return self._page(items, after=after, limit=limit)
+
+    async def fetch_updates_after(
+        self,
+        connection: Connection,
+        marker: str | None,
+        *,
+        limit: int | None = None,
+    ) -> UpdateBatch:
+        """Read what is new since a marker, oldest first.
+
+        `marker=None` returns everything queued so far, the way a first
+        call with nothing saved yet sets a starting point. A marker this
+        fake does not recognise behaves the same as being fully caught up -
+        the only markers worth passing back in are ones an earlier call to
+        this same method handed you.
+
+        Args:
+            connection: The account to ask about. Ignored - this fake has
+                one shared queue.
+            marker: The marker from the last call's `UpdateBatch.marker`.
+            limit: A cap on how many updates come back in this page.
+
+        Returns:
+            The new updates, and a marker to store for next time.
+
+        Raises:
+            SocialChimpError: Whatever `fail_next` queued for
+                `fetch_updates_after`.
+        """
+        self._maybe_fail("fetch_updates_after")
+        queue = self._update_queue
+        if marker is None:
+            start = 0
+        else:
+            start = next(
+                (index + 1 for index, item in enumerate(queue) if item.id == marker),
+                len(queue),
+            )
+        remaining = queue[start:]
+        batch = remaining[:limit] if limit is not None else remaining
+        more = len(batch) < len(remaining)
+        new_marker = batch[-1].id if batch else marker
+        return UpdateBatch(updates=tuple(batch), marker=new_marker, more=more)
+
+    async def mark_seen(self, connection: Connection, marker: str) -> None:
+        """Note that a marker from `fetch_updates_after` has been handled.
+
+        Args:
+            connection: The account to mark it for. Ignored - this fake
+                just remembers every marker it is given, on `marked_seen`.
+            marker: The marker that has been handled.
+        """
+        self._maybe_fail("mark_seen")
+        self.marked_seen.append(marker)
+
+    async def read_conversations(
+        self,
+        connection: Connection,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Conversation]:
+        """List this account's conversations, newest first.
+
+        Args:
+            connection: The account to ask as.
+            after: A `Page.next` from a previous call.
+            limit: A cap on how many come back. `None` uses `page_size`.
+
+        Returns:
+            One page of conversations.
+
+        Raises:
+            SocialChimpError: Whatever `fail_next` queued for
+                `read_conversations`.
+        """
+        self._maybe_fail("read_conversations")
+
+        def _updated_at(seed: _SeedConversation) -> datetime:
+            messages = self._messages.get(seed.id, [])
+            return messages[-1].sent_at if messages else seed.created_at
+
+        ordered = sorted(self._conversations.values(), key=_updated_at, reverse=True)
+        items = tuple(self._conversation_details(found.id) for found in ordered)
+        return self._page(items, after=after, limit=limit)
+
+    async def read_messages(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Message]:
+        """Read the messages in one conversation, newest first.
+
+        Args:
+            connection: The account to ask as.
+            conversation_id: Which conversation to read.
+            after: A `Page.next` from a previous call.
+            limit: A cap on how many come back. `None` uses `page_size`.
+
+        Returns:
+            One page of messages, newest first.
+
+        Raises:
+            NotFoundError: If nothing in this fake knows that conversation.
+            SocialChimpError: Whatever `fail_next` queued for
+                `read_messages`.
+        """
+        self._maybe_fail("read_messages")
+        self._require_conversation(conversation_id)
+        newest_first = tuple(reversed(self._messages.get(conversation_id, [])))
+        return self._page(newest_first, after=after, limit=limit)
+
+    async def send_message(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send a message into an existing conversation.
+
+        Args:
+            connection: The account to send as.
+            conversation_id: Which conversation to send into.
+            text: The message's words.
+            options: Ignored. This fake has no per-network settings.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            NotFoundError: If nothing in this fake knows that conversation.
+            SocialChimpError: Whatever `fail_next` queued for
+                `send_message`.
+        """
+        self._maybe_fail("send_message")
+        self._require_conversation(conversation_id)
+        self._message_seq += 1
+        made = Message(
+            id=f"message-{self._message_seq}",
+            conversation_id=conversation_id,
+            sender=self._person_for(connection),
+            text=text,
+            sent_at=self._next_time(),
+            is_mine=True,
+            deleted=False,
+            attachments=(),
+        )
+        self._messages.setdefault(conversation_id, []).append(made)
+        self.sent_messages.append(made)
+        return made
+
+    async def mark_read(self, connection: Connection, conversation_id: str) -> None:
+        """Mark a conversation as read.
+
+        Args:
+            connection: The account to mark it for.
+            conversation_id: Which conversation to mark.
+
+        Raises:
+            NotFoundError: If nothing in this fake knows that conversation.
+            SocialChimpError: Whatever `fail_next` queued for `mark_read`.
+        """
+        self._maybe_fail("mark_read")
+        self._require_conversation(conversation_id)
+        self._unread[conversation_id] = 0
+        self.marked_read.append(conversation_id)
+
+    async def start_conversation(
+        self,
+        connection: Connection,
+        person_ids: Sequence[str],
+        text: str,
+    ) -> Message:
+        """Start a conversation with one or more people.
+
+        A conversation already in this fake with exactly these people is
+        reused rather than starting a second one alongside it.
+
+        Args:
+            connection: The account to send as.
+            person_ids: Who to start it with.
+            text: The first message's words.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            SocialChimpError: Whatever `fail_next` queued for
+                `start_conversation`.
+        """
+        self._maybe_fail("start_conversation")
+        wanted = frozenset(person_ids)
+        found = next(
+            (
+                conversation
+                for conversation in self._conversations.values()
+                if frozenset(person.id for person in conversation.people) == wanted
+            ),
+            None,
+        )
+        if found is None:
+            self._conversation_seq += 1
+            found = _SeedConversation(
+                id=f"conversation-{self._conversation_seq}",
+                people=tuple(
+                    Person(
+                        id=person_id,
+                        handle=None,
+                        display_name=None,
+                        avatar_url=None,
+                        url=None,
+                    )
+                    for person_id in person_ids
+                ),
+                can_reply_until=None,
+                full_history=True,
+                created_at=self._next_time(),
+            )
+            self._conversations[found.id] = found
+            self._unread[found.id] = 0
+
+        self._message_seq += 1
+        made = Message(
+            id=f"message-{self._message_seq}",
+            conversation_id=found.id,
+            sender=self._person_for(connection),
+            text=text,
+            sent_at=self._next_time(),
+            is_mine=True,
+            deleted=False,
+            attachments=(),
+        )
+        self._messages.setdefault(found.id, []).append(made)
+        self.sent_messages.append(made)
+        return made
 
     async def _check_state(
         self,
