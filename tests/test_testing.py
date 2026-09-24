@@ -16,11 +16,16 @@ from socialchimp import (
     Feature,
     InvalidPostError,
     Limits,
+    MissingPermissionError,
+    Person,
     Post,
+    PostGoneError,
     PostResult,
     PostState,
+    RateLimitError,
     SignatureError,
     Storage,
+    Thread,
     Token,
     Update,
     UpdateKind,
@@ -34,14 +39,22 @@ from socialchimp.errors import (
 )
 from socialchimp.features import TextCount
 from socialchimp.http import HttpClient
-from socialchimp.models import MediaKind, RawData
+from socialchimp.models import Media, MediaKind, RawData
 from socialchimp.platform import (
     AccountChoice,
     AskForDetails,
     CanAnswerSetupCheck,
     CanCheckState,
+    CanLike,
+    CanMessage,
+    CanReadLikes,
+    CanReadPost,
     CanReadPushedUpdates,
+    CanReadThread,
+    CanReadUpdatesAfter,
+    CanReply,
     CanResumeLogin,
+    CanStartConversations,
     ChooseAccount,
     Finished,
     LoginField,
@@ -1831,3 +1844,660 @@ def test_reaching_for_pytest_without_it_says_what_to_install(
 
 def test_reaching_for_pytest_hands_back_pytest() -> None:
     assert testing_module._pytest() is pytest
+
+
+# ---------------------------------------------------------------------------
+# The social inbox: reading, replying to, liking and messaging posts.
+# ---------------------------------------------------------------------------
+
+
+def a_person(person_id: str = "someone") -> Person:
+    return Person(
+        id=person_id,
+        handle=f"{person_id}@example.social",
+        display_name=None,
+        avatar_url=None,
+        url=None,
+    )
+
+
+class TestFakePlatformImplementsTheInboxProtocols:
+    def test_it_claims_and_backs_up_every_inbox_feature(self) -> None:
+        platform = FakePlatform()
+
+        assert isinstance(platform, CanReadPost)
+        assert isinstance(platform, CanReadThread)
+        assert isinstance(platform, CanReply)
+        assert isinstance(platform, CanLike)
+        assert isinstance(platform, CanReadLikes)
+        assert isinstance(platform, CanReadUpdatesAfter)
+        assert isinstance(platform, CanMessage)
+        assert isinstance(platform, CanStartConversations)
+        for flag in (
+            Feature.READ_POST,
+            Feature.READ_THREAD,
+            Feature.REPLY_TO_COMMENTS,
+            Feature.LIKE,
+            Feature.READ_LIKES,
+            Feature.READ_UPDATES_AFTER,
+            Feature.MESSAGES,
+            Feature.START_CONVERSATIONS,
+        ):
+            assert flag in platform.features
+
+    async def test_the_claims_check_agrees(self) -> None:
+        # TestTheFakePlatform below already runs every PlatformChecks check,
+        # this just names the one that matters most for a newly claimed
+        # feature: that the flag and the method actually agree.
+        checks = checks_for(FakePlatform(), connection=a_connection("fake"))
+        await checks.test_everything_it_claims_in_features_it_can_actually_do()
+
+
+class TestReadingAPost:
+    async def test_a_seeded_post_reads_back(self) -> None:
+        platform = FakePlatform()
+        seeded = platform.add_post(text="hello there")
+
+        read_back = await platform.read_post(platform.connection(), seeded.id)
+
+        assert read_back == seeded
+        assert read_back.text == "hello there"
+        assert read_back.is_mine is False
+        assert read_back.parent_id is None
+        assert read_back.root_id == seeded.id
+        assert read_back.reply_count == 0
+        assert read_back.like_count == 0
+        assert read_back.liked_by_me is False
+        assert read_back.my_like_id is None
+
+    async def test_an_unknown_id_is_gone(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(PostGoneError):
+            await platform.read_post(platform.connection(), "no-such-post")
+
+    async def test_a_published_post_can_be_read_straight_back(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+
+        result = await platform.publish(connection, Post(text="just posted"))
+        read_back = await platform.read_post(connection, result.id)
+
+        assert read_back.text == "just posted"
+        assert read_back.is_mine is True
+        assert read_back.root_id == result.id
+
+    async def test_a_deleted_post_is_gone_when_read(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        result = await platform.publish(connection, Post(text="temporary"))
+
+        await platform.delete_post(connection, result.id)
+
+        with pytest.raises(PostGoneError):
+            await platform.read_post(connection, result.id)
+
+    async def test_a_custom_author_and_id_are_kept(self) -> None:
+        platform = FakePlatform()
+        author = a_person("writer")
+
+        seeded = platform.add_post(
+            text="hi", post_id="mine", author=author, is_mine=True
+        )
+
+        assert seeded.id == "mine"
+        assert seeded.author == author
+        assert seeded.is_mine is True
+
+    async def test_fail_next_makes_the_next_call_raise_and_then_stops(self) -> None:
+        platform = FakePlatform()
+        seeded = platform.add_post(text="hi")
+        platform.fail_next("read_post", RateLimitError("slow down", retry_after=30))
+
+        with pytest.raises(RateLimitError) as caught:
+            await platform.read_post(platform.connection(), seeded.id)
+        assert caught.value.retry_after == 30
+
+        # The failure was one-shot: the next call behaves normally again.
+        read_back = await platform.read_post(platform.connection(), seeded.id)
+        assert read_back.id == seeded.id
+
+
+class TestReadingAThread:
+    async def test_replies_come_back_flat_and_oldest_first(self) -> None:
+        platform = FakePlatform()
+        root = platform.add_post(text="root")
+        first = platform.add_reply(root.id, text="first reply")
+        second = platform.add_reply(root.id, text="second reply")
+        grandchild = platform.add_reply(first.id, text="a reply to the reply")
+
+        thread = await platform.read_thread(platform.connection(), root.id)
+
+        assert thread.post.id == root.id
+        assert [reply.id for reply in thread.replies] == [
+            first.id,
+            second.id,
+            grandchild.id,
+        ]
+        assert all(reply.parent_id is not None for reply in thread.replies)
+        assert grandchild_parent_matches(thread, first.id, grandchild.id)
+        assert thread.complete is True
+
+    async def test_root_id_is_shared_down_the_whole_chain(self) -> None:
+        platform = FakePlatform()
+        root = platform.add_post(text="root")
+        child = platform.add_reply(root.id, text="child")
+        grandchild = platform.add_reply(child.id, text="grandchild")
+
+        assert child.root_id == root.id
+        assert grandchild.root_id == root.id
+
+    async def test_depth_cuts_off_deeper_replies_and_marks_incomplete(self) -> None:
+        platform = FakePlatform()
+        root = platform.add_post(text="root")
+        child = platform.add_reply(root.id, text="child")
+        platform.add_reply(child.id, text="grandchild")
+
+        thread = await platform.read_thread(platform.connection(), root.id, depth=1)
+
+        assert [reply.id for reply in thread.replies] == [child.id]
+        assert thread.complete is False
+
+    async def test_limit_cuts_off_replies_and_marks_incomplete(self) -> None:
+        platform = FakePlatform()
+        root = platform.add_post(text="root")
+        first = platform.add_reply(root.id, text="one")
+        platform.add_reply(root.id, text="two")
+
+        thread = await platform.read_thread(platform.connection(), root.id, limit=1)
+
+        assert [reply.id for reply in thread.replies] == [first.id]
+        assert thread.complete is False
+
+    async def test_a_post_with_no_replies_is_complete(self) -> None:
+        platform = FakePlatform()
+        root = platform.add_post(text="alone")
+
+        thread = await platform.read_thread(platform.connection(), root.id)
+
+        assert thread.replies == ()
+        assert thread.complete is True
+
+    async def test_a_depth_deep_enough_to_hold_everything_is_still_complete(
+        self,
+    ) -> None:
+        platform = FakePlatform()
+        root = platform.add_post(text="root")
+        platform.add_reply(root.id, text="child")
+
+        thread = await platform.read_thread(platform.connection(), root.id, depth=5)
+
+        assert len(thread.replies) == 1
+        assert thread.complete is True
+
+    async def test_an_unknown_root_is_gone(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(PostGoneError):
+            await platform.read_thread(platform.connection(), "no-such-post")
+
+    async def test_seeding_a_reply_to_an_unknown_post_is_gone(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(PostGoneError):
+            platform.add_reply("no-such-post", text="hi")
+
+
+def grandchild_parent_matches(
+    thread: Thread, parent_id: str, grandchild_id: str
+) -> bool:
+    grandchild = next(reply for reply in thread.replies if reply.id == grandchild_id)
+    return grandchild.parent_id == parent_id
+
+
+class TestReplying:
+    async def test_a_reply_is_mine_and_targets_the_post(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        target = platform.add_post(text="root")
+
+        result = await platform.reply(connection, target.id, "my reply")
+        read_back = await platform.read_post(connection, result.id)
+
+        assert read_back.text == "my reply"
+        assert read_back.is_mine is True
+        assert read_back.parent_id == target.id
+        assert read_back.root_id == target.id
+        assert platform.replied == [(connection.id, target.id, "my reply")]
+
+    async def test_a_reply_with_a_picture_reads_back_with_one(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        target = platform.add_post(text="root")
+        picture = Media.from_bytes(b"not really a picture", filename="a.png")
+
+        result = await platform.reply(connection, target.id, "look", media=(picture,))
+        read_back = await platform.read_post(connection, result.id)
+
+        assert len(read_back.attachments) == 1
+        assert read_back.attachments[0].kind == "image"
+
+    async def test_a_reply_shows_up_in_the_targets_thread(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        target = platform.add_post(text="root")
+
+        result = await platform.reply(connection, target.id, "my reply")
+        thread = await platform.read_thread(connection, target.id)
+
+        assert [reply.id for reply in thread.replies] == [result.id]
+
+    async def test_replying_to_an_unknown_post_is_gone(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(PostGoneError):
+            await platform.reply(platform.connection(), "no-such-post", "hi")
+
+    async def test_fail_next_makes_reply_raise_once(self) -> None:
+        platform = FakePlatform()
+        target = platform.add_post(text="root")
+        platform.fail_next("reply", MissingPermissionError(needs="write"))
+
+        with pytest.raises(MissingPermissionError):
+            await platform.reply(platform.connection(), target.id, "hi")
+
+        # Back to normal.
+        result = await platform.reply(platform.connection(), target.id, "hi")
+        assert result.id
+
+
+class TestLikingAndUnliking:
+    async def test_liking_updates_the_post_read_back(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        post = platform.add_post(text="hi")
+
+        result = await platform.like(connection, post.id)
+        read_back = await platform.read_post(connection, post.id)
+
+        assert read_back.liked_by_me is True
+        assert read_back.my_like_id == result.like_id
+        assert read_back.like_count == 1
+        assert platform.liked == [(connection.id, post.id)]
+
+    async def test_liking_twice_returns_the_same_like(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        post = platform.add_post(text="hi")
+
+        first = await platform.like(connection, post.id)
+        second = await platform.like(connection, post.id)
+
+        assert first.like_id == second.like_id
+        read_back = await platform.read_post(connection, post.id)
+        assert read_back.like_count == 1
+
+    async def test_unliking_removes_the_like(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        post = platform.add_post(text="hi")
+        await platform.like(connection, post.id)
+
+        await platform.unlike(connection, post.id)
+
+        read_back = await platform.read_post(connection, post.id)
+        assert read_back.liked_by_me is False
+        assert read_back.like_count == 0
+        assert platform.unliked == [(connection.id, post.id)]
+
+    async def test_unliking_something_never_liked_does_nothing(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        post = platform.add_post(text="hi")
+
+        await platform.unlike(connection, post.id)
+
+        read_back = await platform.read_post(connection, post.id)
+        assert read_back.liked_by_me is False
+
+    async def test_unliking_by_like_id_leaves_other_likes_alone(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        post = platform.add_post(text="hi")
+        other = a_person("someone-else")
+        platform.add_like(post.id, other)
+        mine = await platform.like(connection, post.id)
+
+        await platform.unlike(connection, post.id, like_id=mine.like_id)
+
+        read_back = await platform.read_post(connection, post.id)
+        assert read_back.like_count == 1
+        assert read_back.liked_by_me is False
+
+    async def test_liking_an_unknown_post_is_gone(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(PostGoneError):
+            await platform.like(platform.connection(), "no-such-post")
+
+    async def test_unliking_an_unknown_post_is_gone(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(PostGoneError):
+            await platform.unlike(platform.connection(), "no-such-post")
+
+    async def test_fail_next_makes_like_and_unlike_raise_once(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        post = platform.add_post(text="hi")
+
+        platform.fail_next("like", RateLimitError("slow down"))
+        with pytest.raises(RateLimitError):
+            await platform.like(connection, post.id)
+        await platform.like(connection, post.id)
+
+        platform.fail_next("unlike", RateLimitError("slow down"))
+        with pytest.raises(RateLimitError):
+            await platform.unlike(connection, post.id)
+        await platform.unlike(connection, post.id)
+
+
+class TestReadingLikes:
+    async def test_seeded_likes_read_back(self) -> None:
+        platform = FakePlatform()
+        post = platform.add_post(text="hi")
+        alice = a_person("alice")
+        platform.add_like(post.id, alice)
+
+        page = await platform.read_likes(platform.connection(), post.id)
+
+        assert [like.person for like in page.items] == [alice]
+        assert page.items[0].liked_at is not None
+
+    async def test_add_like_without_a_person_makes_one_up(self) -> None:
+        platform = FakePlatform()
+        post = platform.add_post(text="hi")
+
+        platform.add_like(post.id)
+
+        page = await platform.read_likes(platform.connection(), post.id)
+        assert len(page.items) == 1
+
+    async def test_paging_uses_the_configured_page_size(self) -> None:
+        platform = FakePlatform(page_size=2)
+        post = platform.add_post(text="hi")
+        for name in ("a", "b", "c"):
+            platform.add_like(post.id, a_person(name))
+
+        first_page = await platform.read_likes(platform.connection(), post.id)
+        assert len(first_page.items) == 2
+        assert first_page.next is not None
+
+        second_page = await platform.read_likes(
+            platform.connection(), post.id, after=first_page.next
+        )
+        assert len(second_page.items) == 1
+        assert second_page.next is None
+
+    async def test_limit_overrides_the_configured_page_size(self) -> None:
+        platform = FakePlatform(page_size=2)
+        post = platform.add_post(text="hi")
+        for name in ("a", "b", "c"):
+            platform.add_like(post.id, a_person(name))
+
+        page = await platform.read_likes(platform.connection(), post.id, limit=1)
+
+        assert len(page.items) == 1
+        assert page.next is not None
+
+    async def test_reading_likes_on_an_unknown_post_is_gone(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(PostGoneError):
+            await platform.read_likes(platform.connection(), "no-such-post")
+
+    async def test_seeding_a_like_on_an_unknown_post_is_gone(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(PostGoneError):
+            platform.add_like("no-such-post", a_person())
+
+
+class TestPollingUpdatesWithAMarker:
+    async def test_marker_none_returns_everything_queued(self) -> None:
+        platform = FakePlatform()
+        first = platform.add_update(UpdateKind.COMMENT_CREATED)
+        second = platform.add_update(UpdateKind.REACTION_ADDED)
+
+        batch = await platform.fetch_updates_after(platform.connection(), None)
+
+        assert [update.id for update in batch.updates] == [first.id, second.id]
+        assert batch.marker == second.id
+        assert batch.more is False
+
+    async def test_a_marker_returns_only_whats_newer(self) -> None:
+        platform = FakePlatform()
+        first = platform.add_update(UpdateKind.COMMENT_CREATED)
+        second = platform.add_update(UpdateKind.REACTION_ADDED)
+
+        batch = await platform.fetch_updates_after(platform.connection(), first.id)
+
+        assert [update.id for update in batch.updates] == [second.id]
+        assert batch.marker == second.id
+
+    async def test_a_limit_caps_the_page_and_sets_more(self) -> None:
+        platform = FakePlatform()
+        first = platform.add_update(UpdateKind.COMMENT_CREATED)
+        platform.add_update(UpdateKind.REACTION_ADDED)
+        platform.add_update(UpdateKind.MENTION)
+
+        batch = await platform.fetch_updates_after(platform.connection(), None, limit=1)
+
+        assert [update.id for update in batch.updates] == [first.id]
+        assert batch.more is True
+
+    async def test_an_empty_queue_gives_no_marker(self) -> None:
+        platform = FakePlatform()
+
+        batch = await platform.fetch_updates_after(platform.connection(), None)
+
+        assert batch.updates == ()
+        assert batch.marker is None
+        assert batch.more is False
+
+    async def test_add_update_fills_in_the_extra_fields(self) -> None:
+        platform = FakePlatform()
+        actor = a_person("someone")
+
+        made = platform.add_update(
+            UpdateKind.MESSAGE_RECEIVED,
+            actor=actor,
+            post_id="p1",
+            about_post_id="p2",
+            thread_root_id="p0",
+            conversation_id="c1",
+        )
+
+        assert made.kind is UpdateKind.MESSAGE_RECEIVED
+        assert made.actor == actor
+        assert made.post_id == "p1"
+        assert made.about_post_id == "p2"
+        assert made.thread_root_id == "p0"
+        assert made.conversation_id == "c1"
+
+    async def test_mark_seen_is_recorded(self) -> None:
+        platform = FakePlatform()
+        update = platform.add_update(UpdateKind.COMMENT_CREATED)
+
+        await platform.mark_seen(platform.connection(), update.id)
+
+        assert platform.marked_seen == [update.id]
+
+    async def test_fail_next_makes_fetch_updates_after_raise_once(self) -> None:
+        platform = FakePlatform()
+        platform.fail_next("fetch_updates_after", RateLimitError("slow down"))
+
+        with pytest.raises(RateLimitError):
+            await platform.fetch_updates_after(platform.connection(), None)
+
+        batch = await platform.fetch_updates_after(platform.connection(), None)
+        assert batch.updates == ()
+
+
+class TestDirectMessages:
+    async def test_a_seeded_conversation_reads_back(self) -> None:
+        platform = FakePlatform()
+        alice = a_person("alice")
+
+        conversation = platform.add_conversation((alice,), unread_count=2)
+
+        page = await platform.read_conversations(platform.connection())
+        assert [found.id for found in page.items] == [conversation.id]
+        assert page.items[0].unread_count == 2
+        assert page.items[0].people == (alice,)
+
+    async def test_conversations_come_back_newest_updated_first(self) -> None:
+        platform = FakePlatform()
+        older = platform.add_conversation((a_person("alice"),))
+        newer = platform.add_conversation((a_person("bob"),))
+        # Touch "older" so it is now the most recently updated one.
+        platform.add_message(older.id, a_person("alice"), "ping")
+
+        page = await platform.read_conversations(platform.connection())
+
+        assert [found.id for found in page.items] == [older.id, newer.id]
+
+    async def test_a_message_from_someone_else_bumps_unread(self) -> None:
+        platform = FakePlatform()
+        conversation = platform.add_conversation((a_person("alice"),))
+
+        platform.add_message(conversation.id, a_person("alice"), "hi")
+
+        page = await platform.read_conversations(platform.connection())
+        assert page.items[0].unread_count == 1
+
+    async def test_a_message_seeded_as_mine_does_not_bump_unread(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        conversation = platform.add_conversation((a_person("alice"),))
+
+        platform.add_message(conversation.id, a_person("me"), "hi", is_mine=True)
+
+        page = await platform.read_conversations(connection)
+        assert page.items[0].unread_count == 0
+
+    async def test_mark_read_zeroes_unread(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        conversation = platform.add_conversation((a_person("alice"),))
+        platform.add_message(conversation.id, a_person("alice"), "hi")
+
+        await platform.mark_read(connection, conversation.id)
+
+        page = await platform.read_conversations(connection)
+        assert page.items[0].unread_count == 0
+        assert platform.marked_read == [conversation.id]
+
+    async def test_messages_read_back_newest_first_and_page(self) -> None:
+        platform = FakePlatform(page_size=2)
+        connection = platform.connection()
+        conversation = platform.add_conversation((a_person("alice"),))
+        first = platform.add_message(conversation.id, a_person("alice"), "one")
+        second = platform.add_message(conversation.id, a_person("alice"), "two")
+        third = platform.add_message(conversation.id, a_person("alice"), "three")
+
+        page = await platform.read_messages(connection, conversation.id)
+
+        assert [message.id for message in page.items] == [third.id, second.id]
+        assert page.next is not None
+
+        next_page = await platform.read_messages(
+            connection, conversation.id, after=page.next
+        )
+        assert [message.id for message in next_page.items] == [first.id]
+
+    async def test_send_message_is_mine_and_recorded(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        conversation = platform.add_conversation((a_person("alice"),))
+
+        sent = await platform.send_message(connection, conversation.id, "hello")
+
+        assert sent.is_mine is True
+        assert sent.text == "hello"
+        assert platform.sent_messages == [sent]
+        page = await platform.read_messages(connection, conversation.id)
+        assert page.items[0] == sent
+
+    async def test_start_conversation_makes_a_new_one(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+
+        message = await platform.start_conversation(connection, ["alice"], "hi")
+
+        conversations = await platform.read_conversations(connection)
+        assert len(conversations.items) == 1
+        assert conversations.items[0].people == (
+            Person(
+                id="alice", handle=None, display_name=None, avatar_url=None, url=None
+            ),
+        )
+        assert message.text == "hi"
+        assert message.conversation_id == conversations.items[0].id
+
+    async def test_start_conversation_reuses_a_matching_one(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        first_message = await platform.start_conversation(connection, ["alice"], "hi")
+
+        second_message = await platform.start_conversation(
+            connection, ["alice"], "again"
+        )
+
+        assert second_message.conversation_id == first_message.conversation_id
+        conversations = await platform.read_conversations(connection)
+        assert len(conversations.items) == 1
+
+    async def test_messaging_an_unknown_conversation_is_not_found(self) -> None:
+        platform = FakePlatform()
+
+        with pytest.raises(NotFoundError):
+            await platform.read_messages(platform.connection(), "no-such-conversation")
+        with pytest.raises(NotFoundError):
+            await platform.send_message(
+                platform.connection(), "no-such-conversation", "hi"
+            )
+        with pytest.raises(NotFoundError):
+            await platform.mark_read(platform.connection(), "no-such-conversation")
+        with pytest.raises(NotFoundError):
+            platform.add_message("no-such-conversation", a_person("alice"), "hi")
+
+    async def test_fail_next_makes_messaging_raise_once(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+        conversation = platform.add_conversation((a_person("alice"),))
+
+        platform.fail_next("read_conversations", RateLimitError("slow down"))
+        with pytest.raises(RateLimitError):
+            await platform.read_conversations(connection)
+        await platform.read_conversations(connection)
+
+        platform.fail_next("read_messages", RateLimitError("slow down"))
+        with pytest.raises(RateLimitError):
+            await platform.read_messages(connection, conversation.id)
+        await platform.read_messages(connection, conversation.id)
+
+        platform.fail_next("send_message", RateLimitError("slow down"))
+        with pytest.raises(RateLimitError):
+            await platform.send_message(connection, conversation.id, "hi")
+        await platform.send_message(connection, conversation.id, "hi")
+
+        platform.fail_next("mark_read", RateLimitError("slow down"))
+        with pytest.raises(RateLimitError):
+            await platform.mark_read(connection, conversation.id)
+        await platform.mark_read(connection, conversation.id)
+
+        platform.fail_next("start_conversation", RateLimitError("slow down"))
+        with pytest.raises(RateLimitError):
+            await platform.start_conversation(connection, ["bob"], "hi")
+        await platform.start_conversation(connection, ["bob"], "hi")
