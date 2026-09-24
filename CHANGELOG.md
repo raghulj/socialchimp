@@ -4,7 +4,7 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
-## 0.9.0 - unreleased
+## 0.9.0 - 2026-09-25
 
 ### Added: the connected account's picture
 
