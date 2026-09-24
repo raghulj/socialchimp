@@ -715,6 +715,15 @@ _FAKE_EPOCH: Final = datetime(2024, 1, 1, tzinfo=UTC)
 # to seed dozens of rows first.
 _FAKE_PAGE_SIZE: Final = 2
 
+# What we say when fetch_updates_after gets a marker it never handed back.
+# Treating it like None would silently jump to the latest page and drop
+# whatever came after it, matching what a real platform does - see
+# BlueskyPlatform's own _BAD_MARKER_MESSAGE.
+_FAKE_BAD_MARKER_MESSAGE: Final = (
+    "This marker was not one fetch_updates_after handed back, so there is "
+    "nothing safe to resume from. Pass None to start afresh."
+)
+
 _PageItem = TypeVar("_PageItem")
 
 
@@ -2090,36 +2099,47 @@ class FakePlatform:
     ) -> UpdateBatch:
         """Read what is new since a marker, oldest first.
 
-        `marker=None` returns everything queued so far, the way a first
-        call with nothing saved yet sets a starting point. A marker this
-        fake does not recognise behaves the same as being fully caught up -
-        the only markers worth passing back in are ones an earlier call to
-        this same method handed you.
+        `marker=None` returns only the latest page - the newest `limit`
+        updates, or `page_size` many - the way a first call with nothing
+        saved yet sets a starting point, rather than handing back
+        everything ever queued.
 
         Args:
             connection: The account to ask about. Ignored - this fake has
                 one shared queue.
             marker: The marker from the last call's `UpdateBatch.marker`.
+                `None` on the first call.
             limit: A cap on how many updates come back in this page.
+                `None` uses `page_size`.
 
         Returns:
             The new updates, and a marker to store for next time.
 
         Raises:
+            ConfigError: If `marker` is not `None` and not a marker this
+                method handed back earlier. Treating it like `None` would
+                silently jump to the latest page and drop whatever came
+                after it.
             SocialChimpError: Whatever `fail_next` queued for
                 `fetch_updates_after`.
         """
         self._maybe_fail("fetch_updates_after")
         queue = self._update_queue
+        size = limit if limit is not None else self._page_size
+
         if marker is None:
-            start = 0
-        else:
-            start = next(
-                (index + 1 for index, item in enumerate(queue) if item.id == marker),
-                len(queue),
-            )
+            batch = queue[-size:] if size > 0 else []
+            new_marker = batch[-1].id if batch else None
+            return UpdateBatch(updates=tuple(batch), marker=new_marker, more=False)
+
+        start = next(
+            (index + 1 for index, item in enumerate(queue) if item.id == marker), None
+        )
+        if start is None:
+            raise ConfigError(_FAKE_BAD_MARKER_MESSAGE)
+
         remaining = queue[start:]
-        batch = remaining[:limit] if limit is not None else remaining
+        batch = remaining[:size]
         more = len(batch) < len(remaining)
         new_marker = batch[-1].id if batch else marker
         return UpdateBatch(updates=tuple(batch), marker=new_marker, more=more)

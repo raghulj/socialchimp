@@ -2293,15 +2293,33 @@ class TestReadingLikes:
 
 
 class TestPollingUpdatesWithAMarker:
-    async def test_marker_none_returns_everything_queued(self) -> None:
+    async def test_marker_none_returns_the_latest_page(self) -> None:
+        # FakePlatform() defaults to a page_size of 2, so this is a real
+        # page - the oldest update is left off, exactly as a network's own
+        # first page would leave it off.
         platform = FakePlatform()
-        first = platform.add_update(UpdateKind.COMMENT_CREATED)
+        platform.add_update(UpdateKind.COMMENT_CREATED)
         second = platform.add_update(UpdateKind.REACTION_ADDED)
+        third = platform.add_update(UpdateKind.MENTION)
 
         batch = await platform.fetch_updates_after(platform.connection(), None)
 
-        assert [update.id for update in batch.updates] == [first.id, second.id]
-        assert batch.marker == second.id
+        assert [update.id for update in batch.updates] == [second.id, third.id]
+        assert batch.marker == third.id
+        assert batch.more is False
+
+    async def test_marker_none_with_a_limit_returns_that_many_of_the_newest(
+        self,
+    ) -> None:
+        platform = FakePlatform()
+        platform.add_update(UpdateKind.COMMENT_CREATED)
+        platform.add_update(UpdateKind.REACTION_ADDED)
+        third = platform.add_update(UpdateKind.MENTION)
+
+        batch = await platform.fetch_updates_after(platform.connection(), None, limit=1)
+
+        assert [update.id for update in batch.updates] == [third.id]
+        assert batch.marker == third.id
         assert batch.more is False
 
     async def test_a_marker_returns_only_whats_newer(self) -> None:
@@ -2314,16 +2332,38 @@ class TestPollingUpdatesWithAMarker:
         assert [update.id for update in batch.updates] == [second.id]
         assert batch.marker == second.id
 
-    async def test_a_limit_caps_the_page_and_sets_more(self) -> None:
+    async def test_a_limit_caps_the_page_after_a_marker_and_sets_more(self) -> None:
         platform = FakePlatform()
+        zeroth = platform.add_update(UpdateKind.FOLLOWED)
         first = platform.add_update(UpdateKind.COMMENT_CREATED)
         platform.add_update(UpdateKind.REACTION_ADDED)
         platform.add_update(UpdateKind.MENTION)
 
-        batch = await platform.fetch_updates_after(platform.connection(), None, limit=1)
+        batch = await platform.fetch_updates_after(
+            platform.connection(), zeroth.id, limit=1
+        )
 
         assert [update.id for update in batch.updates] == [first.id]
         assert batch.more is True
+
+    async def test_the_marker_stays_put_when_nothing_new_is_found(self) -> None:
+        platform = FakePlatform()
+        update = platform.add_update(UpdateKind.COMMENT_CREATED)
+
+        batch = await platform.fetch_updates_after(platform.connection(), update.id)
+
+        assert batch.updates == ()
+        assert batch.marker == update.id
+        assert batch.more is False
+
+    async def test_an_unrecognised_marker_raises(self) -> None:
+        # Treating it like None would silently jump to the latest page and
+        # drop whatever came after it.
+        platform = FakePlatform()
+        platform.add_update(UpdateKind.COMMENT_CREATED)
+
+        with pytest.raises(ConfigError, match="None"):
+            await platform.fetch_updates_after(platform.connection(), "no-such-marker")
 
     async def test_an_empty_queue_gives_no_marker(self) -> None:
         platform = FakePlatform()
