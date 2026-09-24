@@ -223,7 +223,7 @@ From here:
 
 - **Adding something is a minor release.** A new `Feature`, a new
   `UpdateKind`, a new optional `Can...` extra, a new field on `Limits` with a
-  default. Your platform keeps working and does not need touching. Six
+  default. Your platform keeps working and does not need touching. Seven
   releases have done exactly this: 0.2.0 added the `CanCheckState`,
   `CanAnswerSetupCheck` and `CanReadPushedUpdates` extras, 0.3.0 added
   `Feature.NEEDS_NO_APP` for a network with no app to register, 0.4.0
@@ -233,6 +233,17 @@ From here:
   written against 0.1.0 needed no changes for any of them. 0.7.3 is the
   one exception to the numbering: it added an extra in a patch release,
   because an app pinned below 0.8.0 needed it and nothing else changed.
+  0.8.0 is the biggest of these: the social inbox added eight new
+  extras - `CanReadPost`, `CanReadThread`, `CanReply`, `CanLike`,
+  `CanReadLikes`, `CanReadUpdatesAfter`, `CanMessage` and
+  `CanStartConversations` - each with a matching `Feature` flag, plus three
+  `UpdateKind`s (`REPOST_ADDED`, `MESSAGE_RECEIVED`, `FOLLOWED`) and four new
+  errors (`MissingPermissionError`, `BlockedError`, `ReplyWindowClosedError`,
+  `PostGoneError`), all optional - see [Writing a
+  platform](api/platform.md#the-social-inbox) for the shapes and
+  `docs/social-inbox-contract.md` for the design that produced them. Nothing
+  here is required: a platform with none of it simply has none of the
+  methods, and `Account` refuses by name rather than guessing.
 - **Changing or removing something is a major release**, and comes with a
   note saying what to do about it.
 - **Anything named with a leading underscore is ours**, including
