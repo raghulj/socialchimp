@@ -230,6 +230,25 @@ _NOT_CHECKED: Final = frozenset({"text_counted_in", "posts_left_today"})
 # under every way of counting, which is exactly what we want to test with.
 _A_BIG_LETTER: Final = "\U0001f44d\U0001f3fd"
 
+# The 13 inbox methods that FakePlatform.fail_next can fail.
+_FAIL_NEXT_METHODS: Final[frozenset[str]] = frozenset(
+    {
+        "read_post",
+        "read_thread",
+        "reply",
+        "like",
+        "unlike",
+        "read_likes",
+        "fetch_updates_after",
+        "mark_seen",
+        "read_conversations",
+        "read_messages",
+        "send_message",
+        "mark_read",
+        "start_conversation",
+    }
+)
+
 
 def _copies_that_fit(limits: Limits, allowed: int) -> int:
     """Work out how many big letters a post can hold and still be allowed.
@@ -1235,7 +1254,16 @@ class FakePlatform:
         Args:
             method: The method's name, such as `"like"`.
             error: What it should raise, once, the next time it is called.
+
+        Raises:
+            ConfigError: If `method` is not one of the allowed inbox method
+                names.
         """
+        if method not in _FAIL_NEXT_METHODS:
+            allowed = ", ".join(sorted(_FAIL_NEXT_METHODS))
+            raise ConfigError(
+                f"'{method}' is not a method I can fail. Try one of these: {allowed}"
+            )
         self._next_failures[method] = error
 
     def add_post(

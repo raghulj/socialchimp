@@ -1962,6 +1962,35 @@ class TestReadingAPost:
         read_back = await platform.read_post(platform.connection(), seeded.id)
         assert read_back.id == seeded.id
 
+    def test_fail_next_rejects_unknown_method_names(self) -> None:
+        platform = FakePlatform()
+        with pytest.raises(ConfigError) as caught:
+            platform.fail_next("lkie", RateLimitError("x"))
+        error_message = str(caught.value)
+        assert "lkie" in error_message
+        assert "read_post" in error_message
+        assert "start_conversation" in error_message
+
+    async def test_fail_next_accepts_known_method_names(self) -> None:
+        platform = FakePlatform()
+        # Ensure each of the 13 known methods is accepted without error
+        for method in [
+            "read_post",
+            "read_thread",
+            "reply",
+            "like",
+            "unlike",
+            "read_likes",
+            "fetch_updates_after",
+            "mark_seen",
+            "read_conversations",
+            "read_messages",
+            "send_message",
+            "mark_read",
+            "start_conversation",
+        ]:
+            platform.fail_next(method, RateLimitError("test"))
+
 
 class TestReadingAThread:
     async def test_replies_come_back_flat_and_oldest_first(self) -> None:
