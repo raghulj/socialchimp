@@ -1,6 +1,8 @@
-# socialchimp: Social Inbox contract (v1.1, APPROVED by the owner 2026-09-24)
+# socialchimp: Social Inbox contract (v1.2, APPROVED by the owner 2026-09-24)
 
 v1.1 change: `account.features` is an async method, not a property (see section 8).
+v1.2 clarifications, found in review (the surface is unchanged): Mastodon reply visibility, direct messages checked
+first when classifying updates, and the `status:` conversation id fallback.
 
 Owner decisions: (1) Mastodon polls in 0.8.0 and push comes later, built together with Meta webhooks;
 `push` is added to Mastodon DEFAULT_SCOPES now so new connections are ready.
@@ -173,8 +175,9 @@ class CanReply(Protocol):
 - `post_id` can be any post or comment at any depth.
 - Bluesky: builds root and parent from the target (one `getPosts` lookup, as publish does today).
   Returns `id` (uri), `cid`, `url`.
-- Mastodon: keeps the parent's visibility where it is narrower than the account default
-  (a reply to `direct` stays `direct`, and `followers` stays `followers`). Adds `@acct` of the parent's
+- Mastodon: a reply to a `direct` or `followers` parent keeps that visibility. Otherwise
+  the library sends no visibility, so the account's own default applies. A visibility passed
+  in `options` is narrowed to the parent's. Adds `@acct` of the parent's
   author (plus other people mentioned in the parent, as the Mastodon web app does) unless
   already in `text`, and never mentions the connected account itself.
 - `publish(Post(reply_to=...))` keeps working. `reply()` is the recommended path.
@@ -247,11 +250,11 @@ New `UpdateKind`s: `REPOST_ADDED`, `MESSAGE_RECEIVED`, `FOLLOWED`.
 - CHANGE: Mastodon and Bluesky reposts move from `REACTION_ADDED` to `REPOST_ADDED`. The
   "follow" notification moves from `UNKNOWN` to `FOLLOWED`. This goes in the changelog under
   "Changed" (0.x minor bump).
-- Mastodon `mention` notification:
-  - A reply comes out as `COMMENT_CREATED` when `status.in_reply_to_account_id` is the connected
+- Mastodon `mention` notification (a direct-visibility status is checked FIRST):
+  - A direct-visibility status comes out as `MESSAGE_RECEIVED`, even when it also replies to the
+    connected account.
+  - Otherwise, a reply comes out as `COMMENT_CREATED` when `status.in_reply_to_account_id` is the connected
     account. `about_post_id` = `in_reply_to_id`.
-  - A direct-visibility status comes out as `MESSAGE_RECEIVED` with `conversation_id` filled when
-    the network gives it.
   - Anything else is `MENTION`.
 - Bluesky: `reasonSubject` becomes `about_post_id` for like/repost. For reply/mention/quote, the
   reply's `record.reply.parent.uri` becomes `about_post_id` and `record.reply.root.uri` becomes `thread_root_id`.
@@ -414,7 +417,10 @@ Messages come back in `Page`s, newest first. `after` goes further back in time.
   statuses between the same people. That's why `full_history=False`, and it never returns a `next`.
   `send_message` = a direct status that mentions every participant, as a reply to the
   last status. `mark_read` = `POST /conversations/:id/read`. `start_conversation`
-  = a direct status that mentions the given accounts.
+  = a direct status that mentions the given accounts. Its `conversation_id` is the real
+  Mastodon conversation id. In the rare case Mastodon has not listed the conversation yet, it is
+  `"status:<status id>"`; `send_message`, `read_messages` and `mark_read` accept that form too.
+  Treat it as opaque either way.
 - Bluesky: `chat.bsky.convo.listConvos` / `getMessages` / `sendMessage` /
   `updateRead`, plus `getConvoForMembers` for `start_conversation`. Every call sends the header
   `atproto-proxy: did:web:api.bsky.chat#bsky_chat`. An app password made without
