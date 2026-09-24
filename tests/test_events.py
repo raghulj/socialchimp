@@ -17,6 +17,7 @@ from socialchimp.events import (
     SeenUpdates,
     SignatureError,
     Update,
+    UpdateBatch,
     UpdateKind,
     answer_setup_check,
     check_not_too_old,
@@ -24,6 +25,7 @@ from socialchimp.events import (
     verify_hmac_sha256,
     verify_shared_secret,
 )
+from socialchimp.models import Person
 
 SECRET = "shhh"
 BODY = b'{"entry": [{"id": "42"}]}'
@@ -129,6 +131,100 @@ class TestUpdate:
 
     def test_a_network_that_wraps_nothing_leaves_the_envelope_empty(self) -> None:
         assert an_update().envelope == {}
+
+
+class TestUpdateExtras:
+    """The fields social inbox added, all optional so old code keeps working."""
+
+    def test_they_default_to_nothing(self) -> None:
+        update = an_update()
+
+        assert update.actor is None
+        assert update.post_id is None
+        assert update.about_post_id is None
+        assert update.thread_root_id is None
+        assert update.conversation_id is None
+
+    def test_a_reply_names_the_post_it_answers(self) -> None:
+        actor = Person(
+            id="1", handle="ada", display_name="Ada", avatar_url=None, url=None
+        )
+        update = Update(
+            id="u1",
+            kind=UpdateKind.COMMENT_CREATED,
+            platform="mastodon",
+            connection_id="conn-1",
+            created_at=MONDAY,
+            actor=actor,
+            post_id="reply-1",
+            about_post_id="original-1",
+            thread_root_id="original-1",
+        )
+
+        assert update.actor is actor
+        assert update.post_id == "reply-1"
+        assert update.about_post_id == "original-1"
+        assert update.thread_root_id == "original-1"
+
+    def test_a_message_names_its_conversation(self) -> None:
+        update = Update(
+            id="u1",
+            kind=UpdateKind.MESSAGE_RECEIVED,
+            platform="mastodon",
+            connection_id="conn-1",
+            created_at=MONDAY,
+            conversation_id="c1",
+        )
+
+        assert update.conversation_id == "c1"
+
+    def test_from_network_carries_them_through(self) -> None:
+        actor = Person(
+            id="1", handle="ada", display_name="Ada", avatar_url=None, url=None
+        )
+        update = Update.from_network(
+            update_id="u1",
+            kind_name="repost_added",
+            platform="bluesky",
+            connection_id="conn-1",
+            created_at=MONDAY,
+            actor=actor,
+            post_id="repost-1",
+            about_post_id="original-1",
+        )
+
+        assert update.kind is UpdateKind.REPOST_ADDED
+        assert update.actor is actor
+        assert update.post_id == "repost-1"
+        assert update.about_post_id == "original-1"
+        assert update.thread_root_id is None
+        assert update.conversation_id is None
+
+
+class TestNewUpdateKinds:
+    def test_a_repost_has_its_own_kind(self) -> None:
+        assert UpdateKind.from_name("repost_added") is UpdateKind.REPOST_ADDED
+
+    def test_a_message_has_its_own_kind(self) -> None:
+        assert UpdateKind.from_name("message_received") is UpdateKind.MESSAGE_RECEIVED
+
+    def test_a_follow_has_its_own_kind(self) -> None:
+        assert UpdateKind.from_name("followed") is UpdateKind.FOLLOWED
+
+
+class TestUpdateBatch:
+    def test_it_holds_updates_newest_marker_and_whether_there_is_more(self) -> None:
+        batch = UpdateBatch(updates=(an_update(),), marker="m1", more=True)
+
+        assert batch.updates == (an_update(),)
+        assert batch.marker == "m1"
+        assert batch.more is True
+
+    def test_a_marker_of_none_means_nothing_was_ever_seen(self) -> None:
+        batch = UpdateBatch(updates=(), marker=None, more=False)
+
+        assert batch.marker is None
+        assert batch.more is False
 
 
 class TestVerifyHmacSha256:

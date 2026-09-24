@@ -12,18 +12,25 @@ well. There is a comment above each saying why.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 __all__ = [
     "AuthError",
+    "BlockedError",
     "ConfigError",
     "InvalidPostError",
+    "MissingPermissionError",
     "NetworkError",
     "NotAllowedError",
     "NotFoundError",
     "NotSupportedError",
     "PlatformError",
+    "PostGoneError",
     "RateLimitError",
+    "ReplyWindowClosedError",
     "SignatureError",
     "SocialChimpError",
     "TokenExpiredError",
@@ -114,8 +121,97 @@ class NotAllowedError(SocialChimpError):
     """
 
 
+class MissingPermissionError(NotAllowedError):
+    """The account is missing one specific permission.
+
+    More precise than a plain `NotAllowedError`: this names the permission
+    that is missing, so an app can tell someone exactly what to grant rather
+    than only that something was refused.
+
+    Attributes:
+        needs: The permission that is missing, in plain words - `"push"`,
+            `"direct messages"`.
+        suggestion: What to do about it, when there is something worth
+            saying beyond reconnecting - Bluesky's app passwords cannot have
+            a permission added after the fact, so a new one has to be made.
+            `None` when there is nothing more to add.
+    """
+
+    def __init__(
+        self,
+        *,
+        needs: str,
+        suggestion: str | None = None,
+        platform: str | None = None,
+        raw: dict[str, Any] | None = None,
+    ) -> None:
+        """Build a message naming the permission that is missing.
+
+        Args:
+            needs: The permission that is missing.
+            suggestion: What to do about it, written as a whole sentence. It
+                is added after the first one.
+            platform: Which network refused it, if any.
+            raw: The network's untouched reply, if there was one.
+        """
+        message = f"This connection is missing the {needs} permission."
+        if suggestion is not None:
+            message = f"{message} {suggestion}"
+        super().__init__(message, platform=platform, raw=raw)
+        self.needs = needs
+        self.suggestion = suggestion
+
+
+class BlockedError(NotAllowedError):
+    """The other person blocked us, or we blocked them.
+
+    Either way there is nothing to retry: the block has to be undone by a
+    person, on the network itself, before this will work.
+    """
+
+
+class ReplyWindowClosedError(NotAllowedError):
+    """Too long has passed to reply to this conversation.
+
+    Meta gives 24 hours after somebody messages a page to reply for free;
+    after that, sending one back is refused until they write again.
+
+    Attributes:
+        closed_at: When the window closed, when the network says. `None`
+            when it does not say.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        closed_at: datetime | None = None,
+        platform: str | None = None,
+        raw: dict[str, Any] | None = None,
+    ) -> None:
+        """Keep when the window closed alongside the message.
+
+        Args:
+            message: What happened.
+            closed_at: When the window closed, if the network said.
+            platform: Which network refused the reply.
+            raw: The network's untouched reply.
+        """
+        super().__init__(message, platform=platform, raw=raw)
+        self.closed_at = closed_at
+
+
 class NotFoundError(SocialChimpError):
     """The post, account or page asked for does not exist."""
+
+
+class PostGoneError(NotFoundError):
+    """The post or comment asked for was deleted, or never existed.
+
+    More precise than a plain `NotFoundError` for the one thing that is
+    asked for by id constantly: a post to reply to, to like, to read the
+    thread of. Somebody deleted it, or it was never theirs to find.
+    """
 
 
 class RateLimitError(SocialChimpError):

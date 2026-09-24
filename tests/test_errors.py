@@ -1,16 +1,22 @@
 """Tests for the one set of errors every network maps onto."""
 
+from datetime import UTC, datetime
+
 import pytest
 
 from socialchimp import (
     AuthError,
+    BlockedError,
     ConfigError,
     InvalidPostError,
+    MissingPermissionError,
     NotAllowedError,
     NotFoundError,
     NotSupportedError,
     PlatformError,
+    PostGoneError,
     RateLimitError,
+    ReplyWindowClosedError,
     SocialChimpError,
     TokenExpiredError,
 )
@@ -25,6 +31,8 @@ from socialchimp import (
         NotAllowedError,
         NotFoundError,
         InvalidPostError,
+        BlockedError,
+        PostGoneError,
     ],
 )
 def test_every_error_can_be_caught_as_one_type(
@@ -136,3 +144,61 @@ class TestTheTwoThatAreAlsoValueErrors:
         assert not issubclass(RateLimitError, ValueError)
         assert not issubclass(PlatformError, ValueError)
         assert not issubclass(SocialChimpError, ValueError)
+
+
+class TestMissingPermissionError:
+    def test_the_message_names_what_is_missing(self) -> None:
+        error = MissingPermissionError(needs="direct messages")
+
+        assert "direct messages" in str(error)
+        assert error.needs == "direct messages"
+        assert error.suggestion is None
+
+    def test_a_suggestion_reads_as_a_sentence_after_the_first(self) -> None:
+        error = MissingPermissionError(
+            needs="direct messages",
+            suggestion=(
+                "A new app password is needed, because the box can't be ticked later."
+            ),
+            platform="bluesky",
+        )
+
+        assert str(error) == (
+            "This connection is missing the direct messages permission. A "
+            "new app password is needed, because the box can't be ticked "
+            "later."
+        )
+        assert error.platform == "bluesky"
+
+    def test_it_is_caught_as_not_allowed(self) -> None:
+        with pytest.raises(NotAllowedError):
+            raise MissingPermissionError(needs="push")
+
+
+class TestBlockedError:
+    def test_it_is_caught_as_not_allowed(self) -> None:
+        with pytest.raises(NotAllowedError):
+            raise BlockedError("bluesky blocked this account")
+
+
+class TestReplyWindowClosedError:
+    def test_it_keeps_when_the_window_closed(self) -> None:
+        closed_at = datetime(2026, 1, 1, tzinfo=UTC)
+        error = ReplyWindowClosedError("too late to reply", closed_at=closed_at)
+
+        assert error.closed_at == closed_at
+
+    def test_the_deadline_is_optional_because_some_networks_do_not_say(self) -> None:
+        error = ReplyWindowClosedError("too late to reply")
+
+        assert error.closed_at is None
+
+    def test_it_is_caught_as_not_allowed(self) -> None:
+        with pytest.raises(NotAllowedError):
+            raise ReplyWindowClosedError("too late to reply")
+
+
+class TestPostGoneError:
+    def test_it_is_caught_as_not_found(self) -> None:
+        with pytest.raises(NotFoundError):
+            raise PostGoneError("that post no longer exists")

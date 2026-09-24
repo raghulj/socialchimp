@@ -22,16 +22,24 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from datetime import datetime
 
-    from socialchimp.events import Update
+    from socialchimp.events import Update, UpdateBatch
     from socialchimp.features import Feature, Limits
     from socialchimp.models import (
         AppCredentials,
         BusinessLocation,
         Connection,
+        Conversation,
+        Like,
+        LikeResult,
+        Media,
+        Message,
+        Page,
         Post,
+        PostDetails,
         PostResult,
         PostStats,
         RawData,
+        Thread,
         Token,
         Verification,
         VerificationOption,
@@ -46,14 +54,22 @@ __all__ = [
     "CanCreateApp",
     "CanDeletePosts",
     "CanEditBusinessInfo",
+    "CanLike",
     "CanManageVerification",
+    "CanMessage",
     "CanModerateComments",
+    "CanReadLikes",
+    "CanReadPost",
     "CanReadPushedUpdates",
     "CanReadReplies",
     "CanReadStats",
+    "CanReadThread",
     "CanReadUpdates",
+    "CanReadUpdatesAfter",
+    "CanReply",
     "CanReplyToUpdates",
     "CanResumeLogin",
+    "CanStartConversations",
     "ChooseAccount",
     "Finished",
     "LoginField",
@@ -937,5 +953,339 @@ class CanManageVerification(Protocol):
 
         Returns:
             The network's own word for the state.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadPost(Protocol):
+    """Extra for reading one post back in full.
+
+    Not only what publishing it returned - everything socialchimp models
+    about a post. `Account.read_post` is what your app calls.
+    """
+
+    async def read_post(self, connection: Connection, post_id: str) -> PostDetails:
+        """Read one post, with everything socialchimp models about it.
+
+        Args:
+            connection: The account to read it as.
+            post_id: The network's identifier for the post or comment.
+
+        Returns:
+            The post, in full.
+
+        Raises:
+            SocialChimpError: If the network refuses, or the post is gone.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadThread(Protocol):
+    """Extra for reading a post together with its replies.
+
+    `Account.read_thread` is what your app calls.
+    """
+
+    async def read_thread(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        depth: int | None = None,
+        limit: int | None = None,
+    ) -> Thread:
+        """Read a post and the replies underneath it.
+
+        Args:
+            connection: The account to read it as.
+            post_id: The network's identifier for the post to read.
+            depth: How many reply levels to fetch. `None` uses the
+                network's own default.
+            limit: A cap on how many replies come back.
+
+        Returns:
+            The post and its replies. `Thread.complete` is `False` if
+            `depth`, `limit` or one of the network's own caps cut the
+            replies off before the end.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReply(Protocol):
+    """Extra for replying to any post or comment, at any depth.
+
+    `publish(Post(reply_to=...))` keeps working without this. This is the
+    recommended way to reply once a network provides it, because it can do
+    things `publish` cannot know to - keeping a Mastodon reply's visibility
+    no wider than its parent's, or mentioning the people already in the
+    thread.
+
+    `Account.reply` is what your app calls.
+    """
+
+    async def reply(
+        self,
+        connection: Connection,
+        post_id: str,
+        text: str,
+        *,
+        media: tuple[Media, ...] = (),
+        options: RawData | None = None,
+    ) -> PostResult:
+        """Reply to a post or comment.
+
+        Args:
+            connection: The account to reply as.
+            post_id: The post or comment being replied to, at any depth.
+            text: The reply's words.
+            media: Pictures or videos to attach to the reply.
+            options: Settings for one network only.
+
+        Returns:
+            What the network said about the new reply.
+
+        Raises:
+            SocialChimpError: If the network refuses, or the target is gone.
+        """
+        ...
+
+
+@runtime_checkable
+class CanLike(Protocol):
+    """Extra for liking and unliking a post or a comment.
+
+    Both calls are idempotent: liking something twice, or unliking something
+    not liked, succeeds and does nothing.
+
+    `Account.like` and `Account.unlike` are what your app calls.
+    """
+
+    async def like(self, connection: Connection, post_id: str) -> LikeResult:
+        """Like a post or a comment.
+
+        Args:
+            connection: The account doing the liking.
+            post_id: The post or comment to like.
+
+        Returns:
+            What the network said about the like. Liking something already
+            liked returns the existing like rather than making a new one.
+        """
+        ...
+
+    async def unlike(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        like_id: str | None = None,
+    ) -> None:
+        """Take back a like.
+
+        Args:
+            connection: The account taking the like back.
+            post_id: The post or comment to unlike.
+            like_id: The like's own identifier, from `LikeResult.like_id`,
+                where passing it saves a lookup. Left out, the network is
+                asked which like to remove.
+
+        Raises:
+            SocialChimpError: If the network refuses.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadLikes(Protocol):
+    """Extra for listing who liked a post.
+
+    Some networks that can like something cannot list who did - a Facebook
+    Page can like a comment but only ever sees the count - so this is a
+    separate extra from `CanLike` rather than part of it.
+
+    `Account.read_likes` is what your app calls.
+    """
+
+    async def read_likes(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Like]:
+        """List who liked a post.
+
+        Args:
+            connection: The account to ask as.
+            post_id: The post or comment to list likes for.
+            after: A `Page.next` from a previous call, to read further in.
+            limit: A cap on how many come back. `None` uses the network's
+                own default.
+
+        Returns:
+            One page of likes.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadUpdatesAfter(Protocol):
+    """Extra for polling with a marker that can be resumed after a restart.
+
+    Unlike `CanReadUpdates.fetch_updates`, which takes a moment in time, this
+    takes an opaque marker your app stores and passes back - see
+    `UpdateBatch`. That is what makes it resumable: a moment in time can miss
+    or repeat updates around the edges, where a marker cannot.
+
+    `Account.fetch_updates_after` and `Account.mark_seen` are what your app
+    calls.
+    """
+
+    async def fetch_updates_after(
+        self,
+        connection: Connection,
+        marker: str | None,
+        *,
+        limit: int | None = None,
+    ) -> UpdateBatch:
+        """Read what is new since a marker.
+
+        Args:
+            connection: The account to ask about.
+            marker: The marker from the last call's `UpdateBatch.marker`.
+                `None` on the first call, when there is nothing saved yet -
+                the network answers with its latest page instead, which
+                sets a starting point.
+            limit: A cap on how many updates come back in this page.
+
+        Returns:
+            The new updates, and a marker to store for next time.
+        """
+        ...
+
+    async def mark_seen(self, connection: Connection, marker: str) -> None:
+        """Tell the network a marker has been seen.
+
+        Args:
+            connection: The account to mark it for.
+            marker: The marker that has been handled.
+        """
+        ...
+
+
+@runtime_checkable
+class CanMessage(Protocol):
+    """Extra for reading and sending direct messages.
+
+    `Account.read_conversations`, `Account.read_messages`,
+    `Account.send_message` and `Account.mark_read` are what your app calls.
+    """
+
+    async def read_conversations(
+        self,
+        connection: Connection,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Conversation]:
+        """List this account's conversations.
+
+        Args:
+            connection: The account to ask as.
+            after: A `Page.next` from a previous call.
+            limit: A cap on how many come back.
+
+        Returns:
+            One page of conversations.
+        """
+        ...
+
+    async def read_messages(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Message]:
+        """Read the messages in one conversation, newest first.
+
+        Args:
+            connection: The account to ask as.
+            conversation_id: Which conversation to read.
+            after: A `Page.next` from a previous call. Passing it goes
+                further back in time.
+            limit: A cap on how many come back.
+
+        Returns:
+            One page of messages, newest first.
+        """
+        ...
+
+    async def send_message(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send a message into an existing conversation.
+
+        Args:
+            connection: The account to send as.
+            conversation_id: Which conversation to send into.
+            text: The message's words.
+            options: Settings for one network only, such as a Meta message
+                tag.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            ReplyWindowClosedError: If a 24-hour reply window has closed.
+        """
+        ...
+
+    async def mark_read(self, connection: Connection, conversation_id: str) -> None:
+        """Mark a conversation as read.
+
+        Args:
+            connection: The account to mark it for.
+            conversation_id: Which conversation to mark.
+        """
+        ...
+
+
+@runtime_checkable
+class CanStartConversations(Protocol):
+    """Extra for starting a new conversation, rather than only answering one.
+
+    Meta cannot do this: the customer has to write first. A platform with
+    `CanMessage` but not this one can still be replied to - it just cannot
+    open the first message.
+
+    `Account.start_conversation` is what your app calls.
+    """
+
+    async def start_conversation(
+        self,
+        connection: Connection,
+        person_ids: Sequence[str],
+        text: str,
+    ) -> Message:
+        """Start a conversation with one or more people.
+
+        Args:
+            connection: The account to send as.
+            person_ids: Who to start it with.
+            text: The first message's words.
+
+        Returns:
+            The message that was sent.
         """
         ...

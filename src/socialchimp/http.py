@@ -79,6 +79,14 @@ _REMAINING_HEADERS = (
 )
 _RESET_HEADERS = ("x-ratelimit-reset", "x-rate-limit-reset", "ratelimit-reset")
 
+# The two headers `retry_after_seconds` itself falls back to when
+# `Retry-After` is absent: Mastodon's `X-RateLimit-Reset` and Bluesky's
+# `RateLimit-Reset`. X's own hyphenated `X-Rate-Limit-Reset` is deliberately
+# left out of this pair - `platforms/x.py` reads its rate limit headers
+# itself and falls back to them in its own way, and it must keep doing that
+# rather than this function quietly doing it first.
+_RETRY_AFTER_RESET_HEADERS = ("x-ratelimit-reset", "ratelimit-reset")
+
 # A reset written as a number is either seconds from now (a handful) or a unix
 # time (a very large number). Nothing sensible sits between the two, so this
 # is where we split them: about four months in seconds.
@@ -162,6 +170,11 @@ def retry_after_seconds(
     from now. A date that has already gone by, or a negative number, comes
     back as zero rather than as a wait that runs backwards.
 
+    Where a reply carries no `Retry-After` at all, a rate-limit reset header
+    is read instead: Mastodon's `X-RateLimit-Reset`, written as an ISO-8601
+    timestamp, or Bluesky's `RateLimit-Reset`, written as a unix time in
+    seconds. Both come back the same way - seconds from now, never negative.
+
     Args:
         response: The reply to read.
         now: What to treat as the current moment. Only useful in tests.
@@ -172,7 +185,7 @@ def retry_after_seconds(
     """
     header = response.headers.get("retry-after")
     if header is None:
-        return None
+        return _retry_after_from_reset_header(response.headers, now=now)
 
     text = header.strip()
     try:
@@ -193,6 +206,34 @@ def retry_after_seconds(
 
     if when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
+    moment = now if now is not None else datetime.now(UTC)
+    return max((when - moment).total_seconds(), 0.0)
+
+
+def _retry_after_from_reset_header(
+    headers: httpx.Headers,
+    *,
+    now: datetime | None,
+) -> float | None:
+    """Fall back to a rate-limit reset header when `Retry-After` is absent.
+
+    Reads Mastodon's `X-RateLimit-Reset`, an ISO-8601 timestamp, or
+    Bluesky's `RateLimit-Reset`, a unix time in seconds, and turns whichever
+    one is there into seconds from now. X's own hyphenated
+    `X-Rate-Limit-Reset` is deliberately not read here - see
+    `_RETRY_AFTER_RESET_HEADERS`.
+
+    Args:
+        headers: The reply's headers.
+        now: What to treat as the current moment. Only useful in tests.
+
+    Returns:
+        Seconds to wait, or `None` when none of these headers are there or
+        none of them can be read.
+    """
+    when = _reset_time(_first_header(headers, _RETRY_AFTER_RESET_HEADERS), now)
+    if when is None:
+        return None
     moment = now if now is not None else datetime.now(UTC)
     return max((when - moment).total_seconds(), 0.0)
 

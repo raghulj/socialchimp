@@ -42,3 +42,35 @@ means the network does not count that - never that it counted zero.
 What `create_app` and a manually-registered app store about themselves.
 
 ::: socialchimp.models.AppCredentials
+
+## The social inbox
+
+What reading a post, its thread, its likes and its conversations hands
+back - added in 0.8.0. See the
+[social inbox use case](../use-cases/social-inbox.md) for working examples.
+
+::: socialchimp.models.Page
+
+::: socialchimp.models.Person
+
+::: socialchimp.models.PostDetails
+
+::: socialchimp.models.Visibility
+
+::: socialchimp.models.TextLink
+
+::: socialchimp.models.LinkKind
+
+::: socialchimp.models.Attachment
+
+::: socialchimp.models.Unavailable
+
+::: socialchimp.models.Thread
+
+::: socialchimp.models.Like
+
+::: socialchimp.models.LikeResult
+
+::: socialchimp.models.Conversation
+
+::: socialchimp.models.Message

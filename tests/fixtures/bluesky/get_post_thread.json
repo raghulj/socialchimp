@@ -1,0 +1,342 @@
+{
+  "thread": {
+    "$type": "app.bsky.feed.defs#threadViewPost",
+    "post": {
+      "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+      "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5",
+      "author": {
+        "did": "did:plc:dc7hcchu6gliiknwqdeffydi",
+        "handle": "fridgedoor.bsky.social",
+        "displayName": "Fridge Door Parts",
+        "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreidcu3anamzhvq64lgv7pqm7g3xtn46dbxdp5b4fmriyijr6bu7lda@jpeg",
+        "labels": []
+      },
+      "record": {
+        "$type": "app.bsky.feed.post",
+        "text": "New stock! 🧊 Genuine parts, café-tested ✅ cc @coldchainparts.bsky.social full list: https://fridgedoor.example/inventory #FridgeParts",
+        "facets": [
+          {
+            "index": {
+              "byteStart": 51,
+              "byteEnd": 78
+            },
+            "features": [
+              {
+                "$type": "app.bsky.richtext.facet#mention",
+                "did": "did:plc:gtfxuqrljnk2c2gez6fi3qzj"
+              }
+            ]
+          },
+          {
+            "index": {
+              "byteStart": 90,
+              "byteEnd": 126
+            },
+            "features": [
+              {
+                "$type": "app.bsky.richtext.facet#link",
+                "uri": "https://fridgedoor.example/inventory"
+              }
+            ]
+          },
+          {
+            "index": {
+              "byteStart": 127,
+              "byteEnd": 139
+            },
+            "features": [
+              {
+                "$type": "app.bsky.richtext.facet#tag",
+                "tag": "FridgeParts"
+              }
+            ]
+          }
+        ],
+        "embed": {
+          "$type": "app.bsky.embed.images",
+          "images": [
+            {
+              "image": {
+                "$type": "blob",
+                "ref": {
+                  "$link": "bafkreido2mdrwlxf2bey6ovmurvu7yw6c3aea2u7vaari2a7le7i7ni6kz"
+                },
+                "mimeType": "image/jpeg",
+                "size": 812340
+              },
+              "alt": "A stainless steel refrigerator door handle laid on a white background.",
+              "aspectRatio": {
+                "width": 1600,
+                "height": 1200
+              }
+            },
+            {
+              "image": {
+                "$type": "blob",
+                "ref": {
+                  "$link": "bafkreick42fe4icrmpkdwfaqt3jgzlfqod4t4655kcbs6ucuwhldx5fkvj"
+                },
+                "mimeType": "image/jpeg",
+                "size": 654200
+              },
+              "alt": "A stack of packaged rubber door gaskets ready for shipping.",
+              "aspectRatio": {
+                "width": 1200,
+                "height": 1600
+              }
+            }
+          ]
+        },
+        "langs": [
+          "en"
+        ],
+        "createdAt": "2026-09-20T14:32:07.481Z"
+      },
+      "embed": {
+        "$type": "app.bsky.embed.images#view",
+        "images": [
+          {
+            "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreido2mdrwlxf2bey6ovmurvu7yw6c3aea2u7vaari2a7le7i7ni6kz@jpeg",
+            "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreido2mdrwlxf2bey6ovmurvu7yw6c3aea2u7vaari2a7le7i7ni6kz@jpeg",
+            "alt": "A stainless steel refrigerator door handle laid on a white background.",
+            "aspectRatio": {
+              "width": 1600,
+              "height": 1200
+            }
+          },
+          {
+            "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreick42fe4icrmpkdwfaqt3jgzlfqod4t4655kcbs6ucuwhldx5fkvj@jpeg",
+            "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreick42fe4icrmpkdwfaqt3jgzlfqod4t4655kcbs6ucuwhldx5fkvj@jpeg",
+            "alt": "A stack of packaged rubber door gaskets ready for shipping.",
+            "aspectRatio": {
+              "width": 1200,
+              "height": 1600
+            }
+          }
+        ]
+      },
+      "replyCount": 5,
+      "repostCount": 58,
+      "likeCount": 342,
+      "quoteCount": 12,
+      "indexedAt": "2026-09-20T14:32:08.106Z",
+      "viewer": {},
+      "labels": []
+    },
+    "replies": [
+      {
+        "$type": "app.bsky.feed.defs#threadViewPost",
+        "post": {
+          "uri": "at://did:plc:npdnlmk5q3mfwufojllvusc6/app.bsky.feed.post/mffpgg5gei6g3",
+          "cid": "bafyrei5hptytci4vmlrdivkhviawsrrdndw32kvla5dsioqh6tqwbjqwo5",
+          "author": {
+            "did": "did:plc:npdnlmk5q3mfwufojllvusc6",
+            "handle": "gasketguy.bsky.social",
+            "displayName": "Gasket Guy",
+            "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:npdnlmk5q3mfwufojllvusc6/bafkreilyhnpnkjclglrsi2dd7hop3qmdngjc6rdnwbovucgmigw6xhvh35@jpeg",
+            "labels": []
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "text": "Do these fit the 2019 Model X compressor housing?",
+            "reply": {
+              "root": {
+                "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+                "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5"
+              },
+              "parent": {
+                "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+                "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5"
+              }
+            },
+            "langs": [
+              "en"
+            ],
+            "createdAt": "2026-09-20T15:05:11.000Z"
+          },
+          "replyCount": 0,
+          "repostCount": 0,
+          "likeCount": 4,
+          "quoteCount": 0,
+          "indexedAt": "2026-09-20T15:05:11.512Z",
+          "viewer": {},
+          "labels": []
+        }
+      },
+      {
+        "$type": "app.bsky.feed.defs#threadViewPost",
+        "post": {
+          "uri": "at://did:plc:vgqfnez6ezd6abvyxwedgizi/app.bsky.feed.post/5lf5i34hv6r3z",
+          "cid": "bafyreirajeziytdnp2rypvydnimlwot3g2tfcw6oqus2zbwxliv4harwtb",
+          "author": {
+            "did": "did:plc:vgqfnez6ezd6abvyxwedgizi",
+            "handle": "fridgetechie.bsky.social",
+            "displayName": "Fridge Techie",
+            "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:vgqfnez6ezd6abvyxwedgizi/bafkreif6j55annklpvmeb625g5vtgyvxyetcchm2g3mytwj6cjdw7nteyd@jpeg",
+            "labels": []
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "text": "We stock the wide-body gasket kit too, just restocked.",
+            "reply": {
+              "root": {
+                "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+                "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5"
+              },
+              "parent": {
+                "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+                "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5"
+              }
+            },
+            "langs": [
+              "en"
+            ],
+            "createdAt": "2026-09-20T16:40:02.000Z"
+          },
+          "replyCount": 2,
+          "repostCount": 1,
+          "likeCount": 9,
+          "quoteCount": 0,
+          "indexedAt": "2026-09-20T16:40:02.398Z",
+          "viewer": {},
+          "labels": []
+        },
+        "replies": [
+          {
+            "$type": "app.bsky.feed.defs#threadViewPost",
+            "post": {
+              "uri": "at://did:plc:y36xgccvkvm3guancj56u2st/app.bsky.feed.post/qimmxupizawv3",
+              "cid": "bafyreioh2tqzbi6ohppg7z2wta3ucmbg3vyutchbqwewacqodul2a5eiix",
+              "author": {
+                "did": "did:plc:y36xgccvkvm3guancj56u2st",
+                "handle": "shopfloorsam.bsky.social",
+                "displayName": "Sam",
+                "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:y36xgccvkvm3guancj56u2st/bafkreiohuwadg2yuofxhrkcfitrp4jsocanywbc3kym6ewd446cpy3kake@jpeg",
+                "labels": []
+              },
+              "record": {
+                "$type": "app.bsky.feed.post",
+                "text": "Perfect, ordering now!",
+                "reply": {
+                  "root": {
+                    "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+                    "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5"
+                  },
+                  "parent": {
+                    "uri": "at://did:plc:vgqfnez6ezd6abvyxwedgizi/app.bsky.feed.post/5lf5i34hv6r3z",
+                    "cid": "bafyreirajeziytdnp2rypvydnimlwot3g2tfcw6oqus2zbwxliv4harwtb"
+                  }
+                },
+                "langs": [
+                  "en"
+                ],
+                "createdAt": "2026-09-20T17:02:44.000Z"
+              },
+              "replyCount": 0,
+              "repostCount": 0,
+              "likeCount": 1,
+              "quoteCount": 0,
+              "indexedAt": "2026-09-20T17:02:44.221Z",
+              "viewer": {},
+              "labels": []
+            }
+          },
+          {
+            "$type": "app.bsky.feed.defs#threadViewPost",
+            "post": {
+              "uri": "at://did:plc:f7a65knkh4xhajt6744jfsjx/app.bsky.feed.post/xyrpeywnmfnet",
+              "cid": "bafyreiuxlgilpssuvei2enuhjfqr3il2yyyss5wou5tkmsvzkf3abnivgu",
+              "author": {
+                "did": "did:plc:f7a65knkh4xhajt6744jfsjx",
+                "handle": "coldroomcarla.bsky.social",
+                "displayName": "Carla",
+                "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:f7a65knkh4xhajt6744jfsjx/bafkrei63kpkvtv6ffvmqzptyysfw3v752a7mzvdpczj54xiiqpdbnp2zra@jpeg",
+                "labels": []
+              },
+              "record": {
+                "$type": "app.bsky.feed.post",
+                "text": "Same, been waiting for this restock.",
+                "reply": {
+                  "root": {
+                    "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+                    "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5"
+                  },
+                  "parent": {
+                    "uri": "at://did:plc:vgqfnez6ezd6abvyxwedgizi/app.bsky.feed.post/5lf5i34hv6r3z",
+                    "cid": "bafyreirajeziytdnp2rypvydnimlwot3g2tfcw6oqus2zbwxliv4harwtb"
+                  }
+                },
+                "langs": [
+                  "en"
+                ],
+                "createdAt": "2026-09-20T18:15:30.000Z"
+              },
+              "replyCount": 0,
+              "repostCount": 0,
+              "likeCount": 2,
+              "quoteCount": 0,
+              "indexedAt": "2026-09-20T18:15:30.877Z",
+              "viewer": {},
+              "labels": []
+            }
+          }
+        ]
+      },
+      {
+        "$type": "app.bsky.feed.defs#threadViewPost",
+        "post": {
+          "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/vne5uor2hve5x",
+          "cid": "bafyreio6ocvry7z3iz7ghcidie5soui46lwrvwyrwmbbwnag6bwlxt2wc3",
+          "author": {
+            "did": "did:plc:dc7hcchu6gliiknwqdeffydi",
+            "handle": "fridgedoor.bsky.social",
+            "displayName": "Fridge Door Parts",
+            "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreidcu3anamzhvq64lgv7pqm7g3xtn46dbxdp5b4fmriyijr6bu7lda@jpeg",
+            "labels": []
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "text": "Also just added the wide-body model to the listing above.",
+            "reply": {
+              "root": {
+                "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+                "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5"
+              },
+              "parent": {
+                "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+                "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5"
+              }
+            },
+            "langs": [
+              "en"
+            ],
+            "createdAt": "2026-09-20T19:00:00.000Z"
+          },
+          "replyCount": 0,
+          "repostCount": 0,
+          "likeCount": 6,
+          "quoteCount": 0,
+          "indexedAt": "2026-09-20T19:00:00.305Z",
+          "viewer": {},
+          "labels": []
+        }
+      },
+      {
+        "$type": "app.bsky.feed.defs#notFoundPost",
+        "uri": "at://did:plc:g6kyz62htd2yv2koyccjnnpf/app.bsky.feed.post/h5yt7twvdk6b5",
+        "notFound": true
+      },
+      {
+        "$type": "app.bsky.feed.defs#blockedPost",
+        "uri": "at://did:plc:2bcz34zy6yiw55lh4itohhka/app.bsky.feed.post/ot6gxhyhchaql",
+        "blocked": true,
+        "author": {
+          "did": "did:plc:2bcz34zy6yiw55lh4itohhka",
+          "viewer": {
+            "blockedBy": true
+          }
+        }
+      }
+    ]
+  }
+}

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,20 +16,26 @@ import respx
 from socialchimp import (
     AppCredentials,
     AuthError,
+    BlockedError,
+    ConfigError,
     Connection,
     Feature,
     InMemoryStorage,
     InvalidPostError,
     Limits,
+    LinkKind,
     Media,
+    MissingPermissionError,
     NotSupportedError,
     PlatformError,
     Post,
+    PostGoneError,
     PostState,
     RateLimitError,
     SocialChimp,
     Token,
     TokenExpiredError,
+    Unavailable,
     UpdateKind,
 )
 from socialchimp.features import TextCount
@@ -36,7 +44,15 @@ from socialchimp.http import Retries
 from socialchimp.platform import (
     AskForDetails,
     CanDeletePosts,
+    CanLike,
+    CanMessage,
+    CanReadLikes,
+    CanReadPost,
+    CanReadThread,
     CanReadUpdates,
+    CanReadUpdatesAfter,
+    CanReply,
+    CanStartConversations,
     Finished,
     LoginRequest,
     Platform,
@@ -53,6 +69,37 @@ from socialchimp.testing import PlatformChecks, RecordingTransport
 HOST = "bsky.social"
 OTHER = "pds.example"
 XRPC = f"https://{HOST}/xrpc"
+
+FIXTURES = Path(__file__).parent / "fixtures" / "bluesky"
+
+MERCHANT_DID = "did:plc:dc7hcchu6gliiknwqdeffydi"
+MERCHANT_HANDLE = "fridgedoor.bsky.social"
+MERCHANT_POST_URI = f"at://{MERCHANT_DID}/app.bsky.feed.post/cyirmvgfbeyhx"
+
+
+def fixture(name: str) -> dict[str, Any]:
+    """Load one of the real-shape Bluesky fixtures, as fresh JSON.
+
+    A plain `json.loads` rather than a cached object, so a test that
+    mutates its copy never leaks into another test - see the fixtures'
+    own README for why they are shaped this way.
+    """
+    loaded: dict[str, Any] = json.loads((FIXTURES / f"{name}.json").read_text())
+    return loaded
+
+
+def merchant_account() -> Connection:
+    """The merchant account the fixtures were built around."""
+    return Connection(
+        id=f"bluesky:{MERCHANT_DID}",
+        platform="bluesky",
+        host=HOST,
+        account_id=MERCHANT_DID,
+        account_name=f"@{MERCHANT_HANDLE}",
+        token=Token(access_token="access-token", refresh_token=REFRESH),
+        extra={"handle": MERCHANT_HANDLE},
+    )
+
 
 DID = "did:plc:ada"
 HANDLE = "ada.bsky.social"
@@ -654,6 +701,7 @@ class TestPostingText:
         assert result.id == POST_URI
         assert result.state is PostState.DONE
         assert result.url == f"https://bsky.app/profile/{DID}/post/3kaposted"
+        assert result.cid == CREATED["cid"]
         assert result.raw == CREATED
 
     async def test_it_signs_the_post_with_the_access_token(
@@ -1181,10 +1229,11 @@ class TestReadingUpdates:
         ("reason", "kind"),
         [
             ("like", UpdateKind.REACTION_ADDED),
-            ("repost", UpdateKind.REACTION_ADDED),
+            ("repost", UpdateKind.REPOST_ADDED),
             ("reply", UpdateKind.COMMENT_CREATED),
             ("mention", UpdateKind.MENTION),
-            ("follow", UpdateKind.UNKNOWN),
+            ("quote", UpdateKind.MENTION),
+            ("follow", UpdateKind.FOLLOWED),
         ],
     )
     async def test_it_says_what_happened_in_socialchimps_own_words(
@@ -1354,6 +1403,21 @@ class TestErrors:
 
         assert isinstance(error, PlatformError)
 
+    def test_a_gone_post_is_a_post_gone_error(self) -> None:
+        error = bluesky_errors(refusal(400, "NotFound"))
+
+        assert isinstance(error, PostGoneError)
+        assert "NotFound happened" in str(error)
+
+    @pytest.mark.parametrize("named", ["BlockedActor", "BlockedByActor"])
+    def test_a_block_between_the_two_accounts_is_a_blocked_error(
+        self,
+        named: str,
+    ) -> None:
+        error = bluesky_errors(refusal(400, named))
+
+        assert isinstance(error, BlockedError)
+
     async def test_a_refusal_from_the_wire_arrives_as_a_socialchimp_error(
         self,
         platform: BlueskyPlatform,
@@ -1369,8 +1433,1613 @@ class TestErrors:
 
 
 # ---------------------------------------------------------------------------
-# The shared checks every platform has to pass
+# Reading one post back in full
 # ---------------------------------------------------------------------------
+
+
+class TestReadingOnePost:
+    async def test_it_says_it_can_read_a_post(self, platform: BlueskyPlatform) -> None:
+        assert Feature.READ_POST in platform.features
+        assert isinstance(platform, CanReadPost)
+
+    async def test_it_reads_a_post_back_in_full(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        raw = fixture("get_posts_own")
+
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            details = await platform.read_post(account, MERCHANT_POST_URI)
+
+        assert route.calls.last.request.url.params["uris"] == MERCHANT_POST_URI
+        raw_post = raw["posts"][0]
+        assert details.id == MERCHANT_POST_URI
+        assert details.cid == raw_post["cid"]
+        assert details.url == (
+            f"https://bsky.app/profile/{MERCHANT_HANDLE}/post/cyirmvgfbeyhx"
+        )
+        assert details.author is not None
+        assert details.author.id == MERCHANT_DID
+        assert details.author.handle == MERCHANT_HANDLE
+        assert details.author.display_name == "Fridge Door Parts"
+        assert details.author.url == f"https://bsky.app/profile/{MERCHANT_HANDLE}"
+        assert details.html is None
+        assert details.visibility is None
+        assert details.parent_id is None
+        assert details.root_id == details.id
+        assert details.reply_count == 5
+        assert details.like_count == 342
+        assert details.repost_count == 58
+        assert details.quote_count == 12
+        assert details.liked_by_me is False
+        assert details.my_like_id is None
+        assert details.is_mine is True
+        assert details.unavailable is None
+        assert details.created_at == datetime(
+            2026, 9, 20, 14, 32, 7, 481000, tzinfo=UTC
+        )
+
+        by_kind = {link.kind: link for link in details.links}
+        mention = by_kind[LinkKind.MENTION]
+        assert details.text[mention.start : mention.end] == (
+            "@coldchainparts.bsky.social"
+        )
+        assert mention.target == "did:plc:gtfxuqrljnk2c2gez6fi3qzj"
+        assert mention.url is None
+
+        link = by_kind[LinkKind.LINK]
+        assert details.text[link.start : link.end] == (
+            "https://fridgedoor.example/inventory"
+        )
+        assert link.target == "https://fridgedoor.example/inventory"
+        assert link.url == link.target
+
+        tag = by_kind[LinkKind.TAG]
+        assert details.text[tag.start : tag.end] == "#FridgeParts"
+        assert tag.target == "FridgeParts"
+        assert tag.url is None
+
+        assert len(details.attachments) == 2
+        first_image = raw_post["embed"]["images"][0]
+        assert details.attachments[0].kind == "image"
+        assert details.attachments[0].url == first_image["fullsize"]
+        assert details.attachments[0].preview_url == first_image["thumb"]
+        assert details.attachments[0].alt_text == first_image["alt"]
+        assert details.attachments[0].width == 1600
+        assert details.attachments[0].height == 1200
+
+    async def test_it_knows_when_it_already_liked_its_own_post(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        raw = fixture("get_posts_liked")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            details = await platform.read_post(merchant_account(), MERCHANT_POST_URI)
+
+        assert details.liked_by_me is True
+        assert details.my_like_id == raw["posts"][0]["viewer"]["like"]
+
+    async def test_a_post_with_no_viewer_state_has_an_unknown_like(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        raw = copy.deepcopy(fixture("get_posts_own"))
+        del raw["posts"][0]["viewer"]
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            details = await platform.read_post(merchant_account(), MERCHANT_POST_URI)
+
+        assert details.liked_by_me is None
+        assert details.my_like_id is None
+
+    async def test_a_post_from_someone_else_is_not_mine(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        raw = copy.deepcopy(fixture("get_posts_own"))
+        raw["posts"][0]["author"]["did"] = "did:plc:someoneelse"
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            details = await platform.read_post(merchant_account(), MERCHANT_POST_URI)
+
+        assert details.is_mine is False
+
+    async def test_a_post_with_no_record_reads_as_empty(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = {"posts": [{"uri": "at://x/y/z"}]}
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            details = await platform.read_post(account, "at://x/y/z")
+
+        assert details.text == ""
+        assert details.cid is None
+        assert details.created_at is None
+        assert details.author is None
+        assert details.is_mine is False
+        assert details.url is None
+        assert details.parent_id is None
+        assert details.root_id == details.id
+
+    async def test_a_post_with_a_record_but_no_created_at(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = {"posts": [{"uri": "at://x/y/z", "record": {"text": "hi"}}]}
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            details = await platform.read_post(account, "at://x/y/z")
+
+        assert details.text == "hi"
+        assert details.created_at is None
+
+    async def test_reading_a_post_that_is_gone_says_so(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json={"posts": []})
+            )
+            with pytest.raises(PostGoneError):
+                await platform.read_post(account, "at://gone/x/y")
+
+
+# ---------------------------------------------------------------------------
+# Reading a thread
+# ---------------------------------------------------------------------------
+
+
+class TestReadingAThread:
+    async def test_it_says_it_can_read_a_thread(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        assert Feature.READ_THREAD in platform.features
+        assert isinstance(platform, CanReadThread)
+
+    async def test_default_depth_is_six(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = fixture("get_post_thread")
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            await platform.read_thread(account, MERCHANT_POST_URI)
+
+        params = route.calls.last.request.url.params
+        assert params["uri"] == MERCHANT_POST_URI
+        assert params["depth"] == "6"
+        assert params["parentHeight"] == "0"
+
+    async def test_a_given_depth_is_passed_through(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = fixture("get_post_thread")
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            await platform.read_thread(account, MERCHANT_POST_URI, depth=2)
+
+        assert route.calls.last.request.url.params["depth"] == "2"
+
+    async def test_depth_is_capped_at_a_thousand(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = fixture("get_post_thread")
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            await platform.read_thread(account, MERCHANT_POST_URI, depth=5000)
+
+        assert route.calls.last.request.url.params["depth"] == "1000"
+
+    async def test_it_flattens_the_thread_oldest_first_with_parent_ids(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        raw = fixture("get_post_thread")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(account, MERCHANT_POST_URI)
+
+        assert thread.post.id == MERCHANT_POST_URI
+        assert thread.complete is True
+        assert len(thread.replies) == 7
+        assert [reply.unavailable for reply in thread.replies] == [
+            None,
+            None,
+            None,
+            None,
+            None,
+            Unavailable.DELETED,
+            Unavailable.BLOCKED,
+        ]
+        handles = [
+            reply.author.handle if reply.author is not None else None
+            for reply in thread.replies
+        ]
+        assert handles == [
+            "gasketguy.bsky.social",
+            "fridgetechie.bsky.social",
+            "shopfloorsam.bsky.social",
+            "coldroomcarla.bsky.social",
+            MERCHANT_HANDLE,
+            None,
+            None,
+        ]
+        assert thread.replies[0].parent_id == thread.post.id
+        assert thread.replies[1].parent_id == thread.post.id
+        assert thread.replies[2].parent_id == thread.replies[1].id
+        assert thread.replies[3].parent_id == thread.replies[1].id
+        assert thread.replies[4].parent_id == thread.post.id
+        assert thread.replies[5].parent_id == thread.post.id
+        assert thread.replies[6].parent_id == thread.post.id
+        assert all(reply.root_id == thread.post.id for reply in thread.replies)
+
+    async def test_placeholders_carry_no_author_or_text(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        raw = fixture("get_post_thread")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(merchant_account(), MERCHANT_POST_URI)
+
+        deleted = next(
+            reply
+            for reply in thread.replies
+            if reply.unavailable is Unavailable.DELETED
+        )
+        blocked = next(
+            reply
+            for reply in thread.replies
+            if reply.unavailable is Unavailable.BLOCKED
+        )
+        assert deleted.author is None
+        assert deleted.text == ""
+        assert deleted.cid is None
+        assert blocked.author is None
+        assert blocked.text == ""
+
+    async def test_a_limit_truncates_oldest_first_and_marks_it_incomplete(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = fixture("get_post_thread")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(account, MERCHANT_POST_URI, limit=3)
+
+        assert len(thread.replies) == 3
+        assert thread.complete is False
+
+    async def test_a_depth_cut_marks_the_thread_incomplete(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = copy.deepcopy(fixture("get_post_thread"))
+        leaf = raw["thread"]["replies"][1]["replies"][0]["post"]
+        leaf["replyCount"] = 2
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(account, MERCHANT_POST_URI)
+
+        assert thread.complete is False
+
+    async def test_no_replies_and_no_reply_count_is_complete(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = copy.deepcopy(fixture("get_post_thread"))
+        del raw["thread"]["replies"]
+        raw["thread"]["post"]["replyCount"] = 0
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(account, MERCHANT_POST_URI)
+
+        assert thread.replies == ()
+        assert thread.complete is True
+
+    async def test_the_anchors_own_reply_count_can_mark_it_incomplete_too(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = copy.deepcopy(fixture("get_post_thread"))
+        del raw["thread"]["replies"]
+        raw["thread"]["post"]["replyCount"] = 5
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(account, MERCHANT_POST_URI)
+
+        assert thread.complete is False
+
+    async def test_a_non_dict_reply_entry_is_skipped(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = copy.deepcopy(fixture("get_post_thread"))
+        raw["thread"]["replies"].append("nonsense")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(account, MERCHANT_POST_URI)
+
+        assert len(thread.replies) == 7
+
+    async def test_a_non_dict_nested_reply_entry_is_skipped(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = copy.deepcopy(fixture("get_post_thread"))
+        raw["thread"]["replies"][1]["replies"].append("nonsense")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(account, MERCHANT_POST_URI)
+
+        assert len(thread.replies) == 7
+
+    async def test_a_reply_node_missing_its_own_post_is_skipped(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = copy.deepcopy(fixture("get_post_thread"))
+        raw["thread"]["replies"] = [{"$type": "app.bsky.feed.defs#threadViewPost"}]
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            thread = await platform.read_thread(account, MERCHANT_POST_URI)
+
+        assert thread.replies == ()
+        assert thread.complete is True
+
+    async def test_the_anchor_itself_being_gone_is_a_post_gone_error(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(
+                    400,
+                    json={"error": "NotFound", "message": "Post not found: x"},
+                )
+            )
+            with pytest.raises(PostGoneError):
+                await platform.read_thread(account, "at://gone/x/y")
+
+    async def test_a_reply_missing_entirely_is_a_platform_error(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            with pytest.raises(PlatformError, match="thread"):
+                await platform.read_thread(account, MERCHANT_POST_URI)
+
+    async def test_the_anchor_post_missing_from_the_thread_is_a_platform_error(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPostThread").mock(
+                return_value=httpx.Response(200, json={"thread": {}})
+            )
+            with pytest.raises(PlatformError, match="post"):
+                await platform.read_thread(account, MERCHANT_POST_URI)
+
+
+# ---------------------------------------------------------------------------
+# Replying, the recommended way
+# ---------------------------------------------------------------------------
+
+
+class TestReplyingViaReply:
+    async def test_it_says_it_can_reply_to_comments(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        assert Feature.REPLY_TO_COMMENTS in platform.features
+        assert isinstance(platform, CanReply)
+
+    async def test_it_reuses_publish_and_fills_the_cid(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        parent: dict[str, Any] = {
+            "uri": "at://did:plc:bob/app.bsky.feed.post/parent",
+            "cid": "bafyp",
+            "record": {"text": "the parent"},
+        }
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json={"posts": [parent]})
+            )
+            route = stub_create(network)
+            result = await platform.reply(account, parent["uri"], "agreed")
+
+        sent = sent_json(route)["record"]
+        assert sent["reply"]["parent"]["uri"] == parent["uri"]
+        assert sent["text"] == "agreed"
+        assert result.id == POST_URI
+        assert result.cid == CREATED["cid"]
+
+    async def test_options_are_passed_through_to_publish(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        parent: dict[str, Any] = {
+            "uri": "at://did:plc:bob/app.bsky.feed.post/parent",
+            "cid": "bafyp",
+            "record": {"text": "the parent"},
+        }
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json={"posts": [parent]})
+            )
+            route = stub_create(network)
+            await platform.reply(account, parent["uri"], "hei", options={"langs": "nb"})
+
+        assert sent_json(route)["record"]["langs"] == ["nb"]
+
+
+# ---------------------------------------------------------------------------
+# Liking, unliking, reading likes
+# ---------------------------------------------------------------------------
+
+
+class TestLikingAndUnliking:
+    async def test_it_says_it_can_like(self, platform: BlueskyPlatform) -> None:
+        assert Feature.LIKE in platform.features
+        assert isinstance(platform, CanLike)
+
+    async def test_liking_a_post_for_the_first_time(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        posts_reply = fixture("get_posts_own")
+        like_reply = fixture("create_record_like")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=posts_reply)
+            )
+            create = network.post("/com.atproto.repo.createRecord").mock(
+                return_value=httpx.Response(200, json=like_reply)
+            )
+            result = await platform.like(account, MERCHANT_POST_URI)
+
+        body = sent_json(create)
+        assert body["collection"] == "app.bsky.feed.like"
+        assert body["record"]["subject"] == {
+            "uri": MERCHANT_POST_URI,
+            "cid": posts_reply["posts"][0]["cid"],
+        }
+        assert result.post_id == MERCHANT_POST_URI
+        assert result.like_id == like_reply["uri"]
+
+    async def test_liking_an_already_liked_post_is_idempotent(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        raw = fixture("get_posts_liked")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            result = await platform.like(account, MERCHANT_POST_URI)
+
+        # No createRecord route was registered above - if the code had
+        # called it anyway, respx would have raised for an unmocked request.
+        assert result.like_id == raw["posts"][0]["viewer"]["like"]
+
+    async def test_liking_a_post_that_is_gone(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json={"posts": []})
+            )
+            with pytest.raises(PostGoneError):
+                await platform.like(account, "at://gone/x/y")
+
+    async def test_unlike_with_a_like_id_skips_the_lookup(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.post("/com.atproto.repo.deleteRecord").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            await platform.unlike(
+                account,
+                MERCHANT_POST_URI,
+                like_id="at://x/app.bsky.feed.like/therkey",
+            )
+
+        # No getPosts route was registered - unlike must not have looked
+        # anything up first.
+        assert sent_json(route)["rkey"] == "therkey"
+
+    async def test_unlike_without_a_like_id_looks_it_up_first(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        raw = fixture("get_posts_liked")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            route = network.post("/com.atproto.repo.deleteRecord").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            await platform.unlike(account, MERCHANT_POST_URI)
+
+        expected_rkey = raw["posts"][0]["viewer"]["like"].rsplit("/", 1)[-1]
+        assert sent_json(route)["rkey"] == expected_rkey
+
+    async def test_unliking_something_never_liked_is_a_no_op(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json=fixture("get_posts_own"))
+            )
+            await platform.unlike(account, MERCHANT_POST_URI)
+        # No deleteRecord route was registered - if it had been called,
+        # respx would have raised for an unmocked request.
+
+    async def test_unliking_a_gone_post_is_a_no_op(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(200, json={"posts": []})
+            )
+            await platform.unlike(account, "at://gone/x/y")
+
+
+class TestReadingLikes:
+    async def test_it_says_it_can_read_likes(self, platform: BlueskyPlatform) -> None:
+        assert Feature.READ_LIKES in platform.features
+        assert isinstance(platform, CanReadLikes)
+
+    async def test_it_reads_who_liked_a_post(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = fixture("get_likes")
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.feed.getLikes").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            page = await platform.read_likes(account, MERCHANT_POST_URI)
+
+        assert route.calls.last.request.url.params["uri"] == MERCHANT_POST_URI
+        assert len(page.items) == 3
+        assert page.items[0].person.handle == "freezerfranny.bsky.social"
+        assert page.items[0].liked_at == datetime(
+            2026, 9, 23, 10, 13, 35, 141000, tzinfo=UTC
+        )
+        assert page.next == raw["cursor"]
+
+    async def test_it_passes_after_and_limit_through(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.feed.getLikes").mock(
+                return_value=httpx.Response(200, json={"likes": []})
+            )
+            await platform.read_likes(
+                account, MERCHANT_POST_URI, after="cursor-1", limit=500
+            )
+
+        params = route.calls.last.request.url.params
+        assert params["cursor"] == "cursor-1"
+        assert params["limit"] == "100"
+
+    async def test_it_skips_entries_it_cannot_read(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = {
+            "likes": [
+                "nonsense",
+                {"actor": {"handle": "no-did"}},
+                {"actor": {"did": "did:plc:x"}, "createdAt": "not a time"},
+            ]
+        }
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getLikes").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            page = await platform.read_likes(account, MERCHANT_POST_URI)
+
+        assert len(page.items) == 1
+        assert page.items[0].liked_at is None
+
+    async def test_no_likes_key_is_an_empty_page(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getLikes").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            page = await platform.read_likes(account, MERCHANT_POST_URI)
+
+        assert page.items == ()
+        assert page.next is None
+
+
+# ---------------------------------------------------------------------------
+# Updates: the enriched fields, shared by fetch_updates and
+# fetch_updates_after
+# ---------------------------------------------------------------------------
+
+
+def notifications_by_reason() -> dict[str, dict[str, Any]]:
+    """Every real-shape notification, keyed by its own `reason`."""
+    return {
+        raw["reason"]: raw for raw in fixture("list_notifications")["notifications"]
+    }
+
+
+class TestUpdateEnrichment:
+    @pytest.mark.parametrize(
+        "reason", ["like", "repost", "reply", "mention", "quote", "follow"]
+    )
+    def test_it_says_who_did_it(self, reason: str) -> None:
+        raw = notifications_by_reason()[reason]
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.actor is not None
+        assert update.actor.id == raw["author"]["did"]
+        assert update.actor.handle == raw["author"]["handle"]
+
+    def test_a_like_names_the_post_it_concerns_but_not_itself(self) -> None:
+        raw = notifications_by_reason()["like"]
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.kind is UpdateKind.REACTION_ADDED
+        assert update.post_id is None
+        assert update.about_post_id == raw["reasonSubject"]
+        assert update.thread_root_id is None
+
+    def test_a_repost_names_the_post_it_concerns_but_not_itself(self) -> None:
+        raw = notifications_by_reason()["repost"]
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.kind is UpdateKind.REPOST_ADDED
+        assert update.post_id is None
+        assert update.about_post_id == raw["reasonSubject"]
+
+    def test_a_reply_names_itself_its_parent_and_its_root(self) -> None:
+        raw = notifications_by_reason()["reply"]
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.kind is UpdateKind.COMMENT_CREATED
+        assert update.post_id == raw["uri"]
+        assert update.about_post_id == raw["record"]["reply"]["parent"]["uri"]
+        assert update.thread_root_id == raw["record"]["reply"]["root"]["uri"]
+
+    def test_a_mention_with_no_reply_field_names_only_itself(self) -> None:
+        raw = notifications_by_reason()["mention"]
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.kind is UpdateKind.MENTION
+        assert update.post_id == raw["uri"]
+        assert update.about_post_id is None
+        assert update.thread_root_id is None
+
+    def test_a_quote_is_folded_into_mention_and_names_itself(self) -> None:
+        raw = notifications_by_reason()["quote"]
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.kind is UpdateKind.MENTION
+        assert update.kind_name == "mention"
+        assert update.post_id == raw["uri"]
+        # A quote is not a reply: the post it concerns is the one it
+        # quotes, in reasonSubject, not record.reply - which a quote does
+        # not have.
+        assert update.about_post_id == raw["reasonSubject"]
+        assert update.thread_root_id is None
+
+    def test_a_quote_that_is_also_a_reply_keeps_its_own_thread_root(self) -> None:
+        # Someone can quote one post while replying to another. The quoted
+        # post still names about_post_id; the reply's own root is where
+        # thread_root_id comes from.
+        raw = notifications_by_reason()["quote"]
+        raw = {
+            **raw,
+            "record": {
+                **raw["record"],
+                "reply": {
+                    "parent": {"uri": "at://did:plc:bob/x/parent"},
+                    "root": {"uri": "at://did:plc:bob/x/root"},
+                },
+            },
+        }
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.about_post_id == raw["reasonSubject"]
+        assert update.thread_root_id == "at://did:plc:bob/x/root"
+
+    def test_a_follow_names_nothing_about_a_post(self) -> None:
+        raw = notifications_by_reason()["follow"]
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.kind is UpdateKind.FOLLOWED
+        assert update.post_id is None
+        assert update.about_post_id is None
+        assert update.thread_root_id is None
+
+    def test_an_unreadable_indexed_at_drops_the_notification(self) -> None:
+        raw = {"reason": "like", "indexedAt": "not a time", "uri": "x"}
+        assert bluesky_module._update_from(raw, connection=merchant_account()) is None
+
+    def test_an_author_with_no_did_has_no_actor(self) -> None:
+        raw = {
+            "reason": "follow",
+            "indexedAt": "2026-01-01T00:00:00Z",
+            "uri": "x",
+            "author": {"handle": "no-did"},
+        }
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.actor is None
+
+    def test_a_missing_author_has_no_actor(self) -> None:
+        raw = {"reason": "follow", "indexedAt": "2026-01-01T00:00:00Z", "uri": "x"}
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.actor is None
+
+    async def test_fetch_updates_carries_the_new_fields_too(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = fixture("list_notifications")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.notification.listNotifications").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            found = await platform.fetch_updates(account, None)
+
+        reply_update = next(u for u in found if u.kind is UpdateKind.COMMENT_CREATED)
+        assert reply_update.actor is not None
+        assert reply_update.post_id is not None
+        assert reply_update.thread_root_id is not None
+
+
+# ---------------------------------------------------------------------------
+# Polling with a resumable marker
+# ---------------------------------------------------------------------------
+
+
+class TestFetchUpdatesAfterAMarker:
+    async def test_it_says_it_can_be_asked_this_way(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        assert Feature.READ_UPDATES_AFTER in platform.features
+        assert isinstance(platform, CanReadUpdatesAfter)
+
+    async def test_no_marker_returns_the_latest_page_oldest_first(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        items = [
+            notification("like", at="2026-08-31T12:00:00Z"),
+            notification("reply", at="2026-08-31T11:00:00Z"),
+        ]
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.notification.listNotifications").mock(
+                return_value=httpx.Response(200, json={"notifications": items})
+            )
+            batch = await platform.fetch_updates_after(account, None)
+
+        assert route.calls.call_count == 1
+        assert [update.kind_name for update in batch.updates] == [
+            "comment_created",
+            "reaction_added",
+        ]
+        assert batch.more is False
+        assert batch.marker == "2026-08-31T12:00:00Z::at://did:plc:bob/x/like"
+
+    async def test_a_marker_found_on_the_first_page_stops_pagination(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        items = [
+            notification("like", at="2026-08-31T14:00:00Z"),
+            notification("repost", at="2026-08-31T13:00:00Z"),
+            notification("reply", at="2026-08-31T12:00:00Z"),
+        ]
+        marker = "2026-08-31T12:00:00Z::at://did:plc:bob/x/reply"
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.notification.listNotifications").mock(
+                return_value=httpx.Response(200, json={"notifications": items})
+            )
+            batch = await platform.fetch_updates_after(account, marker)
+
+        assert route.calls.call_count == 1
+        assert [update.kind_name for update in batch.updates] == [
+            "repost_added",
+            "reaction_added",
+        ]
+        assert batch.marker == "2026-08-31T14:00:00Z::at://did:plc:bob/x/like"
+        assert batch.more is False
+
+    async def test_it_pages_back_until_it_finds_the_marker(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        page_one = [notification("like", at="2026-08-31T14:00:00Z")]
+        page_two = [notification("reply", at="2026-08-31T10:00:00Z")]
+        marker = "2026-08-31T10:00:00Z::at://did:plc:bob/x/reply"
+        calls = {"count": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return httpx.Response(
+                    200,
+                    json={"notifications": page_one, "cursor": "page-two"},
+                )
+            return httpx.Response(200, json={"notifications": page_two})
+
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.notification.listNotifications").mock(
+                side_effect=handler
+            )
+            batch = await platform.fetch_updates_after(account, marker)
+
+        assert route.calls.call_count == 2
+        assert route.calls[1].request.url.params["cursor"] == "page-two"
+        assert [update.kind_name for update in batch.updates] == ["reaction_added"]
+        assert batch.marker == "2026-08-31T14:00:00Z::at://did:plc:bob/x/like"
+        assert batch.more is False
+
+    async def test_running_out_of_pages_before_the_marker_still_answers(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        page_one = [notification("like", at="2026-08-31T14:00:00Z")]
+        marker = "2020-01-01T00:00:00Z::at://did:plc:bob/x/long-gone"
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.notification.listNotifications").mock(
+                return_value=httpx.Response(200, json={"notifications": page_one})
+            )
+            batch = await platform.fetch_updates_after(account, marker)
+
+        assert route.calls.call_count == 1
+        assert batch.more is False
+        assert [update.kind_name for update in batch.updates] == ["reaction_added"]
+
+    async def test_a_marker_that_never_turns_up_hits_the_page_cap(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            page = int(request.url.params.get("cursor", "0"))
+            return httpx.Response(
+                200,
+                json={
+                    "notifications": [
+                        notification("like", at=f"2026-08-31T{10 + page:02d}:00:00Z")
+                    ],
+                    "cursor": str(page + 1),
+                },
+            )
+
+        marker = "2000-01-01T00:00:00Z::at://never/found"
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.notification.listNotifications").mock(
+                side_effect=handler
+            )
+            batch = await platform.fetch_updates_after(account, marker)
+
+        assert route.calls.call_count == bluesky_module._MAX_MARKER_PAGES
+        assert batch.more is True
+
+    async def test_a_malformed_marker_raises_instead_of_starting_over(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        # Treating this like None would silently restart from the latest
+        # page and drop whatever came after it - the opposite of safe.
+        with respx.mock(base_url=XRPC, assert_all_called=False) as network:
+            route = network.get("/app.bsky.notification.listNotifications")
+
+            with pytest.raises(ConfigError, match="None"):
+                await platform.fetch_updates_after(account, "not-a-real-marker")
+
+        assert route.call_count == 0
+
+    async def test_the_marker_stays_put_when_nothing_new_is_found(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        marker = "2026-09-01T00:00:00Z::at://did:plc:bob/x/like"
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.notification.listNotifications").mock(
+                return_value=httpx.Response(200, json={"notifications": []})
+            )
+            batch = await platform.fetch_updates_after(account, marker)
+
+        assert batch.updates == ()
+        assert batch.marker == marker
+        assert batch.more is False
+
+    async def test_a_limit_is_capped_at_a_hundred(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.notification.listNotifications").mock(
+                return_value=httpx.Response(200, json={"notifications": []})
+            )
+            await platform.fetch_updates_after(account, None, limit=500)
+
+        assert route.calls.last.request.url.params["limit"] == "100"
+
+    async def test_the_page_size_defaults_to_updates_per_check(
+        self, account: Connection
+    ) -> None:
+        platform = BlueskyPlatform(retries=ONCE, updates_per_check=7)
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/app.bsky.notification.listNotifications").mock(
+                return_value=httpx.Response(200, json={"notifications": []})
+            )
+            await platform.fetch_updates_after(account, None)
+
+        assert route.calls.last.request.url.params["limit"] == "7"
+
+
+class TestMarkingAMarkerSeen:
+    async def test_it_sends_the_indexed_at_half_of_the_marker(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.post("/app.bsky.notification.updateSeen").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            await platform.mark_seen(
+                account, "2026-08-31T12:00:00Z::at://did:plc:bob/x/like"
+            )
+
+        assert sent_json(route) == {"seenAt": "2026-08-31T12:00:00Z"}
+
+    async def test_a_marker_it_did_not_write_raises_instead_of_being_sent(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC, assert_all_called=False) as network:
+            route = network.post("/app.bsky.notification.updateSeen")
+
+            with pytest.raises(ConfigError, match="None"):
+                await platform.mark_seen(account, "some-other-marker")
+
+        assert route.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Direct messages
+# ---------------------------------------------------------------------------
+
+
+class TestDirectMessages:
+    async def test_it_says_it_can_message_and_start_conversations(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        assert Feature.MESSAGES in platform.features
+        assert isinstance(platform, CanMessage)
+        assert Feature.START_CONVERSATIONS in platform.features
+        assert isinstance(platform, CanStartConversations)
+
+    async def test_every_chat_call_carries_the_proxy_header(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/chat.bsky.convo.listConvos").mock(
+                return_value=httpx.Response(200, json=fixture("chat_list_convos"))
+            )
+            await platform.read_conversations(account)
+
+        assert (
+            route.calls.last.request.headers["atproto-proxy"]
+            == "did:web:api.bsky.chat#bsky_chat"
+        )
+
+    async def test_it_lists_conversations(self, platform: BlueskyPlatform) -> None:
+        account = merchant_account()
+        raw = fixture("chat_list_convos")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.listConvos").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            page = await platform.read_conversations(account)
+
+        assert len(page.items) == 2
+        assert page.next == raw["cursor"]
+        first = page.items[0]
+        assert first.id == raw["convos"][0]["id"]
+        assert len(first.people) == 1
+        assert first.people[0].handle == "customerchris.bsky.social"
+        assert first.unread_count == 2
+        assert first.full_history is True
+        assert first.can_reply_until is None
+        assert first.last_message is not None
+        assert first.last_message.text.startswith("Thanks!")
+        assert first.updated_at == first.last_message.sent_at
+
+    async def test_a_deleted_last_message_reads_as_deleted(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        raw = fixture("chat_list_convos")
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.listConvos").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            page = await platform.read_conversations(account)
+
+        second = page.items[1]
+        assert second.last_message is not None
+        assert second.last_message.deleted is True
+        assert second.last_message.text == ""
+        assert second.last_message.is_mine is True
+
+    async def test_it_passes_after_and_limit_through(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/chat.bsky.convo.listConvos").mock(
+                return_value=httpx.Response(200, json={"convos": []})
+            )
+            await platform.read_conversations(account, after="cursor-1", limit=5)
+
+        params = route.calls.last.request.url.params
+        assert params["cursor"] == "cursor-1"
+        assert params["limit"] == "5"
+
+    async def test_no_convos_key_is_an_empty_page(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.listConvos").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            page = await platform.read_conversations(account)
+
+        assert page.items == ()
+        assert page.next is None
+
+    async def test_it_reads_messages_newest_first(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        raw = fixture("chat_get_messages")
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/chat.bsky.convo.getMessages").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            page = await platform.read_messages(account, "eul6tja4znqhx")
+
+        params = route.calls.last.request.url.params
+        assert params["convoId"] == "eul6tja4znqhx"
+        assert page.next == raw["cursor"]
+        assert len(page.items) == 3
+        first, second, third = page.items
+        assert first.sender.handle == "customerchris.bsky.social"
+        assert first.is_mine is False
+        assert first.deleted is False
+        assert second.deleted is True
+        assert second.text == ""
+        assert second.sender.handle == MERCHANT_HANDLE
+        assert second.is_mine is True
+        assert third.sender.handle == "customerchris.bsky.social"
+
+    async def test_it_passes_after_and_limit_through_for_messages(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.get("/chat.bsky.convo.getMessages").mock(
+                return_value=httpx.Response(200, json={"messages": []})
+            )
+            await platform.read_messages(account, "convo-1", after="cursor-1", limit=5)
+
+        params = route.calls.last.request.url.params
+        assert params["cursor"] == "cursor-1"
+        assert params["limit"] == "5"
+
+    async def test_no_related_profiles_falls_back_to_bare_ids_or_the_account(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        raw = copy.deepcopy(fixture("chat_get_messages"))
+        del raw["relatedProfiles"]
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.getMessages").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            page = await platform.read_messages(account, "convo-1")
+
+        assert page.items[0].sender.handle is None
+        assert page.items[0].sender.id == raw["messages"][0]["sender"]["did"]
+        assert page.items[1].sender.handle == MERCHANT_HANDLE
+
+    async def test_a_message_with_no_sent_at_fails_loudly(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        raw = copy.deepcopy(fixture("chat_get_messages"))
+        del raw["messages"][0]["sentAt"]
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.getMessages").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            with pytest.raises(PlatformError, match="sentAt"):
+                await platform.read_messages(account, "convo-1")
+
+    async def test_no_messages_key_is_an_empty_page(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.getMessages").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            page = await platform.read_messages(account, "convo-1")
+
+        assert page.items == ()
+
+    async def test_it_sends_a_plain_message(self, platform: BlueskyPlatform) -> None:
+        account = merchant_account()
+        raw = fixture("chat_send_message")
+        with respx.mock(base_url=XRPC) as network:
+            route = network.post("/chat.bsky.convo.sendMessage").mock(
+                return_value=httpx.Response(200, json=raw)
+            )
+            message = await platform.send_message(account, "convo-1", "hello")
+
+        assert sent_json(route) == {
+            "convoId": "convo-1",
+            "message": {"text": "hello"},
+        }
+        assert message.conversation_id == "convo-1"
+        assert message.text == raw["text"]
+        assert message.is_mine is True
+
+    async def test_a_link_in_the_message_gets_a_facet(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.post("/chat.bsky.convo.sendMessage").mock(
+                return_value=httpx.Response(200, json=fixture("chat_send_message"))
+            )
+            await platform.send_message(account, "convo-1", "see https://example.com")
+
+        facet = sent_json(route)["message"]["facets"][0]
+        assert facet["features"][0]["uri"] == "https://example.com"
+
+    async def test_send_message_refuses_unknown_options(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with (
+            respx.mock(assert_all_called=False),
+            pytest.raises(InvalidPostError),
+        ):
+            await platform.send_message(account, "convo-1", "hi", options={"tag": "x"})
+
+    async def test_mark_read(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = network.post("/chat.bsky.convo.updateRead").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            await platform.mark_read(account, "convo-1")
+
+        assert sent_json(route) == {"convoId": "convo-1"}
+
+    async def test_start_conversation(self, platform: BlueskyPlatform) -> None:
+        account = merchant_account()
+        with respx.mock(base_url=XRPC) as network:
+            get_convo = network.get("/chat.bsky.convo.getConvoForMembers").mock(
+                return_value=httpx.Response(
+                    200, json=fixture("chat_get_convo_for_members")
+                )
+            )
+            send = network.post("/chat.bsky.convo.sendMessage").mock(
+                return_value=httpx.Response(200, json=fixture("chat_send_message"))
+            )
+            message = await platform.start_conversation(
+                account, ["did:plc:d2yalmapuaocmlqbfzwwl33y"], "hi there"
+            )
+
+        assert get_convo.calls.last.request.url.params.get_list("members") == [
+            "did:plc:d2yalmapuaocmlqbfzwwl33y"
+        ]
+        assert sent_json(send)["convoId"] == "yuf7t6awrceda"
+        assert sent_json(send)["message"]["text"] == "hi there"
+        assert message.conversation_id == "yuf7t6awrceda"
+
+    async def test_starting_a_conversation_with_a_link_marks_it_up(
+        self, platform: BlueskyPlatform
+    ) -> None:
+        account = merchant_account()
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.getConvoForMembers").mock(
+                return_value=httpx.Response(
+                    200, json=fixture("chat_get_convo_for_members")
+                )
+            )
+            send = network.post("/chat.bsky.convo.sendMessage").mock(
+                return_value=httpx.Response(200, json=fixture("chat_send_message"))
+            )
+            await platform.start_conversation(
+                account,
+                ["did:plc:d2yalmapuaocmlqbfzwwl33y"],
+                "see https://example.com",
+            )
+
+        facet = sent_json(send)["message"]["facets"][0]
+        assert facet["features"][0]["uri"] == "https://example.com"
+
+    async def test_start_conversation_without_a_convo_in_the_reply(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.getConvoForMembers").mock(
+                return_value=httpx.Response(200, json={})
+            )
+            with pytest.raises(PlatformError, match="conversation"):
+                await platform.start_conversation(account, ["did:plc:x"], "hi")
+
+    async def test_a_missing_dm_permission_is_a_clear_error(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/chat.bsky.convo.listConvos").mock(
+                return_value=httpx.Response(
+                    400,
+                    json={"error": "InvalidToken", "message": "Bad token method"},
+                )
+            )
+            with pytest.raises(MissingPermissionError, match="direct messages"):
+                await platform.read_conversations(account)
+
+    async def test_an_invalid_token_on_a_non_chat_call_is_still_an_auth_error(
+        self, platform: BlueskyPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.feed.getPosts").mock(
+                return_value=httpx.Response(
+                    400,
+                    json={"error": "InvalidToken", "message": "Bad token method"},
+                )
+            )
+            with pytest.raises(AuthError):
+                await platform.read_post(account, "at://x/y/z")
+
+
+# ---------------------------------------------------------------------------
+# Private helpers, tested directly for the edge cases fixtures do not carry
+# ---------------------------------------------------------------------------
+
+
+class TestAttachmentsFromEmbeds:
+    def test_no_embed_is_no_attachments(self) -> None:
+        assert bluesky_module._attachments_from(None) == ()
+        assert bluesky_module._attachments_from("not a dict") == ()
+
+    def test_an_unrecognised_embed_kind_is_no_attachments(self) -> None:
+        assert (
+            bluesky_module._attachments_from({"$type": "app.bsky.embed.record#view"})
+            == ()
+        )
+
+    def test_images_with_no_images_list(self) -> None:
+        assert (
+            bluesky_module._attachments_from({"$type": "app.bsky.embed.images#view"})
+            == ()
+        )
+
+    def test_images_skips_non_dict_entries(self) -> None:
+        found = bluesky_module._attachments_from(
+            {
+                "$type": "app.bsky.embed.images#view",
+                "images": ["nonsense", {"fullsize": "u", "thumb": "t"}],
+            }
+        )
+        assert len(found) == 1
+
+    def test_an_image_with_no_aspect_ratio_or_alt_has_no_size(self) -> None:
+        found = bluesky_module._attachments_from(
+            {
+                "$type": "app.bsky.embed.images#view",
+                "images": [{"fullsize": "u", "thumb": "t"}],
+            }
+        )
+        assert found[0].width is None
+        assert found[0].height is None
+        assert found[0].alt_text is None
+
+    def test_a_video_embed_becomes_a_video_attachment(self) -> None:
+        found = bluesky_module._attachments_from(
+            {
+                "$type": "app.bsky.embed.video#view",
+                "playlist": "https://example.com/video.m3u8",
+                "thumbnail": "https://example.com/thumb.jpg",
+                "alt": "a video",
+                "aspectRatio": {"width": 640, "height": 360},
+            }
+        )
+        assert len(found) == 1
+        assert found[0].kind == "video"
+        assert found[0].url == "https://example.com/video.m3u8"
+        assert found[0].preview_url == "https://example.com/thumb.jpg"
+        assert found[0].alt_text == "a video"
+        assert found[0].width == 640
+        assert found[0].height == 360
+
+    def test_an_external_embed_becomes_a_link_attachment(self) -> None:
+        found = bluesky_module._attachments_from(
+            {
+                "$type": "app.bsky.embed.external#view",
+                "external": {
+                    "uri": "https://example.com",
+                    "title": "Example",
+                    "thumb": "https://example.com/t.jpg",
+                },
+            }
+        )
+        assert found[0].kind == "link"
+        assert found[0].url == "https://example.com"
+        assert found[0].preview_url == "https://example.com/t.jpg"
+        assert found[0].alt_text is None
+
+    def test_an_external_embed_with_no_external_object(self) -> None:
+        found = bluesky_module._attachments_from(
+            {"$type": "app.bsky.embed.external#view"}
+        )
+        assert found == ()
+
+    def test_record_with_media_recurses_into_the_media(self) -> None:
+        found = bluesky_module._attachments_from(
+            {
+                "$type": "app.bsky.embed.recordWithMedia#view",
+                "record": {"record": {"$type": "app.bsky.embed.record#viewRecord"}},
+                "media": {
+                    "$type": "app.bsky.embed.images#view",
+                    "images": [{"fullsize": "u", "thumb": "t"}],
+                },
+            }
+        )
+        assert len(found) == 1
+        assert found[0].kind == "image"
+
+
+class TestLinksFromFacets:
+    def test_no_facets_is_no_links(self) -> None:
+        assert bluesky_module._links_from("hi", None) == ()
+        assert bluesky_module._links_from("hi", "nonsense") == ()
+
+    def test_a_non_dict_facet_is_skipped(self) -> None:
+        assert bluesky_module._links_from("hi", ["nonsense"]) == ()
+
+    def test_a_facet_missing_index_or_features_is_skipped(self) -> None:
+        assert bluesky_module._links_from("hi", [{"index": {}, "features": "no"}]) == ()
+        assert bluesky_module._links_from("hi", [{"index": "no", "features": []}]) == ()
+
+    def test_a_facet_with_non_integer_offsets_is_skipped(self) -> None:
+        facet = {"index": {"byteStart": "0", "byteEnd": 2}, "features": []}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    def test_an_out_of_range_facet_is_skipped(self) -> None:
+        feature = {"$type": "app.bsky.richtext.facet#tag", "tag": "x"}
+        facet = {"index": {"byteStart": 0, "byteEnd": 99}, "features": [feature]}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    def test_a_negative_start_is_skipped(self) -> None:
+        feature = {"$type": "app.bsky.richtext.facet#tag", "tag": "x"}
+        facet = {"index": {"byteStart": -1, "byteEnd": 2}, "features": [feature]}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    def test_a_reversed_facet_is_skipped(self) -> None:
+        feature = {"$type": "app.bsky.richtext.facet#tag", "tag": "x"}
+        facet = {"index": {"byteStart": 2, "byteEnd": 0}, "features": [feature]}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    def test_a_facet_splitting_a_multi_byte_character_is_skipped(self) -> None:
+        # "é" is two bytes in UTF-8 ("café" is 5 bytes); byteStart=4 lands
+        # on its second byte, which is not a character boundary.
+        feature = {"$type": "app.bsky.richtext.facet#tag", "tag": "x"}
+        facet = {"index": {"byteStart": 4, "byteEnd": 5}, "features": [feature]}
+        assert bluesky_module._links_from("café", [facet]) == ()
+
+    def test_a_non_dict_feature_is_skipped(self) -> None:
+        facet = {"index": {"byteStart": 0, "byteEnd": 2}, "features": ["nonsense"]}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    def test_an_unrecognised_feature_type_is_skipped(self) -> None:
+        facet = {
+            "index": {"byteStart": 0, "byteEnd": 2},
+            "features": [{"$type": "app.bsky.richtext.facet#other"}],
+        }
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    @pytest.mark.parametrize(
+        "feature",
+        [
+            {"$type": "app.bsky.richtext.facet#mention"},
+            {"$type": "app.bsky.richtext.facet#link"},
+            {"$type": "app.bsky.richtext.facet#tag"},
+        ],
+    )
+    def test_a_feature_missing_its_own_field_is_skipped(
+        self, feature: dict[str, Any]
+    ) -> None:
+        facet = {"index": {"byteStart": 0, "byteEnd": 2}, "features": [feature]}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+
+class TestMarkerHelpers:
+    def test_a_marker_round_trips(self) -> None:
+        marker = bluesky_module._marker_for(
+            {"indexedAt": "2026-01-01T00:00:00Z", "uri": "at://x"}
+        )
+        assert marker == "2026-01-01T00:00:00Z::at://x"
+        assert bluesky_module._parse_marker(marker) == (
+            "2026-01-01T00:00:00Z",
+            "at://x",
+        )
+
+    def test_a_notification_missing_a_half_makes_no_marker(self) -> None:
+        assert bluesky_module._marker_for({"indexedAt": "2026-01-01T00:00:00Z"}) is None
+        assert bluesky_module._marker_for({"uri": "at://x"}) is None
+
+    @pytest.mark.parametrize("garbage", ["garbage", "::", "only-when::", "::only-uri"])
+    def test_a_marker_this_platform_did_not_write_does_not_parse(
+        self, garbage: str
+    ) -> None:
+        assert bluesky_module._parse_marker(garbage) is None
+
+
+class TestReplyMoment:
+    def test_it_prefers_the_records_own_created_at(self) -> None:
+        view = {
+            "record": {"createdAt": "2026-01-01T00:00:00Z"},
+            "indexedAt": "2026-01-02T00:00:00Z",
+        }
+        assert bluesky_module._reply_moment(view) == datetime(2026, 1, 1, tzinfo=UTC)
+
+    def test_it_falls_back_to_indexed_at_with_no_record(self) -> None:
+        view = {"indexedAt": "2026-01-02T00:00:00Z"}
+        assert bluesky_module._reply_moment(view) == datetime(2026, 1, 2, tzinfo=UTC)
+
+    def test_it_falls_back_to_indexed_at_when_the_record_has_none(self) -> None:
+        view = {"record": {"text": "hi"}, "indexedAt": "2026-01-02T00:00:00Z"}
+        assert bluesky_module._reply_moment(view) == datetime(2026, 1, 2, tzinfo=UTC)
+
+    def test_it_falls_back_to_indexed_at_when_created_at_cannot_be_read(self) -> None:
+        view = {
+            "record": {"createdAt": "not a time"},
+            "indexedAt": "2026-01-02T00:00:00Z",
+        }
+        assert bluesky_module._reply_moment(view) == datetime(2026, 1, 2, tzinfo=UTC)
+
+    def test_none_when_nothing_can_be_read(self) -> None:
+        assert bluesky_module._reply_moment({}) is None
+
+
+class TestPostReplyRefs:
+    def test_no_record_is_no_refs(self) -> None:
+        assert bluesky_module._post_reply_refs(None) == (None, None)
+
+    def test_a_record_with_no_reply_is_no_refs(self) -> None:
+        assert bluesky_module._post_reply_refs({"text": "hi"}) == (None, None)
+
+    def test_a_malformed_reply_reference_is_ignored(self) -> None:
+        record = {"reply": {"parent": "not-an-object", "root": {"uri": 7}}}
+        assert bluesky_module._post_reply_refs(record) == (None, None)
+
+
+class TestViewerLike:
+    def test_no_viewer_means_unknown(self) -> None:
+        assert bluesky_module._viewer_like({}) == (None, None)
+
+    def test_an_empty_viewer_is_not_liked(self) -> None:
+        assert bluesky_module._viewer_like({"viewer": {}}) == (False, None)
+
+    def test_a_liked_viewer_carries_the_like_id(self) -> None:
+        assert bluesky_module._viewer_like({"viewer": {"like": "at://x"}}) == (
+            True,
+            "at://x",
+        )
+
+
+class TestPersonFrom:
+    def test_a_person_with_no_handle_has_no_profile_url(self) -> None:
+        person = bluesky_module._person_from({"did": "did:plc:x"})
+        assert person.handle is None
+        assert person.url is None
+        assert person.display_name is None
+        assert person.avatar_url is None
+
+
+class TestMessageMoment:
+    def test_a_message_with_no_sent_at_says_so(self) -> None:
+        with pytest.raises(PlatformError, match="sentAt"):
+            bluesky_module._message_moment({}, "read a message")
+
+
+class TestProfileLookup:
+    def test_it_finds_a_matching_profile(self) -> None:
+        profiles = [{"did": "did:plc:x", "handle": "x.bsky.social"}]
+        person = bluesky_module._profile_lookup(
+            "did:plc:x", profiles, connection=merchant_account()
+        )
+        assert person.handle == "x.bsky.social"
+
+    def test_it_falls_back_to_the_connections_own_handle(self) -> None:
+        person = bluesky_module._profile_lookup(
+            MERCHANT_DID, [], connection=merchant_account()
+        )
+        assert person.handle == MERCHANT_HANDLE
+        assert person.url == f"https://bsky.app/profile/{MERCHANT_HANDLE}"
+
+    def test_it_falls_back_to_a_bare_id_for_a_stranger(self) -> None:
+        person = bluesky_module._profile_lookup(
+            "did:plc:unknown", [], connection=merchant_account()
+        )
+        assert person.id == "did:plc:unknown"
+        assert person.handle is None
+
+    def test_it_falls_back_to_a_bare_id_when_the_account_has_no_handle_either(
+        self,
+    ) -> None:
+        bare_account = Connection(
+            id="bluesky:did:plc:x",
+            platform="bluesky",
+            host=HOST,
+            account_id="did:plc:x",
+            account_name="@x",
+            token=Token(access_token="a"),
+        )
+        person = bluesky_module._profile_lookup(
+            "did:plc:x", [], connection=bare_account
+        )
+        assert person.handle is None
+
+
+class TestConversationFrom:
+    def test_a_bare_convo_has_nothing_to_show(self) -> None:
+        convo = bluesky_module._conversation_from({}, connection=merchant_account())
+        assert convo.id == ""
+        assert convo.people == ()
+        assert convo.last_message is None
+        assert convo.updated_at is None
+        assert convo.unread_count is None
+
+
+class TestMessageFrom:
+    def test_a_message_with_no_sender_falls_back_to_a_bare_person(self) -> None:
+        raw = {"id": "m1", "text": "hi", "sentAt": "2026-01-01T00:00:00Z"}
+        message = bluesky_module._message_from(
+            raw, conversation_id="c1", profiles=(), connection=merchant_account()
+        )
+        assert message.sender.id == ""
+        assert message.sender.handle is None
 
 
 class TestBlueskyBehavesLikeTheOthers(PlatformChecks):

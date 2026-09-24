@@ -387,6 +387,44 @@ class TestRetryAfter:
     def test_no_header_means_the_network_did_not_say(self) -> None:
         assert retry_after_seconds(httpx.Response(429)) is None
 
+    def test_mastodon_s_reset_timestamp_is_read_when_retry_after_is_absent(
+        self,
+    ) -> None:
+        # Mastodon does not send Retry-After on its own rate limit replies,
+        # only X-RateLimit-Reset, as an ISO-8601 timestamp.
+        reset_at = NOW + timedelta(seconds=90)
+        response = httpx.Response(
+            429, headers={"X-RateLimit-Reset": reset_at.isoformat()}
+        )
+
+        assert retry_after_seconds(response, now=NOW) == 90.0
+
+    def test_bluesky_s_reset_time_is_read_when_retry_after_is_absent(self) -> None:
+        # Bluesky sends RateLimit-Reset as a unix time in seconds.
+        reset_at = NOW + timedelta(seconds=30)
+        response = httpx.Response(
+            429, headers={"RateLimit-Reset": str(int(reset_at.timestamp()))}
+        )
+
+        assert retry_after_seconds(response, now=NOW) == 30.0
+
+    def test_retry_after_wins_when_both_are_present(self) -> None:
+        response = httpx.Response(
+            429,
+            headers={"Retry-After": "5", "X-RateLimit-Reset": NOW.isoformat()},
+        )
+
+        assert retry_after_seconds(response, now=NOW) == 5.0
+
+    def test_a_reset_time_already_gone_by_means_no_wait(self) -> None:
+        past = NOW - timedelta(seconds=10)
+        response = httpx.Response(429, headers={"X-RateLimit-Reset": past.isoformat()})
+
+        assert retry_after_seconds(response, now=NOW) == 0.0
+
+    def test_neither_header_present_means_the_network_did_not_say(self) -> None:
+        assert retry_after_seconds(httpx.Response(429)) is None
+
 
 class TestErrorMapping:
     @pytest.mark.parametrize(

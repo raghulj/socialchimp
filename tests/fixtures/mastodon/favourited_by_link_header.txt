@@ -1,0 +1,1 @@
+<https://social.example/api/v1/statuses/113140123456789012/favourited_by?limit=3&max_id=109612345678900003>; rel="next", <https://social.example/api/v1/statuses/113140123456789012/favourited_by?limit=3&since_id=109612345678900005>; rel="prev"

@@ -1,0 +1,62 @@
+{
+  "cursor": "zph3ypr75qeal",
+  "messages": [
+    {
+      "$type": "chat.bsky.convo.defs#messageView",
+      "id": "l6jtqacpejgzo",
+      "rev": "q3bptbzdbpy7a",
+      "text": "Thanks! Is the wide-body kit in stock? 😊 https://fridgedoor.example/inventory",
+      "facets": [
+        {
+          "index": {
+            "byteStart": 44,
+            "byteEnd": 80
+          },
+          "features": [
+            {
+              "$type": "app.bsky.richtext.facet#link",
+              "uri": "https://fridgedoor.example/inventory"
+            }
+          ]
+        }
+      ],
+      "sender": {
+        "did": "did:plc:odnwakhejihowygnkxtcrk2s"
+      },
+      "sentAt": "2026-09-24T08:15:00.000Z"
+    },
+    {
+      "$type": "chat.bsky.convo.defs#deletedMessageView",
+      "id": "xjzp625cgbfaq",
+      "rev": "4n4xaauamsa7o",
+      "sender": {
+        "did": "did:plc:dc7hcchu6gliiknwqdeffydi"
+      },
+      "sentAt": "2026-09-24T08:12:00.000Z"
+    },
+    {
+      "$type": "chat.bsky.convo.defs#messageView",
+      "id": "a4mli72rq435u",
+      "rev": "l6ix4qqaddvw2",
+      "text": "Hey, do you carry the wide-body door gasket kit?",
+      "sender": {
+        "did": "did:plc:odnwakhejihowygnkxtcrk2s"
+      },
+      "sentAt": "2026-09-24T08:10:00.000Z"
+    }
+  ],
+  "relatedProfiles": [
+    {
+      "did": "did:plc:odnwakhejihowygnkxtcrk2s",
+      "handle": "customerchris.bsky.social",
+      "displayName": "Chris",
+      "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:odnwakhejihowygnkxtcrk2s/bafkreigz672bzkftlm2t53r2gd6kdzduuofwfnrfosabtlo3bwwk5zwcvn@jpeg"
+    },
+    {
+      "did": "did:plc:dc7hcchu6gliiknwqdeffydi",
+      "handle": "fridgedoor.bsky.social",
+      "displayName": "Fridge Door Parts",
+      "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreidcu3anamzhvq64lgv7pqm7g3xtn46dbxdp5b4fmriyijr6bu7lda@jpeg"
+    }
+  ]
+}

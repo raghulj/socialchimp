@@ -3,22 +3,28 @@
 What each network can do, what it needs from you before it will work, and the
 things about it that surprise people.
 
-| Network | Ready | Register the app | Post text | Pictures | Video | Schedule | Push updates |
-|---|---|---|---|---|---|---|---|
-| Mastodon | yes | automatic | yes | yes | yes | yes | on a timer |
-| Bluesky | yes | not needed | yes | yes | no | no | on a timer |
-| Facebook Pages | yes | by hand, reviewed | yes | yes | small only | yes | yes |
-| YouTube | yes | by hand, reviewed | **no** | no | yes | yes | on a timer |
-| Instagram | yes | by hand, **its own app id** | **no** | yes | yes | no | yes |
-| TikTok | yes | by hand, audited | **no** | no | yes | no | yes |
-| TikTok Business | yes | by hand, **its own app, plus Business Center** | **no posting at all** | no | no | no | on a timer |
-| Threads | yes | by hand, **its own app id** | yes | yes | yes | no | yes |
-| X | yes | by hand, **paid plan** | yes | yes | yes | no | on a timer |
-| Pinterest | yes | by hand, reviewed | **no** | yes | yes | no | **no** |
-| Google Business Profile | yes | by hand, **plus a separate API access approval** | yes | yes | **no** | **no** | yes |
+| Network | Ready | Register the app | Post text | Pictures | Video | Schedule | Push updates | Social inbox |
+|---|---|---|---|---|---|---|---|---|
+| Mastodon | yes | automatic | yes | yes | yes | yes | on a timer | yes |
+| Bluesky | yes | not needed | yes | yes | no | no | on a timer | yes |
+| Facebook Pages | yes | by hand, reviewed | yes | yes | small only | yes | yes | **no** |
+| YouTube | yes | by hand, reviewed | **no** | no | yes | yes | on a timer | **no** |
+| Instagram | yes | by hand, **its own app id** | **no** | yes | yes | no | yes | **no** |
+| TikTok | yes | by hand, audited | **no** | no | yes | no | yes | **no** |
+| TikTok Business | yes | by hand, **its own app, plus Business Center** | **no posting at all** | no | no | no | on a timer | **no** |
+| Threads | yes | by hand, **its own app id** | yes | yes | yes | no | yes | **no** |
+| X | yes | by hand, **paid plan** | yes | yes | yes | no | on a timer | **no** |
+| Pinterest | yes | by hand, reviewed | **no** | yes | yes | no | **no** | **no** |
+| Google Business Profile | yes | by hand, **plus a separate API access approval** | yes | yes | **no** | **no** | yes | **no** |
 
 "On a timer" means the network has no way to tell us when something happens,
 so socialchimp checks instead. Your code gets the same updates either way.
+
+**Social inbox** is 0.8.0's new surface for reading a post and its thread,
+replying to a comment, likes, polling for updates with a resumable marker,
+and direct messages — see the [social inbox use case](use-cases/social-inbox.md).
+Mastodon and Bluesky have it; everywhere else it is planned but not written
+yet.
 
 ## Alt text
 
@@ -82,6 +88,26 @@ registered on mastodon.social means nothing on fosstodon.org.
 - **The post length is set by whoever runs the server** — 500 by default,
   5,000 on plenty of them. Read it with `await account.limits()` rather than
   assuming.
+- **The social inbox is all here**: `account.read_post`, `account.read_thread`,
+  `account.reply`, `account.like`/`unlike`/`read_likes`,
+  `account.fetch_updates_after`/`mark_seen`, and
+  `account.read_conversations`/`read_messages`/`send_message`/`mark_read`/
+  `start_conversation`. See the [social inbox use case](use-cases/social-inbox.md)
+  for working examples.
+- **A reply to a direct or followers-only status keeps that visibility.**
+  Otherwise nothing is sent, so the account's own default applies rather than
+  socialchimp forcing `public`.
+- **`Like.liked_at` is always `None`.** Mastodon does not say when a
+  favourite happened, only who made it.
+- **Direct messages are only part of the history.** Mastodon has no "every
+  message in this conversation" call, so `read_messages` reads the `/context`
+  of the conversation's last status and keeps what it finds —
+  `Conversation.full_history` is `False` to say so, and there is no further
+  page to ask for.
+- **`push` is now in the default scopes**, ready for Web Push in a later
+  release. An account connected before 0.8.0 needs to reconnect before that
+  lands; posting, replying and reading all keep working with "read write"
+  alone.
 
 ## Bluesky
 
@@ -108,6 +134,24 @@ you to a portal that does not exist.
   than one process, give socialchimp a shared lock (see
   [getting started](getting-started.md#running-more-than-one-process)).
 - No video yet, no scheduling.
+- **The social inbox is all here**: `account.read_post`, `account.read_thread`,
+  `account.reply`, `account.like`/`unlike`/`read_likes`,
+  `account.fetch_updates_after`/`mark_seen`, and
+  `account.read_conversations`/`read_messages`/`send_message`/`mark_read`/
+  `start_conversation`. See the [social inbox use case](use-cases/social-inbox.md)
+  for working examples.
+- **Direct messages need an app password with DM access.** Bluesky calls this
+  "Allow access to your direct messages" at the point you make the app
+  password, and it cannot be turned on for one after the fact — a new app
+  password has to be made with the box ticked. Without it every DM call
+  raises `MissingPermissionError(needs="direct messages")`.
+- **A quote's `about_post_id` is the quoted post.** A quote otherwise arrives
+  as `UpdateKind.MENTION` — quoting is not replying, so it is folded into the
+  same "somebody is talking about you" shape mentions already have, rather
+  than inventing a kind of its own for one Bluesky word nothing else uses.
+- **A marker `fetch_updates_after` or `mark_seen` did not write raises
+  `ConfigError`.** Resuming from a marker that means nothing could skip
+  updates, so pass `None` to start afresh instead of guessing at one.
 
 ## Facebook Pages
 

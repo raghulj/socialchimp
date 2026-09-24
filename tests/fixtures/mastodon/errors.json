@@ -1,0 +1,55 @@
+{
+  "404_record_not_found": {
+    "description": "GET /api/v1/statuses/:id (or any single-resource read) for a status that has been deleted, never existed, or belongs to an account that has blocked the caller — Mastodon answers the same way in all three cases so a blocked caller cannot tell which one happened.",
+    "status": 404,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "error": "Record not found"
+    }
+  },
+  "403_not_permitted": {
+    "description": "POST /api/v1/statuses/:id/favourite for a status whose author the caller has blocked. StatusPolicy#favourite? is show? && !blocking_author?, and show? is still true (the caller blocked them, not the other way round), so this fails the policy check rather than the earlier not_found lookup and is never caught locally, so it reaches the app-wide handler.",
+    "status": 403,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "error": "This action is not allowed"
+    }
+  },
+  "403_insufficient_scope": {
+    "description": "Any write call (e.g. POST /api/v1/statuses/:id/favourite) made with a token that only has the 'read' scope. Doorkeeper raises before the request reaches application code.",
+    "status": 403,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "error": "This action is outside the authorized scopes"
+    }
+  },
+  "422_validation_failed": {
+    "description": "POST /api/v1/statuses with text longer than the server's character limit. ActiveRecord::RecordInvalid's message is 'Validation failed: ' followed by the humanized attribute name and the I18n text from statuses.over_character_limit.",
+    "status": 422,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "error": "Validation failed: Text character limit of 500 exceeded"
+    }
+  },
+  "429_rate_limited": {
+    "description": "Any API call once rack-attack's throttle for that family of endpoints has been used up. X-RateLimit-Reset is an ISO 8601 timestamp (with microseconds) for when the current throttle window ends, not a Unix epoch integer.",
+    "status": 429,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8",
+      "X-RateLimit-Limit": "300",
+      "X-RateLimit-Remaining": "0",
+      "X-RateLimit-Reset": "2026-09-24T15:00:00.000000Z"
+    },
+    "body": {
+      "error": "Too many requests"
+    }
+  }
+}

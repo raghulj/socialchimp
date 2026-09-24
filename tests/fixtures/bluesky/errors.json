@@ -1,0 +1,73 @@
+{
+  "post_thread_not_found": {
+    "description": "app.bsky.feed.getPostThread when the anchor post's record no longer resolves. Thrown as InvalidRequestError, which xrpc-server maps to HTTP 400 -- not 404.",
+    "status": 400,
+    "body": {
+      "error": "NotFound",
+      "message": "Post not found: at://did:plc:g6kyz62htd2yv2koyccjnnpf/app.bsky.feed.post/h5yt7twvdk6b5"
+    }
+  },
+  "blocked_actor": {
+    "description": "app.bsky.feed.getAuthorFeed (and getActorLikes) when the requester has blocked the actor whose feed was asked for.",
+    "status": 400,
+    "body": {
+      "error": "BlockedActor",
+      "message": "Requester has blocked actor: did:plc:2bcz34zy6yiw55lh4itohhka"
+    }
+  },
+  "blocked_by_actor": {
+    "description": "app.bsky.feed.getAuthorFeed (and getActorLikes) when the actor whose feed was asked for has blocked the requester.",
+    "status": 400,
+    "body": {
+      "error": "BlockedByActor",
+      "message": "Requester is blocked by actor: did:plc:2bcz34zy6yiw55lh4itohhka"
+    }
+  },
+  "invalid_token": {
+    "description": "Any XRPC call with a malformed bearer token (bad JWT shape). packages/pds/src/auth-verifier.ts throws this for a token that does not parse as a JWT at all.",
+    "status": 400,
+    "body": {
+      "error": "InvalidToken",
+      "message": "Malformed token"
+    }
+  },
+  "expired_token_pds": {
+    "description": "A request handled directly by the PDS (e.g. com.atproto.repo.* calls) with an access token whose 'exp' has passed. packages/pds/src/auth-verifier.ts: InvalidRequestError('Token has expired', 'ExpiredToken') -> 400.",
+    "status": 400,
+    "body": {
+      "error": "ExpiredToken",
+      "message": "Token has expired"
+    }
+  },
+  "expired_token_appview": {
+    "description": "The same expired-JWT condition, but surfaced by the bsky AppView's own auth verifier (packages/bsky/src/auth-verifier.ts), which throws AuthRequiredError('Token has expired', 'ExpiredToken') -> 401 instead of 400. Which status you see depends on whether the failing call is served by the PDS or proxied through the AppView; socialchimp should treat both as an expired-token AuthError.",
+    "status": 401,
+    "body": {
+      "error": "ExpiredToken",
+      "message": "Token has expired"
+    }
+  },
+  "dm_scope_forbidden": {
+    "description": "Calling any chat.bsky.convo.* (or chat.bsky.actor.*) method with a regular (non-privileged) app password. Regular app passwords carry scope 'com.atproto.appPass'; only a password created with 'Allow this app password to access your direct messages' checked carries 'com.atproto.appPassPrivileged'. chat.bsky.* is in PRIVILEGED_METHODS, so packages/pds/src/pipethrough.ts throws InvalidRequestError('Bad token method', 'InvalidToken') for the non-privileged case, which xrpc-server maps to HTTP 400. This is a different message from the generic 'Bad token scope' thrown by auth-verifier.ts's own scope check -- 'Bad token method' is the one actually raised for this DM-permission case. Source: packages/pds/src/pipethrough.ts (PROTECTED_METHODS / PRIVILEGED_METHODS handling) and packages/pds/tests/app-passwords.test.ts ('restricts privileged app password actions' -> rejects.toThrow('Bad token method')).",
+    "status": 400,
+    "body": {
+      "error": "InvalidToken",
+      "message": "Bad token method"
+    }
+  },
+  "rate_limit_exceeded": {
+    "description": "Any XRPC call once the caller's bucket is exhausted. Headers set by packages/xrpc-server/src/rate-limiter-http.ts.",
+    "status": 429,
+    "headers": {
+      "RateLimit-Limit": "3000",
+      "RateLimit-Remaining": "0",
+      "RateLimit-Reset": "1790612400",
+      "RateLimit-Policy": "3000;w=300",
+      "Retry-After": "120"
+    },
+    "body": {
+      "error": "RateLimitExceeded",
+      "message": "Rate Limit Exceeded"
+    }
+  }
+}

@@ -69,6 +69,55 @@ class TestFeature:
         assert Feature.POST_VIDEO not in supported
 
 
+class TestSocialInboxFeatures:
+    """The flags social inbox added. Each one matches one protocol in
+    `socialchimp.platform`; `tests/test_platform.py` checks that a platform
+    never has the flag without the protocol, or the protocol without the
+    flag."""
+
+    def test_the_new_flags_exist_and_combine_like_the_rest(self) -> None:
+        supported = (
+            Feature.READ_POST
+            | Feature.READ_THREAD
+            | Feature.REPLY_TO_COMMENTS
+            | Feature.LIKE
+            | Feature.READ_LIKES
+            | Feature.READ_UPDATES_AFTER
+            | Feature.MESSAGES
+            | Feature.START_CONVERSATIONS
+        )
+
+        assert Feature.READ_POST in supported
+        assert Feature.READ_THREAD in supported
+        assert Feature.REPLY_TO_COMMENTS in supported
+        assert Feature.LIKE in supported
+        assert Feature.READ_LIKES in supported
+        assert Feature.READ_UPDATES_AFTER in supported
+        assert Feature.MESSAGES in supported
+        assert Feature.START_CONVERSATIONS in supported
+
+    def test_the_new_flags_did_not_change_any_existing_ones(self) -> None:
+        # Feature is a Flag, so its members are powers of two. Appending new
+        # ones at the end must not renumber - and so not silently change the
+        # meaning of - a value already saved somewhere.
+        assert Feature.CREATE_APP.value == 1
+        assert Feature.NEEDS_NO_APP.value == 2
+        assert Feature.POST_TEXT.value == 4
+        assert Feature.POST_IMAGE.value == 8
+        assert Feature.POST_VIDEO.value == 16
+        assert Feature.SCHEDULE.value == 32
+        assert Feature.REPLY.value == 64
+        assert Feature.DELETE_POST.value == 128
+        assert Feature.READ_POSTS.value == 256
+        assert Feature.READ_STATS.value == 512
+        assert Feature.PUSH_UPDATES.value == 1024
+
+    def test_subscribe_updates_is_reserved_and_not_added_yet(self) -> None:
+        # Push delivery ships in a later release, alongside Meta webhooks
+        # and Mastodon Web Push.
+        assert not hasattr(Feature, "SUBSCRIBE_UPDATES")
+
+
 class TestWhichNetworksNeedNoApp:
     """`NEEDS_NO_APP` is a claim about a network, so check it network by network."""
 
