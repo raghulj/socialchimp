@@ -1,8 +1,10 @@
-# socialchimp: Social Inbox contract (v1.2, APPROVED by the owner 2026-09-24)
+# socialchimp: Social Inbox contract (v1.3, APPROVED by the owner 2026-09-24)
 
 v1.1 change: `account.features` is an async method, not a property (see section 8).
 v1.2 clarifications, found in review (the surface is unchanged): Mastodon reply visibility, direct messages checked
 first when classifying updates, and the `status:` conversation id fallback.
+v1.3 (from review): `PostResult.cid` comes after `raw`; an unknown marker raises `ConfigError`; a Bluesky quote's
+`about_post_id` is the quoted post (from `reasonSubject`); a repeat delivery is possible, a lost update is not.
 
 Owner decisions: (1) Mastodon polls in 0.8.0 and push comes later, built together with Meta webhooks;
 `push` is added to Mastodon DEFAULT_SCOPES now so new connections are ready.
@@ -112,7 +114,7 @@ class PostDetails:
     raw: RawData
 ```
 
-`PostResult` (existing) gains one optional field: `cid: str | None = None`.
+`PostResult` (existing) gains one optional field, `cid: str | None = None`, placed AFTER `raw`.
 Bluesky fills it. Adding it does not break existing callers.
 
 ---------------------------------------------------------------------------
@@ -256,8 +258,9 @@ New `UpdateKind`s: `REPOST_ADDED`, `MESSAGE_RECEIVED`, `FOLLOWED`.
   - Otherwise, a reply comes out as `COMMENT_CREATED` when `status.in_reply_to_account_id` is the connected
     account. `about_post_id` = `in_reply_to_id`.
   - Anything else is `MENTION`.
-- Bluesky: `reasonSubject` becomes `about_post_id` for like/repost. For reply/mention/quote, the
-  reply's `record.reply.parent.uri` becomes `about_post_id` and `record.reply.root.uri` becomes `thread_root_id`.
+- Bluesky: `reasonSubject` becomes `about_post_id` for like, repost and quote (a quote comes through as
+  `MENTION`). For reply and mention, the post's `record.reply.parent.uri` becomes `about_post_id` and
+  `record.reply.root.uri` becomes `thread_root_id` when the post is a reply.
 - Mastodon `thread_root_id` stays None unless asked for (it needs a `/context` call).
 
 ```python
@@ -282,6 +285,10 @@ class UpdateBatch:
     more: bool  # True = more new updates waiting; call again straight away
 ```
 - `marker=None` on first use returns the latest page, which sets a starting point.
+- A marker string the platform did not make raises `ConfigError` (`fetch_updates_after` and
+  `mark_seen`). The library never silently starts over, because that would drop updates. Pass None to start afresh.
+- Updates can occasionally come back twice (Bluesky: same `indexedAt` as the marker). They are never lost.
+  Dedupe by `Update.id`.
 - Mastodon: marker = newest notification id. Fetched with `min_id=` (pages forward with no
   gaps). `mark_seen` → `POST /api/v1/markers` (notifications).
 - Bluesky: the network's cursor only pages backwards, so marker = newest `indexedAt`
