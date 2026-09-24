@@ -2155,6 +2155,32 @@ class TestUpdateEnrichment:
         assert update.kind is UpdateKind.MENTION
         assert update.kind_name == "mention"
         assert update.post_id == raw["uri"]
+        # A quote is not a reply: the post it concerns is the one it
+        # quotes, in reasonSubject, not record.reply - which a quote does
+        # not have.
+        assert update.about_post_id == raw["reasonSubject"]
+        assert update.thread_root_id is None
+
+    def test_a_quote_that_is_also_a_reply_keeps_its_own_thread_root(self) -> None:
+        # Someone can quote one post while replying to another. The quoted
+        # post still names about_post_id; the reply's own root is where
+        # thread_root_id comes from.
+        raw = notifications_by_reason()["quote"]
+        raw = {
+            **raw,
+            "record": {
+                **raw["record"],
+                "reply": {
+                    "parent": {"uri": "at://did:plc:bob/x/parent"},
+                    "root": {"uri": "at://did:plc:bob/x/root"},
+                },
+            },
+        }
+        update = bluesky_module._update_from(raw, connection=merchant_account())
+
+        assert update is not None
+        assert update.about_post_id == raw["reasonSubject"]
+        assert update.thread_root_id == "at://did:plc:bob/x/root"
 
     def test_a_follow_names_nothing_about_a_post(self) -> None:
         raw = notifications_by_reason()["follow"]

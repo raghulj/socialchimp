@@ -257,9 +257,14 @@ _OUR_WORD_FOR: Final = {
 # posts directly - the post that was liked or reposted.
 _SUBJECT_REASONS: Final = frozenset({"like", "repost"})
 
-# Reasons that are themselves a post, whose own `record.reply` (when there is
-# one) says what it concerns. A plain mention rarely has one; a reply always
-# does; a quote never does, because quoting is not replying.
+# Reasons that are themselves a post - the post named by `uri` is the
+# notification, not the thing it concerns. A reply and a mention read what
+# they concern from their own `record.reply` (when there is one - a plain
+# mention rarely has one, a reply always does). A quote is handled on its
+# own where this is used below: what it concerns is the post it quotes, in
+# `reasonSubject`, never `record.reply` - quoting is not replying - though a
+# quote can also be a reply to something else, which is where its own
+# `thread_root_id` comes from.
 _ABOUT_POST_REASONS: Final = frozenset({"reply", "mention", "quote"})
 
 # Names Bluesky gives a 400 when the trouble is really the sign-in. It
@@ -1485,7 +1490,11 @@ def _update_from(raw: RawData, *, connection: Connection) -> Update | None:
         about_post_id = _text_or_none(raw.get("reasonSubject"))
     elif reason in _ABOUT_POST_REASONS:
         post_id = uri or None
-        about_post_id, thread_root_id = _post_reply_refs(raw.get("record"))
+        if reason == "quote":
+            about_post_id = _text_or_none(raw.get("reasonSubject"))
+            _, thread_root_id = _post_reply_refs(raw.get("record"))
+        else:
+            about_post_id, thread_root_id = _post_reply_refs(raw.get("record"))
 
     return Update.from_network(
         update_id=uri,
