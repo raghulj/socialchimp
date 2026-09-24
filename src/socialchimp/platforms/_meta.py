@@ -86,7 +86,7 @@ from socialchimp.errors import (
 )
 from socialchimp.events import verify_hmac_sha256
 from socialchimp.http import HttpClient, error_from_response, paginate, read_body
-from socialchimp.models import RawData, Token
+from socialchimp.models import RawData, Token, picture_url
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -118,6 +118,7 @@ __all__ = [
     "first_update",
     "long_lived_token",
     "meta_errors",
+    "meta_picture_url",
     "page_by_id",
     "pages_of",
     "quota_left",
@@ -166,12 +167,13 @@ SWAP_PATH: Final = "/oauth/access_token"
 MY_PAGES_PATH: Final = "/me/accounts"
 """Where the pages a person manages are listed, each with its own token."""
 
-PAGE_FIELDS: Final = "id,name,category,access_token"
+PAGE_FIELDS: Final = "id,name,category,access_token,picture{url}"
 """What to ask for about a page.
 
 Meta hands back an id and a name unless you ask for more, and the token is
-the part we actually need. Instagram asks for more than this and passes its
-own list in.
+the part we actually need. `picture{url}` is the page's own picture, read
+with `meta_picture_url`. Instagram asks for more than this and passes its own
+list in.
 """
 
 PAGES_PER_REQUEST: Final = 100
@@ -1091,6 +1093,8 @@ class MetaPage:
         token: The page's own token. Not the person's - posting as a page
             needs the page's. Kept out of `repr` so it does not reach a log.
         category: What kind of page Meta says it is, such as `"Bakery"`.
+        avatar_url: The page's own picture, or `None` where it has none set
+            or Meta left the field out.
         raw: Meta's untouched entry, for anything we did not model.
     """
 
@@ -1098,7 +1102,30 @@ class MetaPage:
     name: str
     token: str = field(repr=False)
     category: str | None = None
+    avatar_url: str | None = None
     raw: RawData = field(default_factory=dict, repr=False)
+
+
+def meta_picture_url(raw: RawData, *, key: str = "picture") -> str | None:
+    """Read a picture address out of Meta's nested picture object.
+
+    Asking for a field as `picture{url}` gets back `{"picture": {"data":
+    {"url": "..."}}}`, and any part of that shape can be missing - a page
+    with no picture, an older field list, an app that never asked for it.
+    None of that is an error; it just means there is nothing to show.
+
+    Args:
+        raw: The reply to read it out of.
+        key: Which field holds the picture object. `"picture"` is what a
+            Facebook page calls it, and nothing else in Meta uses this shape
+            today.
+
+    Returns:
+        A clean web address, or `None` when there is nothing usable.
+    """
+    picture = raw.get(key)
+    data = picture.get("data") if isinstance(picture, dict) else None
+    return picture_url(data.get("url")) if isinstance(data, dict) else None
 
 
 def _page_from(raw: RawData) -> MetaPage | None:
@@ -1128,6 +1155,7 @@ def _page_from(raw: RawData) -> MetaPage | None:
         name=name if isinstance(name, str) and name else page_id,
         token=token,
         category=category if isinstance(category, str) and category else None,
+        avatar_url=meta_picture_url(raw),
         raw=raw,
     )
 

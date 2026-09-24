@@ -99,7 +99,7 @@ from socialchimp.storage import (
 )
 from socialchimp.tokens import TokenManager
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "Account",

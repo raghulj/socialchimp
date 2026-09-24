@@ -117,6 +117,7 @@ from socialchimp.errors import (
     NotFoundError,
     PlatformError,
     PostGoneError,
+    SocialChimpError,
     TokenExpiredError,
 )
 from socialchimp.events import Update, UpdateBatch
@@ -130,6 +131,7 @@ from socialchimp.features import (
 )
 from socialchimp.http import HttpClient, error_from_response, read_body
 from socialchimp.models import (
+    AccountProfile,
     Attachment,
     Connection,
     Conversation,
@@ -149,13 +151,13 @@ from socialchimp.models import (
     Thread,
     Token,
     Unavailable,
+    picture_url,
 )
 from socialchimp.platform import AskForDetails, Finished, LoginField, LoginRequest
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from socialchimp.errors import SocialChimpError
     from socialchimp.http import Retries
     from socialchimp.models import AppCredentials
 
@@ -297,6 +299,7 @@ _CHAT_PROXY_TARGET: Final = "did:web:api.bsky.chat#bsky_chat"
 # after the definition each one follows.
 _CREATE_SESSION: Final = "/com.atproto.server.createSession"
 _REFRESH_SESSION: Final = "/com.atproto.server.refreshSession"
+_GET_PROFILE: Final = "/app.bsky.actor.getProfile"
 _CREATE_RECORD: Final = "/com.atproto.repo.createRecord"
 _DELETE_RECORD: Final = "/com.atproto.repo.deleteRecord"
 _UPLOAD_BLOB: Final = "/com.atproto.repo.uploadBlob"
@@ -2005,6 +2008,24 @@ class BlueskyPlatform:
 
         did = _text(reply, "did", "sign someone in")
         handle = _text(reply, "handle", "sign someone in")
+        token = _token_from(reply, "sign someone in")
+
+        # createSession says nothing about a picture, so the smallest extra
+        # request that does - getProfile, for the account that just signed
+        # in - is made here rather than leaving avatar_url unset from the
+        # start. The session it is about to hand back is already good, so a
+        # hiccup on this extra request - a 500, a garbled reply, anything
+        # socialchimp itself would raise - must not undo a sign-in that
+        # already worked. `read_profile` is where a broken reply is still
+        # worth raising over.
+        avatar: str | None = None
+        try:
+            async with self._client(server, token.access_token) as http:
+                profile = await http.json("GET", _GET_PROFILE, params={"actor": did})
+        except SocialChimpError:
+            pass
+        else:
+            avatar = picture_url(profile.get("avatar"))
 
         return Finished(
             connection=Connection(
@@ -2015,7 +2036,7 @@ class BlueskyPlatform:
                 host=server,
                 account_id=did,
                 account_name=f"@{handle}",
-                token=_token_from(reply, "sign someone in"),
+                token=token,
                 # An app password is all or nothing - there is nothing
                 # narrower to ask for, so there is nothing to record here.
                 scopes=(),
@@ -2023,6 +2044,7 @@ class BlueskyPlatform:
                     "handle": handle,
                     "profile_url": f"https://bsky.app/profile/{handle}",
                 },
+                avatar_url=avatar,
             )
         )
 
@@ -2084,6 +2106,34 @@ class BlueskyPlatform:
                 ) from refused
 
         return _token_from(reply, "renew a token")
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask Bluesky for this account's current name and picture.
+
+        One request: `app.bsky.actor.getProfile`.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The name, in the same form as `Connection.account_name`, and
+            the picture - or `None` where the account has none set.
+
+        Raises:
+            PlatformError: If Bluesky answered without a `handle`.
+        """
+        async with self._client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            reply = await http.json(
+                "GET", _GET_PROFILE, params={"actor": connection.account_id}
+            )
+
+        handle = _text(reply, "handle", "read this account's profile")
+        return AccountProfile(
+            name=f"@{handle}",
+            avatar_url=picture_url(reply.get("avatar")),
+        )
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
         """Publish a post.

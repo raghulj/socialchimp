@@ -154,6 +154,7 @@ from socialchimp.features import (
 )
 from socialchimp.http import HttpClient
 from socialchimp.models import (
+    AccountProfile,
     Connection,
     Media,
     MediaKind,
@@ -185,6 +186,7 @@ from socialchimp.platforms._meta import (
     first_update,
     long_lived_token,
     meta_errors,
+    meta_picture_url,
     page_by_id,
     pages_of,
     read_edge,
@@ -284,6 +286,13 @@ STATS_FIELDS: Final = (
 `limit(0)` asks for no reactions and no comments themselves, only the count
 that comes alongside them, so this stays one small request however popular
 the post is. `shares` is added by `read_stats` where the id is a post's.
+"""
+
+PROFILE_FIELDS: Final = "name,picture{url}"
+"""What `read_profile` asks Facebook for: a name and a picture, nothing else.
+
+`PAGE_FIELDS` also carries `picture{url}`, but it asks for the category and
+the page's own token as well, which `read_profile` has no use for.
 """
 
 SOONEST_SCHEDULE_SECONDS: Final = 10 * 60
@@ -905,6 +914,11 @@ class FacebookPlatform:
                 # it is the reason `refresh` below has nothing to do.
                 token=Token(access_token=page.token),
                 scopes=request.scopes or DEFAULT_SCOPES,
+                # Read off the same lookup above - `page_by_id` already asks
+                # for `picture{url}` through `PAGE_FIELDS` - so this costs no
+                # extra request. Already a clean address or `None`, courtesy
+                # of `meta_picture_url`.
+                avatar_url=page.avatar_url,
                 extra={
                     "page_id": page.id,
                     "page_name": page.name,
@@ -912,6 +926,45 @@ class FacebookPlatform:
                     "profile_url": f"https://www.facebook.com/{page.id}",
                 },
             )
+        )
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask Facebook for this page's current name and picture.
+
+        One request, to the page's own object - the same one `resume_login`
+        already looks up, but asking for only a name and a picture. Worth
+        calling again later: Facebook's picture address goes stale after a
+        while, which is why it is not something to keep saved forever.
+
+        Args:
+            connection: The page to ask about.
+
+        Returns:
+            The page's name, and its picture if it has one right now.
+
+        Raises:
+            ConfigError: If the connection names no Facebook page.
+            SocialChimpError: If Facebook refuses the question.
+        """
+        page_id = where_to_post(
+            connection,
+            key="page_id",
+            what="Facebook page",
+            platform=PLATFORM_NAME,
+        )
+
+        async with self._graph(connection.token.access_token) as graph:
+            reply = await graph.json(
+                "GET", f"/{page_id}", params={"fields": PROFILE_FIELDS}
+            )
+            self._note(graph)
+
+        name = reply.get("name")
+        return AccountProfile(
+            # A page always has a name, but showing the id is better than
+            # showing nothing if one ever arrives without.
+            name=name if isinstance(name, str) and name else page_id,
+            avatar_url=meta_picture_url(reply),
         )
 
     async def refresh(

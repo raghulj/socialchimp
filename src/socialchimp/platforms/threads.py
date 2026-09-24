@@ -228,6 +228,7 @@ from socialchimp.features import (
 )
 from socialchimp.http import HttpClient
 from socialchimp.models import (
+    AccountProfile,
     Connection,
     MediaKind,
     Post,
@@ -236,6 +237,7 @@ from socialchimp.models import (
     PostStats,
     RawData,
     Token,
+    picture_url,
 )
 from socialchimp.platform import Finished, LoginRequest, SendToNetwork
 from socialchimp.platforms._meta import (
@@ -299,8 +301,15 @@ MAKE_IT_LAST_PATH: Final = "/access_token"
 RENEW_PATH: Final = "/refresh_access_token"
 """Where a sixty-day token gets another sixty days. A GET, and a real one."""
 
-PROFILE_FIELDS: Final = "id,username"
+PROFILE_FIELDS: Final = "id,username,threads_profile_picture_url"
 """What to ask about the person who just signed in."""
+
+ACCOUNT_PROFILE_FIELDS: Final = "username,threads_profile_picture_url"
+"""What `read_profile` asks Threads for: a name and a picture, nothing else.
+
+The account's id is already known by the caller, so unlike `PROFILE_FIELDS`
+this does not ask for `id` again.
+"""
 
 DEFAULT_SCOPES: Final = (
     "threads_basic",
@@ -1411,6 +1420,7 @@ class ThreadsPlatform:
                 account_name=name,
                 token=long,
                 scopes=request.scopes or DEFAULT_SCOPES,
+                avatar_url=picture_url(profile.get("threads_profile_picture_url")),
                 extra={
                     "threads_id": account_id,
                     "username": name,
@@ -1571,6 +1581,43 @@ class ThreadsPlatform:
                 self._note(graph)
 
         return token_from(reply, platform=PLATFORM_NAME, when="renew a token")
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask Threads for this account's current username and picture.
+
+        One request, to the account's own object - the same shape
+        `finish_login` already reads at sign-in, but asking for only a
+        username and a picture.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The account's username, and its picture if it has one right now.
+
+        Raises:
+            ConfigError: If the connection names no Threads account.
+            SocialChimpError: If Threads refuses the question.
+        """
+        account_id = _account_of(connection)
+
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                reply = await graph.json(
+                    "GET",
+                    f"/{account_id}",
+                    params={"fields": ACCOUNT_PROFILE_FIELDS},
+                )
+            finally:
+                self._note(graph)
+
+        username = reply.get("username")
+        return AccountProfile(
+            # An account always has a username, but showing the id is better
+            # than showing nothing if one ever arrives without.
+            name=username if isinstance(username, str) and username else account_id,
+            avatar_url=picture_url(reply.get("threads_profile_picture_url")),
+        )
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
         """Publish a post: build it, wait for it if it needs waiting on, put it out.

@@ -14,6 +14,7 @@ import pytest
 import respx
 
 from socialchimp import (
+    AccountProfile,
     AppCredentials,
     AuthError,
     BlockedError,
@@ -48,6 +49,7 @@ from socialchimp.platform import (
     CanMessage,
     CanReadLikes,
     CanReadPost,
+    CanReadProfile,
     CanReadThread,
     CanReadUpdates,
     CanReadUpdatesAfter,
@@ -157,6 +159,31 @@ def a_session(
     }
 
 
+AVATAR = "https://cdn.bsky.app/img/avatar/ada.jpg"
+
+
+def a_profile(
+    *,
+    did: str = DID,
+    handle: str = HANDLE,
+    **extra: object,
+) -> dict[str, Any]:
+    """What `getProfile` answers with."""
+    return {"did": did, "handle": handle, **extra}
+
+
+def stub_profile(
+    network: respx.Router,
+    *,
+    profile: dict[str, Any] | None = None,
+) -> respx.Route:
+    """Answer "what does this account's profile look like right now?"."""
+    said = profile if profile is not None else a_profile(avatar=AVATAR)
+    return network.get("/app.bsky.actor.getProfile").mock(
+        return_value=httpx.Response(200, json=said)
+    )
+
+
 def an_account(
     *,
     host: str | None = HOST,
@@ -234,10 +261,12 @@ class TestWhatItSaysItCanDo:
         checked: Platform = platform
         deletes: CanDeletePosts = platform
         reads: CanReadUpdates = platform
+        reads_profile: CanReadProfile = platform
 
         assert isinstance(checked, Platform)
         assert isinstance(deletes, CanDeletePosts)
         assert isinstance(reads, CanReadUpdates)
+        assert isinstance(reads_profile, CanReadProfile)
         assert platform.name == "bluesky"
 
     def test_it_lists_the_features_bluesky_really_has(
@@ -388,6 +417,7 @@ class TestSigningInWithNothingStored:
             network.post("/com.atproto.server.createSession").mock(
                 return_value=httpx.Response(200, json=a_session())
             )
+            stub_profile(network)
             step = await sc.finish_login(
                 "bluesky",
                 redirect_uri="unused",
@@ -407,6 +437,7 @@ class TestCreatingASession:
             route = network.post("/com.atproto.server.createSession").mock(
                 return_value=httpx.Response(200, json=a_session())
             )
+            profile_route = stub_profile(network)
 
             step = await platform.finish_login(
                 LoginRequest(redirect_uri="unused"),
@@ -417,6 +448,15 @@ class TestCreatingASession:
             "identifier": HANDLE,
             "password": "abcd-efgh-ijkl-mnop",
         }
+        # The profile is read with the access token this same sign-in
+        # produced, not anything left over from an earlier one.
+        assert (
+            profile_route.calls.last.request.headers["authorization"]
+            == f"Bearer {ACCESS}"
+        )
+        assert dict(profile_route.calls.last.request.url.params) == {
+            "actor": DID,
+        }
         assert isinstance(step, Finished)
         connection = step.connection
         assert connection.platform == "bluesky"
@@ -426,6 +466,78 @@ class TestCreatingASession:
         assert connection.token.access_token == ACCESS
         assert connection.token.refresh_token == REFRESH
         assert connection.extra["handle"] == HANDLE
+        assert connection.avatar_url == AVATAR
+
+    @pytest.mark.parametrize(
+        "avatar",
+        [None, "", 4],
+        ids=["missing", "empty", "not-a-string"],
+    )
+    async def test_a_picture_it_cannot_use_becomes_none(
+        self,
+        platform: BlueskyPlatform,
+        avatar: object,
+    ) -> None:
+        profile = a_profile() if avatar is None else a_profile(avatar=avatar)
+        with respx.mock(base_url=XRPC) as network:
+            network.post("/com.atproto.server.createSession").mock(
+                return_value=httpx.Response(200, json=a_session())
+            )
+            stub_profile(network, profile=profile)
+
+            step = await platform.finish_login(
+                LoginRequest(redirect_uri="unused"),
+                {"handle": HANDLE, "app_password": "pw"},
+            )
+
+        assert step.connection.avatar_url is None
+
+    async def test_a_failed_profile_lookup_does_not_fail_the_sign_in(
+        self,
+        platform: BlueskyPlatform,
+    ) -> None:
+        # The session is already good by the time we ask for a picture, so a
+        # server hiccup on getProfile must not undo a sign-in that already
+        # worked.
+        with respx.mock(base_url=XRPC) as network:
+            network.post("/com.atproto.server.createSession").mock(
+                return_value=httpx.Response(200, json=a_session())
+            )
+            network.get("/app.bsky.actor.getProfile").mock(
+                return_value=httpx.Response(500, json={"error": "InternalServerError"})
+            )
+
+            step = await platform.finish_login(
+                LoginRequest(redirect_uri="unused"),
+                {"handle": HANDLE, "app_password": "pw"},
+            )
+
+        assert isinstance(step, Finished)
+        assert step.connection.account_id == DID
+        assert step.connection.avatar_url is None
+
+    async def test_a_garbled_profile_reply_does_not_fail_the_sign_in_either(
+        self,
+        platform: BlueskyPlatform,
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.post("/com.atproto.server.createSession").mock(
+                return_value=httpx.Response(200, json=a_session())
+            )
+            # A 200 that is not the object getProfile promises - http.json
+            # raises PlatformError for this, same as any other malformed
+            # reply.
+            network.get("/app.bsky.actor.getProfile").mock(
+                return_value=httpx.Response(200, json=["not", "an", "object"])
+            )
+
+            step = await platform.finish_login(
+                LoginRequest(redirect_uri="unused"),
+                {"handle": HANDLE, "app_password": "pw"},
+            )
+
+        assert isinstance(step, Finished)
+        assert step.connection.avatar_url is None
 
     async def test_it_tidies_up_a_handle_somebody_typed_with_an_at_sign(
         self,
@@ -435,6 +547,7 @@ class TestCreatingASession:
             route = network.post("/com.atproto.server.createSession").mock(
                 return_value=httpx.Response(200, json=a_session())
             )
+            stub_profile(network)
 
             await platform.finish_login(
                 LoginRequest(redirect_uri="unused"),
@@ -451,6 +564,7 @@ class TestCreatingASession:
             route = network.post("/com.atproto.server.createSession").mock(
                 return_value=httpx.Response(200, json=a_session())
             )
+            stub_profile(network)
 
             step = await platform.finish_login(
                 LoginRequest(redirect_uri="unused", host=OTHER),
@@ -507,6 +621,7 @@ class TestWhenTheTokenRunsOut:
             network.post("/com.atproto.server.createSession").mock(
                 return_value=httpx.Response(200, json=a_session())
             )
+            stub_profile(network)
 
             step = await platform.finish_login(
                 LoginRequest(redirect_uri="unused"),
@@ -536,6 +651,7 @@ class TestWhenTheTokenRunsOut:
             network.post("/com.atproto.server.createSession").mock(
                 return_value=httpx.Response(200, json=a_session(access=broken))
             )
+            stub_profile(network)
 
             step = await platform.finish_login(
                 LoginRequest(redirect_uri="unused"),
@@ -670,6 +786,62 @@ class TestRenewingAToken:
 
             with pytest.raises(PlatformError, match="refreshJwt"):
                 await platform.refresh(account)
+
+
+# ---------------------------------------------------------------------------
+# Reading an account's own profile back
+# ---------------------------------------------------------------------------
+
+
+class TestReadingProfile:
+    async def test_it_makes_exactly_one_request_and_returns_name_and_avatar(
+        self,
+        platform: BlueskyPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            route = stub_profile(network)
+
+            profile = await platform.read_profile(account)
+
+        assert route.calls.call_count == 1
+        assert dict(route.calls.last.request.url.params) == {"actor": DID}
+        assert (
+            route.calls.last.request.headers["authorization"] == "Bearer access-token"
+        )
+        assert profile == AccountProfile(name=f"@{HANDLE}", avatar_url=AVATAR)
+
+    @pytest.mark.parametrize(
+        "avatar",
+        [None, "", 4],
+        ids=["missing", "empty", "not-a-string"],
+    )
+    async def test_a_picture_it_cannot_use_becomes_none(
+        self,
+        platform: BlueskyPlatform,
+        account: Connection,
+        avatar: object,
+    ) -> None:
+        profile = a_profile() if avatar is None else a_profile(avatar=avatar)
+        with respx.mock(base_url=XRPC) as network:
+            stub_profile(network, profile=profile)
+
+            read = await platform.read_profile(account)
+
+        assert read.avatar_url is None
+
+    async def test_it_says_so_when_the_reply_has_no_handle(
+        self,
+        platform: BlueskyPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=XRPC) as network:
+            network.get("/app.bsky.actor.getProfile").mock(
+                return_value=httpx.Response(200, json={"did": DID})
+            )
+
+            with pytest.raises(PlatformError, match="handle"):
+                await platform.read_profile(account)
 
 
 # ---------------------------------------------------------------------------

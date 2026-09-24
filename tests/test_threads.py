@@ -40,6 +40,7 @@ from socialchimp.platform import (
     CanCheckSignature,
     CanDeletePosts,
     CanModerateComments,
+    CanReadProfile,
     CanReadPushedUpdates,
     CanReadReplies,
     CanReadStats,
@@ -441,6 +442,7 @@ class TestWhatThreadsSaysItCanDo:
         assert isinstance(platform, CanReadUpdates)
         assert isinstance(platform, CanReplyToUpdates)
         assert isinstance(platform, CanModerateComments)
+        assert isinstance(platform, CanReadProfile)
 
     def test_a_sign_in_never_pauses_to_ask_which_account(
         self,
@@ -537,7 +539,12 @@ class TestFinishingASignIn:
             )
             profile = network.get(api("/me")).mock(
                 return_value=httpx.Response(
-                    200, json={"id": USER_ID, "username": USERNAME}
+                    200,
+                    json={
+                        "id": USER_ID,
+                        "username": USERNAME,
+                        "threads_profile_picture_url": PICTURE_URL,
+                    },
                 )
             )
 
@@ -558,11 +565,16 @@ class TestFinishingASignIn:
         assert profile.calls.last.request.headers["Authorization"] == (
             "Bearer long-lived"
         )
+        assert (
+            "threads_profile_picture_url"
+            in profile.calls.last.request.url.params["fields"]
+        )
 
         assert isinstance(step, Finished)
         assert step.connection.id == f"threads:{USER_ID}"
         assert step.connection.account_id == USER_ID
         assert step.connection.account_name == USERNAME
+        assert step.connection.avatar_url == PICTURE_URL
         assert step.connection.token.access_token == "long-lived"
         assert step.connection.token.expires_at == NOW + timedelta(seconds=5_184_000)
         assert step.connection.extra["threads_id"] == USER_ID
@@ -680,6 +692,42 @@ class TestFinishingASignIn:
 
         assert isinstance(step, Finished)
         assert step.connection.account_name == USER_ID
+
+    @pytest.mark.parametrize(
+        "profile",
+        [
+            {"id": USER_ID, "username": USERNAME},
+            {"id": USER_ID, "username": USERNAME, "threads_profile_picture_url": ""},
+            {
+                "id": USER_ID,
+                "username": USERNAME,
+                "threads_profile_picture_url": "not a url",
+            },
+            {"id": USER_ID, "username": USERNAME, "threads_profile_picture_url": 7},
+            {"id": USER_ID, "username": USERNAME, "threads_profile_picture_url": None},
+        ],
+    )
+    async def test_no_usable_picture_leaves_the_avatar_unset(
+        self,
+        platform: ThreadsPlatform,
+        clock: dict[str, datetime],
+        profile: dict[str, Any],
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.post("/oauth/access_token").mock(
+                return_value=httpx.Response(200, json={"access_token": "short-lived"})
+            )
+            network.get("/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "long-lived", "expires_in": 5_184_000}
+                )
+            )
+            network.get(api("/me")).mock(return_value=httpx.Response(200, json=profile))
+
+            step = await platform.finish_login(a_request(), {"code": "the-code"})
+
+        assert isinstance(step, Finished)
+        assert step.connection.avatar_url is None
 
 
 # ---------------------------------------------------------------------------
@@ -841,6 +889,87 @@ class TestRenewingAToken:
             token = await platform.refresh(running, an_app())
 
         assert token.access_token == "renewed"
+
+
+# ---------------------------------------------------------------------------
+# Reading the profile back
+# ---------------------------------------------------------------------------
+
+
+class TestReadingTheProfile:
+    async def test_it_makes_exactly_one_request(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            route = network.get(api(f"/{USER_ID}")).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "username": USERNAME,
+                        "threads_profile_picture_url": PICTURE_URL,
+                    },
+                )
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert route.call_count == 1
+        asked = route.calls.last.request
+        assert asked.headers["Authorization"] == "Bearer long-lived"
+        assert asked.url.params["fields"] == "username,threads_profile_picture_url"
+        assert profile.name == USERNAME
+        assert profile.avatar_url == PICTURE_URL
+
+    async def test_no_picture_gives_no_avatar(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}")).mock(
+                return_value=httpx.Response(200, json={"username": USERNAME})
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
+
+    async def test_a_reply_with_no_username_is_shown_by_its_id(
+        self,
+        platform: ThreadsPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=THREADS_HOST) as network:
+            network.get(api(f"/{USER_ID}")).mock(
+                return_value=httpx.Response(200, json={})
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == USER_ID
+
+    async def test_it_refuses_a_connection_that_names_no_account(
+        self,
+        platform: ThreadsPlatform,
+    ) -> None:
+        nowhere = Connection(
+            id="threads:mystery",
+            platform="threads",
+            host=None,
+            account_id="",
+            account_name="",
+            token=Token(access_token="token"),
+        )
+
+        with (
+            respx.mock(assert_all_called=False) as network,
+            pytest.raises(ConfigError, match="threads_id"),
+        ):
+            await platform.read_profile(nowhere)
+
+        assert not network.calls
 
 
 # ---------------------------------------------------------------------------

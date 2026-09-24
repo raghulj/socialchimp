@@ -199,6 +199,7 @@ from socialchimp.http import (
     retry_after_seconds,
 )
 from socialchimp.models import (
+    AccountProfile,
     Connection,
     Media,
     MediaKind,
@@ -207,6 +208,7 @@ from socialchimp.models import (
     PostState,
     RawData,
     Token,
+    picture_url,
 )
 from socialchimp.platform import Finished, LoginRequest, SendToNetwork
 
@@ -1020,6 +1022,7 @@ class PinterestPlatform:
                     "profile_url": f"https://www.pinterest.com/{username}/",
                     "account_type": me.get("account_type"),
                 },
+                avatar_url=picture_url(me.get("profile_image")),
             )
         )
 
@@ -1150,6 +1153,30 @@ class PinterestPlatform:
             for item in found
             if isinstance(item, dict) and isinstance(item.get("id"), str)
         ]
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask Pinterest for this account's current name and picture.
+
+        Makes exactly one request - the same `/user_account` call
+        `finish_login` makes to greet a freshly connected account.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The username, together with the picture from `profile_image`,
+            or `None` when Pinterest has none on file.
+
+        Raises:
+            PlatformError: If Pinterest answers without a username.
+        """
+        async with self._client(connection.token.access_token) as http:
+            me = await http.json("GET", ACCOUNT_PATH)
+
+        return AccountProfile(
+            name=_text(me, "username", "read the profile again"),
+            avatar_url=picture_url(me.get("profile_image")),
+        )
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
         """Make a pin.
