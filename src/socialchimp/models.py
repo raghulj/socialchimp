@@ -562,17 +562,18 @@ class PostResult:
         id: The network's identifier for the new post.
         url: Link to the post, where the network gives us one.
         state: Whether the network has finished with it.
-        cid: Bluesky's content hash for the new post. `None` everywhere
-            else. Added in 0.8.0; every existing way of building a
-            `PostResult` still works, because this defaults to `None`.
         raw: The network's untouched reply, for anything we did not model.
+        cid: Bluesky's content hash for the new post. `None` everywhere
+            else. Added in 0.8.0, after `raw`, so code from before 0.8.0
+            that builds a `PostResult` by position - `id, url, state, raw`
+            - still puts its fourth argument in `raw`, not here.
     """
 
     id: str
     url: str | None = None
     state: PostState = PostState.DONE
-    cid: str | None = None
     raw: RawData = field(default_factory=dict, repr=False)
+    cid: str | None = None
 
     @property
     def is_done(self) -> bool:

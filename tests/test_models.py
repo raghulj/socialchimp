@@ -279,10 +279,19 @@ class TestPostResult:
 
     def test_it_can_still_be_built_by_position(self) -> None:
         # Every existing construction site passes these by position or by
-        # keyword; either way, adding cid at the end must not break it.
+        # keyword; either way, adding cid after raw must not break it.
         result = PostResult("1", "https://example.com/1", PostState.DONE)
 
         assert result.id == "1"
+        assert result.cid is None
+
+    def test_a_positional_raw_still_lands_in_raw(self) -> None:
+        # Code written before cid existed could call
+        # PostResult(id, url, state, raw) by position. cid has to sit after
+        # raw, or this fourth argument lands in cid instead of raw.
+        result = PostResult("1", "https://example.com/1", PostState.DONE, {"ok": True})
+
+        assert result.raw == {"ok": True}
         assert result.cid is None
 
 
