@@ -2409,6 +2409,20 @@ class TestReadingConversations:
         assert params["max_id"] == "418100"
         assert params["limit"] == "5"
 
+    async def test_the_limit_is_capped_at_forty(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            route = network.get("/api/v1/conversations").mock(
+                return_value=httpx.Response(200, json=[])
+            )
+
+            await platform.read_conversations(fridgedoor, limit=1000)
+
+        assert route.calls.last.request.url.params["limit"] == "40"
+
     async def test_the_link_header_becomes_page_next(
         self,
         platform: MastodonPlatform,

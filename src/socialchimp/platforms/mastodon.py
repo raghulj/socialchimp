@@ -199,6 +199,10 @@ _OUR_WORD_FOR: Final = {
 # one page.
 _MAX_FAVOURITED_BY: Final = 80
 
+# The most conversations Mastodon hands back in one page of
+# GET /api/v1/conversations.
+_MAX_CONVERSATIONS: Final = 40
+
 # `in_reply_to_id` in a reply group that we cannot resolve gets this depth,
 # rather than being dropped - see `_reply_depths`.
 _FALLBACK_REPLY_DEPTH: Final = 1
@@ -2300,7 +2304,8 @@ class MastodonPlatform:
             connection: The account to ask as.
             after: A `Page.next` from a previous call - Mastodon's own
                 `max_id`, read out of its `Link` header.
-            limit: A cap on how many come back.
+            limit: A cap on how many come back. Mastodon allows at most 40;
+                asking for more is quietly capped rather than refused.
 
         Returns:
             One page of conversations.
@@ -2313,7 +2318,7 @@ class MastodonPlatform:
         if after is not None:
             params["max_id"] = after
         if limit is not None:
-            params["limit"] = str(limit)
+            params["limit"] = str(min(limit, _MAX_CONVERSATIONS))
 
         async with self._client(server, connection.token.access_token) as http:
             response = await http.get("/api/v1/conversations", params=params)
