@@ -2546,6 +2546,80 @@ class TestReadingMessages:
             last_status_id,
         ]
 
+    async def test_only_statuses_between_this_conversations_own_people_are_kept(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        # A mixed-participant tree: this conversation is just fridgedoor and
+        # quietbuyer. A direct status can share the same /context thread
+        # without belonging to this conversation at all - a bystander's own
+        # direct message to fridgedoor about something unrelated, threaded
+        # underneath by Mastodon's own view. Only statuses strictly between
+        # this conversation's own people belong in it.
+        conversation = fixture("conversations.json")[0]
+        last_status_id = conversation["last_status"]["id"]
+        quietbuyer = conversation["accounts"][0]
+        bystander = {
+            "id": "109612345678900007",
+            "acct": "regular_visitor@other.example",
+        }
+
+        from_a_bystander = {
+            "id": "113140200000000010",
+            "created_at": "2026-09-23T09:15:00.000Z",
+            "visibility": "direct",
+            "content": "<p>Unrelated direct message</p>",
+            "account": bystander,
+            "mentions": [
+                {"id": FRIDGEDOOR_ID, "acct": "fridgedoor"},
+            ],
+        }
+        leaks_to_a_third_party = {
+            "id": "113140200000000011",
+            "created_at": "2026-09-23T09:16:00.000Z",
+            "visibility": "direct",
+            "content": "<p>Loop them in too</p>",
+            "account": quietbuyer,
+            "mentions": [
+                {"id": FRIDGEDOOR_ID, "acct": "fridgedoor"},
+                {"id": bystander["id"], "acct": bystander["acct"]},
+            ],
+        }
+        belongs_here = {
+            "id": "113140200000000012",
+            "created_at": "2026-09-23T09:17:00.000Z",
+            "visibility": "direct",
+            "content": "<p>Still just us</p>",
+            "account": quietbuyer,
+            "mentions": [{"id": FRIDGEDOOR_ID, "acct": "fridgedoor"}],
+        }
+
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get("/api/v1/conversations").mock(
+                return_value=httpx.Response(200, json=[conversation])
+            )
+            network.get(f"/api/v1/statuses/{last_status_id}/context").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "ancestors": [],
+                        "descendants": [
+                            from_a_bystander,
+                            leaks_to_a_third_party,
+                            belongs_here,
+                        ],
+                    },
+                )
+            )
+
+            page = await platform.read_messages(fridgedoor, conversation["id"])
+
+        assert [message.id for message in page.items] == [
+            belongs_here["id"],
+            last_status_id,
+        ]
+
     async def test_after_drops_everything_up_to_and_including_it(
         self,
         platform: MastodonPlatform,
@@ -2716,7 +2790,7 @@ class TestStartingAConversation:
         assert message.conversation_id == "555"
         assert message.id == new_status["id"]
 
-    async def test_it_falls_back_to_the_new_statuss_own_id(
+    async def test_it_falls_back_to_a_clearly_marked_status_id(
         self,
         platform: MastodonPlatform,
         fridgedoor: Connection,
@@ -2740,7 +2814,134 @@ class TestStartingAConversation:
                 fridgedoor, [quietbuyer["id"]], "Hello there"
             )
 
-        assert message.conversation_id == new_status["id"]
+        # Not the bare status id - a clearly marked fallback, since a bare
+        # id would be mistaken for a real (if wrong) conversation id.
+        assert message.conversation_id == "status:113140200000000101"
+
+    async def test_sending_into_the_fallback_id_replies_to_the_status_directly(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        parent = fixture("status_direct.json")
+        new_reply = {**fixture("status_direct.json"), "id": "113140200000000200"}
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get(f"/api/v1/statuses/{parent['id']}").mock(
+                return_value=httpx.Response(200, json=parent)
+            )
+            route = network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=new_reply)
+            )
+
+            message = await platform.send_message(
+                fridgedoor, f"status:{parent['id']}", "Still here!"
+            )
+
+        sent = form_of(route.calls.last.request)
+        # quietbuyer is the parent's author; fridgedoor is mentioned in the
+        # parent but is the connected account, so it is never mentioned back.
+        assert sent["status"] == ["@quietbuyer@other.example Still here!"]
+        assert sent["visibility"] == ["direct"]
+        assert sent["in_reply_to_id"] == [parent["id"]]
+        assert message.conversation_id == f"status:{parent['id']}"
+
+    async def test_reading_the_fallback_id_reads_that_statuss_context(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        parent = fixture("status_direct.json")
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get(f"/api/v1/statuses/{parent['id']}").mock(
+                return_value=httpx.Response(200, json=parent)
+            )
+            network.get(f"/api/v1/statuses/{parent['id']}/context").mock(
+                return_value=httpx.Response(
+                    200, json={"ancestors": [], "descendants": []}
+                )
+            )
+
+            page = await platform.read_messages(fridgedoor, f"status:{parent['id']}")
+
+        assert len(page.items) == 1
+        assert page.items[0].id == parent["id"]
+        assert page.items[0].conversation_id == f"status:{parent['id']}"
+
+    async def test_marking_the_fallback_id_read_finds_the_real_conversation(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        conversation = {
+            "id": "418300",
+            "accounts": [],
+            "last_status": {"id": "113140200000000300"},
+        }
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get("/api/v1/conversations").mock(
+                return_value=httpx.Response(200, json=[conversation])
+            )
+            route = network.post("/api/v1/conversations/418300/read").mock(
+                return_value=httpx.Response(200, json=fixture("conversation_read.json"))
+            )
+
+            await platform.mark_read(fridgedoor, "status:113140200000000300")
+
+        assert route.called
+
+    async def test_marking_the_fallback_id_read_does_nothing_if_not_found_yet(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        # No POST route is mocked at all here - if mark_read tried to POST
+        # anything, respx would raise for the unmatched request.
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            conversations_route = network.get("/api/v1/conversations").mock(
+                return_value=httpx.Response(200, json=[])
+            )
+
+            await platform.mark_read(fridgedoor, "status:113140200000099999")
+
+        assert conversations_route.called
+
+    async def test_the_found_conversation_id_keeps_working_downstream(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        # The everyday case: start_conversation found a real conversation
+        # id, and it keeps working for every later call.
+        quietbuyer = fixture("conversations.json")[0]["accounts"][0]
+        new_status = {**fixture("status_direct.json"), "id": "113140200000000400"}
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get(f"/api/v1/accounts/{quietbuyer['id']}").mock(
+                return_value=httpx.Response(200, json=quietbuyer)
+            )
+            network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=new_status)
+            )
+            network.get("/api/v1/conversations").mock(
+                return_value=httpx.Response(
+                    200,
+                    json=[{"id": "418400", "last_status": new_status, "accounts": []}],
+                )
+            )
+
+            started = await platform.start_conversation(
+                fridgedoor, [quietbuyer["id"]], "Hello there"
+            )
+
+        assert started.conversation_id == "418400"
+
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            route = network.post("/api/v1/conversations/418400/read").mock(
+                return_value=httpx.Response(200, json=fixture("conversation_read.json"))
+            )
+
+            await platform.mark_read(fridgedoor, started.conversation_id)
+
+        assert route.called
 
 
 class TestSocialInboxErrors:
@@ -2836,6 +3037,59 @@ class TestSocialInboxEdgeCases:
             page = await platform.read_likes(fridgedoor, "110001")
 
         assert page.items[0].person.handle is None
+
+    async def test_the_fallback_reply_skips_a_bare_mention_and_a_duplicate(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        parent = {
+            "id": "900",
+            "visibility": "direct",
+            "account": {"id": "1", "acct": "quietbuyer@other.example"},
+            "mentions": [
+                {"id": "2", "acct": None},
+                # A duplicate of the author - already seen, so skipped.
+                {"id": "3", "acct": "quietbuyer@other.example"},
+                {"id": FRIDGEDOOR_ID, "acct": "fridgedoor"},
+            ],
+        }
+        new_reply = {**fixture("status_direct.json"), "id": "901"}
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get("/api/v1/statuses/900").mock(
+                return_value=httpx.Response(200, json=parent)
+            )
+            route = network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=new_reply)
+            )
+
+            await platform.send_message(fridgedoor, "status:900", "Hi")
+
+        sent = form_of(route.calls.last.request)
+        assert sent["status"] == ["@quietbuyer@other.example Hi"]
+
+    async def test_the_fallback_anchor_with_no_author_id_is_dropped(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        anchor = copy.deepcopy(fixture("status_direct.json"))
+        del anchor["account"]["id"]
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get(f"/api/v1/statuses/{anchor['id']}").mock(
+                return_value=httpx.Response(200, json=anchor)
+            )
+            network.get(f"/api/v1/statuses/{anchor['id']}/context").mock(
+                return_value=httpx.Response(
+                    200, json={"ancestors": [], "descendants": []}
+                )
+            )
+
+            page = await platform.read_messages(fridgedoor, f"status:{anchor['id']}")
+
+        # An author with no id at all cannot be verified as a participant,
+        # so it is dropped along with everything else.
+        assert page.items == ()
 
     async def test_a_tag_this_parser_does_not_treat_specially_is_still_read(
         self,
@@ -3049,3 +3303,44 @@ class TestSocialInboxEdgeCases:
             )
 
         assert message.conversation_id == "10"
+
+    async def test_starting_a_conversation_pages_past_more_than_one_page(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        # The genuine multi-page case: the new conversation is not on the
+        # first page at all, and only shows up once a `Link` header sends
+        # this on to a second `GET`. This is the same bounded paging
+        # `_find_conversation` uses for an ordinary conversation id.
+        quietbuyer = fixture("conversations.json")[0]["accounts"][0]
+        new_status = {**fixture("status_direct.json"), "id": "5678"}
+        unrelated = {"id": "9", "last_status": {"id": "not-the-new-one"}}
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            network.get(f"/api/v1/accounts/{quietbuyer['id']}").mock(
+                return_value=httpx.Response(200, json=quietbuyer)
+            )
+            network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=new_status)
+            )
+            conversations_route = network.get("/api/v1/conversations")
+            conversations_route.side_effect = [
+                httpx.Response(
+                    200,
+                    json=[unrelated],
+                    headers={
+                        "Link": (
+                            "<https://social.example/api/v1/conversations"
+                            '?max_id=9>; rel="next"'
+                        )
+                    },
+                ),
+                httpx.Response(200, json=[{"id": "20", "last_status": new_status}]),
+            ]
+
+            message = await platform.start_conversation(
+                fridgedoor, [quietbuyer["id"]], "Hi"
+            )
+
+        assert message.conversation_id == "20"
+        assert conversations_route.call_count == 2

@@ -139,7 +139,7 @@ from socialchimp.models import (
 from socialchimp.platform import Finished, LoginRequest, SendToNetwork
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from socialchimp.errors import SocialChimpError
     from socialchimp.http import Retries
@@ -202,6 +202,11 @@ _MAX_FAVOURITED_BY: Final = 80
 # The most conversations Mastodon hands back in one page of
 # GET /api/v1/conversations.
 _MAX_CONVERSATIONS: Final = 40
+
+# The marker start_conversation falls back to when Mastodon has not yet
+# listed a conversation for the status it just posted - see
+# `MastodonPlatform.start_conversation`.
+_STATUS_FALLBACK_PREFIX: Final = "status:"
 
 # `in_reply_to_id` in a reply group that we cannot resolve gets this depth,
 # rather than being dropped - see `_reply_depths`.
@@ -1041,6 +1046,149 @@ def _mentioning(accounts: Sequence[RawData], text: str) -> str:
     if not accts:
         return text
     return " ".join(f"@{acct}" for acct in accts) + " " + text
+
+
+def _status_id_from_fallback(conversation_id: str) -> str | None:
+    """Read the status id out of a `"status:<id>"` fallback conversation id.
+
+    `start_conversation` returns this form when it cannot find the real
+    conversation Mastodon made for a new status - see its docstring.
+    `send_message`, `read_messages` and `mark_read` all accept it back.
+
+    Args:
+        conversation_id: What was passed in as a conversation id - a real
+            Mastodon conversation id, or this fallback form.
+
+    Returns:
+        The status id, or `None` if this is not the fallback form.
+    """
+    if conversation_id.startswith(_STATUS_FALLBACK_PREFIX):
+        return conversation_id[len(_STATUS_FALLBACK_PREFIX) :]
+    return None
+
+
+def _status_recipients(status: RawData, connection: Connection) -> list[RawData]:
+    """List the accounts a reply to this status should mention.
+
+    Used for the `"status:<id>"` conversation id fallback: there is no
+    conversation `accounts` list to mention instead, so the status's own
+    author and everyone it mentions stand in for it.
+
+    Args:
+        status: The status being replied to.
+        connection: The account doing the replying - skipped even if the
+            status mentions it, the same as a normal reply never mentions
+            itself.
+
+    Returns:
+        Account-like objects, each carrying an `acct`, ready for
+        `_mentioning`. The author comes first, then its mentions, in
+        order, with duplicates and the connected account itself dropped.
+    """
+    seen: set[str] = set()
+    recipients: list[RawData] = []
+
+    def consider(account: RawData) -> None:
+        account_id = account.get("id")
+        acct = account.get("acct")
+        if not isinstance(acct, str) or not acct:
+            return
+        if account_id is not None and str(account_id) == connection.account_id:
+            return
+        if acct in seen:
+            return
+        seen.add(acct)
+        recipients.append(account)
+
+    consider(_section(status, "account"))
+    for mention in _dicts_from(status.get("mentions")):
+        consider(mention)
+
+    return recipients
+
+
+def _conversation_participant_ids(
+    conversation: RawData, connection: Connection
+) -> set[str]:
+    """Work out which accounts a conversation's own messages may involve.
+
+    Used by `read_messages` to tell a status that genuinely belongs to
+    this conversation apart from one that merely sits in the same
+    `/context` thread - see `_belongs_to_conversation`.
+
+    Args:
+        conversation: The `Conversation` object, exactly as Mastodon sent
+            it.
+        connection: The account reading it - always a participant, even
+            though Mastodon's own `accounts` list leaves it out.
+
+    Returns:
+        Every account id a status must be limited to - author and every
+        mention - to count as belonging to this conversation.
+    """
+    ids = {
+        str(account["id"])
+        for account in _dicts_from(conversation.get("accounts"))
+        if account.get("id") is not None
+    }
+    ids.add(connection.account_id)
+    return ids
+
+
+def _status_participant_ids(status: RawData, connection: Connection) -> set[str]:
+    """Work out a status's own participants - its author and its mentions.
+
+    Stands in for `_conversation_participant_ids` when `read_messages` is
+    given the `"status:<id>"` fallback conversation id, where there is no
+    real `Conversation` object to read participants off.
+
+    Args:
+        status: The status standing in for the conversation.
+        connection: The account reading it.
+
+    Returns:
+        Every account id a status must be limited to - author and every
+        mention - to count as belonging to this conversation.
+    """
+    ids = {
+        str(mention["id"])
+        for mention in _dicts_from(status.get("mentions"))
+        if mention.get("id") is not None
+    }
+    author_id = _section(status, "account").get("id")
+    if author_id is not None:
+        ids.add(str(author_id))
+    ids.add(connection.account_id)
+    return ids
+
+
+def _belongs_to_conversation(item: RawData, participant_ids: set[str]) -> bool:
+    """Say whether one status genuinely belongs to a conversation.
+
+    A conversation's `/context` thread can hold direct statuses aimed at
+    entirely different people - Mastodon threads a reply by what it
+    replies to, not by which conversation it belongs to. A status only
+    belongs here when it is `direct`-visibility and its author and every
+    account it mentions are all in `participant_ids`.
+
+    Args:
+        item: The status to check.
+        participant_ids: Every account id allowed - see
+            `_conversation_participant_ids` and `_status_participant_ids`.
+
+    Returns:
+        `True` if this status belongs to the conversation.
+    """
+    if item.get("visibility") != "direct":
+        return False
+    author_id = _section(item, "account").get("id")
+    if author_id is None or str(author_id) not in participant_ids:
+        return False
+    for mention in _dicts_from(item.get("mentions")):
+        mention_id = mention.get("id")
+        if mention_id is None or str(mention_id) not in participant_ids:
+            return False
+    return True
 
 
 def _message_from(
@@ -2265,16 +2413,46 @@ class MastodonPlatform:
         )
         return Page(items=likes, next=_next_max_id(response.headers))
 
+    async def _page_through_conversations(
+        self, http: HttpClient, matches: Callable[[RawData], bool]
+    ) -> RawData | None:
+        """Page through this account's conversations looking for one.
+
+        Mastodon has no `GET /api/v1/conversations/:id`, only the list, so
+        this pages through `GET /api/v1/conversations` with `max_id` until
+        `matches` says yes or there are no more pages - one request per page
+        along the way, which only matters on an account with a long history
+        of conversations nobody has read in a while. `_find_conversation`
+        and `_find_conversation_for_status` are the two ways this gets
+        used, matching by id and by `last_status.id` respectively.
+
+        Args:
+            http: A client already pointed at the right server.
+            matches: Called with each conversation Mastodon sends back;
+                the first one it accepts is returned.
+
+        Returns:
+            The conversation, exactly as Mastodon sent it, or `None` if no
+            page had one `matches` accepted.
+        """
+        after: str | None = None
+        while True:
+            params = {"max_id": after} if after is not None else {}
+            response = await http.get("/api/v1/conversations", params=params)
+            items = _dicts_from(read_body(response).get("body"))
+            for raw in items:
+                if matches(raw):
+                    return raw
+            after = _next_max_id(response.headers)
+            if after is None or not items:
+                return None
+
     async def _find_conversation(
         self, http: HttpClient, conversation_id: str
     ) -> RawData | None:
         """Look up one conversation by id.
 
-        Mastodon has no `GET /api/v1/conversations/:id`, only the list, so
-        this pages through `GET /api/v1/conversations` with `max_id` until
-        it finds the one asked for or runs out of pages - one request per
-        page along the way, which only matters on an account with a long
-        history of conversations nobody has read in a while.
+        See `_page_through_conversations` for how this pages.
 
         Args:
             http: A client already pointed at the right server.
@@ -2284,17 +2462,9 @@ class MastodonPlatform:
             The conversation, exactly as Mastodon sent it, or `None` if
             there is no such conversation.
         """
-        after: str | None = None
-        while True:
-            params = {"max_id": after} if after is not None else {}
-            response = await http.get("/api/v1/conversations", params=params)
-            items = _dicts_from(read_body(response).get("body"))
-            for raw in items:
-                if str(raw.get("id", "")) == conversation_id:
-                    return raw
-            after = _next_max_id(response.headers)
-            if after is None or not items:
-                return None
+        return await self._page_through_conversations(
+            http, lambda raw: str(raw.get("id", "")) == conversation_id
+        )
 
     async def read_conversations(
         self,
@@ -2349,15 +2519,28 @@ class MastodonPlatform:
         Mastodon has no "every message in this conversation" call. This
         finds the conversation (see `_find_conversation` - at least one
         request, more on an account with a long history) and reads the
-        `/context` of its `last_status` (one more request), keeping only the
-        `direct`-visibility statuses in that thread. That is why
-        `Conversation.full_history` is `False`, and why this never returns a
-        `next` - there is nothing further back than this one call already
-        reached.
+        `/context` of its `last_status` (one more request), keeping only
+        the `direct`-visibility statuses in that thread whose participants
+        match this conversation exactly - the author is this account or
+        one of the conversation's own accounts, and everyone it mentions
+        is one of those too. A reply thread can hold direct statuses aimed
+        at entirely different people, since Mastodon threads by what a
+        status replies to, not by which conversation it belongs to - this
+        is what tells the two apart. That is why `Conversation.full_history`
+        is `False`, and why this never returns a `next` - there is nothing
+        further back than this one call already reached.
+
+        Also accepts the `"status:<id>"` fallback conversation id
+        `start_conversation` returns when it cannot find the real
+        conversation yet (see its docstring): one request reads that status
+        itself, standing in for the conversation - its `/context` is read
+        the same way, and its own author plus the accounts it mentions
+        stand in for the conversation's participants.
 
         Args:
             connection: The account to ask as.
-            conversation_id: Which conversation to read.
+            conversation_id: Which conversation to read, or a
+                `"status:<id>"` fallback from `start_conversation`.
             after: The id of a message already read. It, and everything
                 before it, is dropped from what comes back.
             limit: A cap on how many come back.
@@ -2371,14 +2554,25 @@ class MastodonPlatform:
             ConfigError: If the connection has no server on it.
         """
         server = _host_of(connection)
+        status_id = _status_id_from_fallback(conversation_id)
+        last_status: RawData | None
         async with self._client(server, connection.token.access_token) as http:
-            conversation = await self._find_conversation(http, conversation_id)
-            last_status = (
-                conversation.get("last_status") if conversation is not None else None
-            )
-            last_status = last_status if isinstance(last_status, dict) else None
-            if last_status is None:
-                return Page(items=(), next=None)
+            if status_id is not None:
+                last_status = await http.json("GET", f"/api/v1/statuses/{status_id}")
+                participant_ids = _status_participant_ids(last_status, connection)
+            else:
+                conversation = await self._find_conversation(http, conversation_id)
+                candidate = (
+                    conversation.get("last_status")
+                    if conversation is not None
+                    else None
+                )
+                last_status = candidate if isinstance(candidate, dict) else None
+                if last_status is None or conversation is None:
+                    return Page(items=(), next=None)
+                participant_ids = _conversation_participant_ids(
+                    conversation, connection
+                )
 
             context_response = await http.get(
                 f"/api/v1/statuses/{last_status.get('id', '')}/context"
@@ -2391,7 +2585,9 @@ class MastodonPlatform:
             *_dicts_from(context.get("descendants")),
         ]
         direct_only = [
-            item for item in everything if item.get("visibility") == "direct"
+            item
+            for item in everything
+            if _belongs_to_conversation(item, participant_ids)
         ]
         direct_only.sort(key=_sort_key, reverse=True)
 
@@ -2422,9 +2618,19 @@ class MastodonPlatform:
         At least two requests: finding the conversation (see
         `_find_conversation`) and posting the reply.
 
+        Also accepts the `"status:<id>"` fallback conversation id
+        `start_conversation` returns when it cannot find the real
+        conversation yet (see its docstring). For that form, this skips
+        straight to replying to that status directly - one request reads
+        it, one more posts the reply - with `direct` visibility and the
+        same participants: the status's own author plus everyone it
+        mentions, rather than a conversation's `accounts` list that does
+        not exist yet.
+
         Args:
             connection: The account to send as.
-            conversation_id: Which conversation to send into.
+            conversation_id: Which conversation to send into, or a
+                `"status:<id>"` fallback from `start_conversation`.
             text: The message's words.
             options: Ignored. Kept so this matches `CanMessage` - Mastodon
                 has nothing like Meta's message tags.
@@ -2435,23 +2641,34 @@ class MastodonPlatform:
         Raises:
             ConfigError: If the connection has no server on it.
             NotFoundError: If there is no such conversation.
+            PostGoneError: If the `"status:<id>"` fallback names a status
+                that is gone.
         """
         server = _host_of(connection)
+        status_id = _status_id_from_fallback(conversation_id)
         async with self._client(server, connection.token.access_token) as http:
-            conversation = await self._find_conversation(http, conversation_id)
-            if conversation is None:
-                message = (
-                    f"There is no conversation {conversation_id!r} to send "
-                    f"a message into. It may have been deleted."
-                )
-                raise NotFoundError(message, platform=PLATFORM_NAME)
+            if status_id is not None:
+                parent = await http.json("GET", f"/api/v1/statuses/{status_id}")
+                full_text = _mentioning(_status_recipients(parent, connection), text)
+                form: dict[str, Any] = {
+                    "status": full_text,
+                    "visibility": "direct",
+                    "in_reply_to_id": status_id,
+                }
+            else:
+                conversation = await self._find_conversation(http, conversation_id)
+                if conversation is None:
+                    message = (
+                        f"There is no conversation {conversation_id!r} to send "
+                        f"a message into. It may have been deleted."
+                    )
+                    raise NotFoundError(message, platform=PLATFORM_NAME)
 
-            full_text = _mentioning(_dicts_from(conversation.get("accounts")), text)
-
-            form: dict[str, Any] = {"status": full_text, "visibility": "direct"}
-            last_status = conversation.get("last_status")
-            if isinstance(last_status, dict):
-                form["in_reply_to_id"] = last_status.get("id")
+                full_text = _mentioning(_dicts_from(conversation.get("accounts")), text)
+                form = {"status": full_text, "visibility": "direct"}
+                last_status = conversation.get("last_status")
+                if isinstance(last_status, dict):
+                    form["in_reply_to_id"] = last_status.get("id")
 
             reply = await http.json("POST", "/api/v1/statuses", data=form)
 
@@ -2462,42 +2679,60 @@ class MastodonPlatform:
 
         One request: `POST /api/v1/conversations/:id/read`.
 
+        Given the `"status:<id>"` fallback conversation id
+        `start_conversation` returns when it cannot find the real
+        conversation yet (see its docstring), this first looks for that
+        conversation itself - the same bounded paging `_find_conversation`
+        uses, matching by `last_status.id` instead of `id` - and does
+        nothing if it still is not there, since there is nothing yet to
+        mark read.
+
         Args:
             connection: The account to mark it for.
-            conversation_id: Which conversation to mark.
+            conversation_id: Which conversation to mark, or a
+                `"status:<id>"` fallback from `start_conversation`.
 
         Raises:
             ConfigError: If the connection has no server on it.
         """
         server = _host_of(connection)
+        status_id = _status_id_from_fallback(conversation_id)
         async with self._client(server, connection.token.access_token) as http:
-            await http.post(f"/api/v1/conversations/{conversation_id}/read")
+            real_id = conversation_id
+            if status_id is not None:
+                found = await self._find_conversation_for_status(http, status_id)
+                if found is None:
+                    return
+                real_id = str(found.get("id", ""))
+
+            await http.post(f"/api/v1/conversations/{real_id}/read")
 
     async def _find_conversation_for_status(
         self, http: HttpClient, status_id: str
-    ) -> str | None:
+    ) -> RawData | None:
         """Look for the conversation whose most recent message is this status.
 
-        Only the most recent page is read - see `start_conversation`, which
-        is the only caller.
+        See `_page_through_conversations` for how this pages - the same
+        bounded search `_find_conversation` does, matching by
+        `last_status.id` instead of `id`.
 
         Args:
             http: A client already pointed at the right server.
             status_id: The status to look for.
 
         Returns:
-            That conversation's id, or `None` if it is not on the first
-            page.
+            That conversation, exactly as Mastodon sent it, or `None` if no
+            page had one.
         """
-        response = await http.get("/api/v1/conversations")
-        for raw in _dicts_from(read_body(response).get("body")):
+
+        def matches(raw: RawData) -> bool:
             last_status = raw.get("last_status")
-            if (
+            return (
                 isinstance(last_status, dict)
                 and str(last_status.get("id", "")) == status_id
-            ):
-                return str(raw.get("id", ""))
-        return None
+            )
+
+        return await self._page_through_conversations(http, matches)
 
     async def start_conversation(
         self,
@@ -2509,12 +2744,20 @@ class MastodonPlatform:
 
         One request per person - Mastodon's own account ids have to be
         turned into `acct`s before they can be named in a status - plus one
-        to post the status, plus one more to find the conversation Mastodon
-        just made for it, so the returned `Message.conversation_id` is
-        right. That last lookup only reads the most recent page: the
-        conversation just created is almost always on it, and on the rare
-        occasion it is not - a burst of other direct messages arriving in
-        the same instant - this falls back to using the new status's own id.
+        to post the status, plus at least one more to find the conversation
+        Mastodon just made for it, so the returned `Message.conversation_id`
+        is a real conversation id wherever possible (see
+        `_find_conversation_for_status`, which pages the same way
+        `_find_conversation` does).
+
+        On the rare occasion that search still finds nothing - a burst of
+        other direct messages arriving in the same instant, or a server
+        slow to list its own new conversation - this does not invent a
+        conversation id. It returns the clearly marked fallback
+        `f"status:{status_id}"` instead, naming the status that was just
+        posted rather than a conversation that does not exist yet.
+        `send_message`, `read_messages` and `mark_read` all accept that
+        form back; treat it as opaque either way.
 
         Args:
             connection: The account to send as.
@@ -2541,11 +2784,14 @@ class MastodonPlatform:
                     "visibility": "direct",
                 },
             )
-            found_id = await self._find_conversation_for_status(
-                http, str(reply.get("id", ""))
-            )
+            status_id = str(reply.get("id", ""))
+            found = await self._find_conversation_for_status(http, status_id)
 
-        conversation_id = found_id if found_id is not None else str(reply.get("id", ""))
+        conversation_id = (
+            str(found.get("id", ""))
+            if found is not None
+            else f"{_STATUS_FALLBACK_PREFIX}{status_id}"
+        )
         return _message_from(reply, server, connection, conversation_id)
 
 
