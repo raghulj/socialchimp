@@ -2845,6 +2845,28 @@ class TestLinksFromFacets:
         facet = {"index": {"byteStart": "0", "byteEnd": 2}, "features": []}
         assert bluesky_module._links_from("hi", [facet]) == ()
 
+    def test_an_out_of_range_facet_is_skipped(self) -> None:
+        feature = {"$type": "app.bsky.richtext.facet#tag", "tag": "x"}
+        facet = {"index": {"byteStart": 0, "byteEnd": 99}, "features": [feature]}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    def test_a_negative_start_is_skipped(self) -> None:
+        feature = {"$type": "app.bsky.richtext.facet#tag", "tag": "x"}
+        facet = {"index": {"byteStart": -1, "byteEnd": 2}, "features": [feature]}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    def test_a_reversed_facet_is_skipped(self) -> None:
+        feature = {"$type": "app.bsky.richtext.facet#tag", "tag": "x"}
+        facet = {"index": {"byteStart": 2, "byteEnd": 0}, "features": [feature]}
+        assert bluesky_module._links_from("hi", [facet]) == ()
+
+    def test_a_facet_splitting_a_multi_byte_character_is_skipped(self) -> None:
+        # "é" is two bytes in UTF-8 ("café" is 5 bytes); byteStart=4 lands
+        # on its second byte, which is not a character boundary.
+        feature = {"$type": "app.bsky.richtext.facet#tag", "tag": "x"}
+        facet = {"index": {"byteStart": 4, "byteEnd": 5}, "features": [feature]}
+        assert bluesky_module._links_from("café", [facet]) == ()
+
     def test_a_non_dict_feature_is_skipped(self) -> None:
         facet = {"index": {"byteStart": 0, "byteEnd": 2}, "features": ["nonsense"]}
         assert bluesky_module._links_from("hi", [facet]) == ()

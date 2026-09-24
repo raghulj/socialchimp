@@ -987,6 +987,46 @@ def _char_offset(text_bytes: bytes, byte_offset: int) -> int:
     return len(text_bytes[:byte_offset].decode())
 
 
+def _on_a_character_boundary(text_bytes: bytes, offset: int) -> bool:
+    """Check a byte offset does not land inside a multi-byte character.
+
+    Args:
+        text_bytes: The post's text, encoded once by the caller.
+        offset: The position to check, in bytes.
+
+    Returns:
+        `True` at the very end of `text_bytes`, or wherever the byte
+        sitting there does not continue a character started earlier - a
+        UTF-8 continuation byte always has its top two bits set to `10`.
+    """
+    return offset == len(text_bytes) or text_bytes[offset] & 0xC0 != 0x80
+
+
+def _usable_facet_bounds(text_bytes: bytes, start: int, end: int) -> bool:
+    """Check a facet's byte offsets are safe to slice `text_bytes` with.
+
+    Bluesky notifications carry facets built by whoever posted, not by
+    this account, so a malformed one - out of range, back to front, or
+    landing inside a character rather than between two of them - has to be
+    caught here rather than found by `_char_offset` blowing up partway
+    through decoding.
+
+    Args:
+        text_bytes: The post's text, encoded once by the caller.
+        start: The facet's `byteStart`.
+        end: The facet's `byteEnd`.
+
+    Returns:
+        Whether `0 <= start <= end <= len(text_bytes)`, and both offsets
+        sit on a character boundary.
+    """
+    if not (0 <= start <= end <= len(text_bytes)):
+        return False
+    return _on_a_character_boundary(text_bytes, start) and _on_a_character_boundary(
+        text_bytes, end
+    )
+
+
 def _link_kind_and_target(feature: RawData) -> tuple[LinkKind, str] | None:
     """Read what one facet feature marks, and what it points at.
 
@@ -1044,6 +1084,8 @@ def _links_from(text: str, facets: object) -> tuple[TextLink, ...]:
         byte_start = index.get("byteStart")
         byte_end = index.get("byteEnd")
         if not isinstance(byte_start, int) or not isinstance(byte_end, int):
+            continue
+        if not _usable_facet_bounds(written, byte_start, byte_end):
             continue
 
         for feature in features:
