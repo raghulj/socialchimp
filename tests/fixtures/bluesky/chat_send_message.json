@@ -1,0 +1,10 @@
+{
+  "$type": "chat.bsky.convo.defs#messageView",
+  "id": "axh4djx7o4545",
+  "rev": "3imb3f7hqi2x6",
+  "text": "Yes, the wide-body kit is back in stock ✅ want me to hold one for you?",
+  "sender": {
+    "did": "did:plc:dc7hcchu6gliiknwqdeffydi"
+  },
+  "sentAt": "2026-09-24T08:20:00.000Z"
+}

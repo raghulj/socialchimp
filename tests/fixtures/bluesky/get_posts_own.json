@@ -1,0 +1,126 @@
+{
+  "posts": [
+    {
+      "uri": "at://did:plc:dc7hcchu6gliiknwqdeffydi/app.bsky.feed.post/cyirmvgfbeyhx",
+      "cid": "bafyreiwlbzhtwsgfl5ogwdljljaspsgweule6ckj44g4v2upommrzyswc5",
+      "author": {
+        "did": "did:plc:dc7hcchu6gliiknwqdeffydi",
+        "handle": "fridgedoor.bsky.social",
+        "displayName": "Fridge Door Parts",
+        "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreidcu3anamzhvq64lgv7pqm7g3xtn46dbxdp5b4fmriyijr6bu7lda@jpeg",
+        "labels": []
+      },
+      "record": {
+        "$type": "app.bsky.feed.post",
+        "text": "New stock! 🧊 Genuine parts, café-tested ✅ cc @coldchainparts.bsky.social full list: https://fridgedoor.example/inventory #FridgeParts",
+        "facets": [
+          {
+            "index": {
+              "byteStart": 51,
+              "byteEnd": 78
+            },
+            "features": [
+              {
+                "$type": "app.bsky.richtext.facet#mention",
+                "did": "did:plc:gtfxuqrljnk2c2gez6fi3qzj"
+              }
+            ]
+          },
+          {
+            "index": {
+              "byteStart": 90,
+              "byteEnd": 126
+            },
+            "features": [
+              {
+                "$type": "app.bsky.richtext.facet#link",
+                "uri": "https://fridgedoor.example/inventory"
+              }
+            ]
+          },
+          {
+            "index": {
+              "byteStart": 127,
+              "byteEnd": 139
+            },
+            "features": [
+              {
+                "$type": "app.bsky.richtext.facet#tag",
+                "tag": "FridgeParts"
+              }
+            ]
+          }
+        ],
+        "embed": {
+          "$type": "app.bsky.embed.images",
+          "images": [
+            {
+              "image": {
+                "$type": "blob",
+                "ref": {
+                  "$link": "bafkreido2mdrwlxf2bey6ovmurvu7yw6c3aea2u7vaari2a7le7i7ni6kz"
+                },
+                "mimeType": "image/jpeg",
+                "size": 812340
+              },
+              "alt": "A stainless steel refrigerator door handle laid on a white background.",
+              "aspectRatio": {
+                "width": 1600,
+                "height": 1200
+              }
+            },
+            {
+              "image": {
+                "$type": "blob",
+                "ref": {
+                  "$link": "bafkreick42fe4icrmpkdwfaqt3jgzlfqod4t4655kcbs6ucuwhldx5fkvj"
+                },
+                "mimeType": "image/jpeg",
+                "size": 654200
+              },
+              "alt": "A stack of packaged rubber door gaskets ready for shipping.",
+              "aspectRatio": {
+                "width": 1200,
+                "height": 1600
+              }
+            }
+          ]
+        },
+        "langs": [
+          "en"
+        ],
+        "createdAt": "2026-09-20T14:32:07.481Z"
+      },
+      "embed": {
+        "$type": "app.bsky.embed.images#view",
+        "images": [
+          {
+            "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreido2mdrwlxf2bey6ovmurvu7yw6c3aea2u7vaari2a7le7i7ni6kz@jpeg",
+            "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreido2mdrwlxf2bey6ovmurvu7yw6c3aea2u7vaari2a7le7i7ni6kz@jpeg",
+            "alt": "A stainless steel refrigerator door handle laid on a white background.",
+            "aspectRatio": {
+              "width": 1600,
+              "height": 1200
+            }
+          },
+          {
+            "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreick42fe4icrmpkdwfaqt3jgzlfqod4t4655kcbs6ucuwhldx5fkvj@jpeg",
+            "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreick42fe4icrmpkdwfaqt3jgzlfqod4t4655kcbs6ucuwhldx5fkvj@jpeg",
+            "alt": "A stack of packaged rubber door gaskets ready for shipping.",
+            "aspectRatio": {
+              "width": 1200,
+              "height": 1600
+            }
+          }
+        ]
+      },
+      "replyCount": 5,
+      "repostCount": 58,
+      "likeCount": 342,
+      "quoteCount": 12,
+      "indexedAt": "2026-09-20T14:32:08.106Z",
+      "viewer": {},
+      "labels": []
+    }
+  ]
+}

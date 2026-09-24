@@ -1,0 +1,875 @@
+[
+  {
+    "id": "118980500000000006",
+    "type": "mention",
+    "created_at": "2026-09-23T09:14:03.000Z",
+    "group_key": "ungrouped-118980500000000006",
+    "account": {
+      "id": "109612345678900006",
+      "username": "quietbuyer",
+      "acct": "quietbuyer@other.example",
+      "display_name": "J.",
+      "locked": true,
+      "bot": false,
+      "discoverable": false,
+      "indexable": false,
+      "group": false,
+      "created_at": "2025-01-08T00:00:00.000Z",
+      "note": "<p>Just here to buy furniture, mostly.</p>",
+      "url": "https://other.example/@quietbuyer",
+      "uri": "https://other.example/users/quietbuyer",
+      "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900006.png",
+      "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900006.png",
+      "avatar_description": "",
+      "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900006.png",
+      "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900006.png",
+      "header_description": "",
+      "followers_count": 9,
+      "following_count": 44,
+      "statuses_count": 6,
+      "last_status_at": "2026-09-23",
+      "hide_collections": false,
+      "show_media": true,
+      "show_media_replies": true,
+      "show_featured": true,
+      "emojis": [],
+      "fields": [],
+      "feature_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    },
+    "status": {
+      "id": "113140200000000001",
+      "created_at": "2026-09-23T09:14:02.000Z",
+      "in_reply_to_id": null,
+      "in_reply_to_account_id": null,
+      "sensitive": false,
+      "spoiler_text": "",
+      "visibility": "direct",
+      "language": "en",
+      "uri": "https://other.example/users/quietbuyer/statuses/113140200000000001",
+      "url": "https://other.example/@quietbuyer/113140200000000001",
+      "replies_count": 0,
+      "reblogs_count": 0,
+      "favourites_count": 0,
+      "quotes_count": 0,
+      "edited_at": null,
+      "favourited": false,
+      "reblogged": false,
+      "muted": false,
+      "bookmarked": false,
+      "filtered": [],
+      "content": "<p>Hi <span class=\"h-card\" translate=\"no\"><a href=\"https://social.example/@fridgedoor\" class=\"u-url mention\">@<span>fridgedoor</span></a></span> — are the record cabinets still available?<br />Happy to collect today if so.</p>",
+      "reblog": null,
+      "account": {
+        "id": "109612345678900006",
+        "username": "quietbuyer",
+        "acct": "quietbuyer@other.example",
+        "display_name": "J.",
+        "locked": true,
+        "bot": false,
+        "discoverable": false,
+        "indexable": false,
+        "group": false,
+        "created_at": "2025-01-08T00:00:00.000Z",
+        "note": "<p>Just here to buy furniture, mostly.</p>",
+        "url": "https://other.example/@quietbuyer",
+        "uri": "https://other.example/users/quietbuyer",
+        "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900006.png",
+        "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900006.png",
+        "avatar_description": "",
+        "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900006.png",
+        "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900006.png",
+        "header_description": "",
+        "followers_count": 9,
+        "following_count": 44,
+        "statuses_count": 6,
+        "last_status_at": "2026-09-23",
+        "hide_collections": false,
+        "show_media": true,
+        "show_media_replies": true,
+        "show_featured": true,
+        "emojis": [],
+        "fields": [],
+        "feature_approval": {
+          "automatic": [],
+          "manual": [],
+          "current_user": "automatic"
+        }
+      },
+      "media_attachments": [],
+      "mentions": [
+        {
+          "id": "113140000000000001",
+          "username": "fridgedoor",
+          "url": "https://social.example/@fridgedoor",
+          "acct": "fridgedoor"
+        }
+      ],
+      "tags": [],
+      "emojis": [],
+      "tagged_collections": [],
+      "quote": null,
+      "card": null,
+      "poll": null,
+      "quote_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    }
+  },
+  {
+    "id": "118958200000000005",
+    "type": "reblog",
+    "created_at": "2026-09-22T10:05:00.000Z",
+    "group_key": "reblog-113140123456789012-497242",
+    "account": {
+      "id": "109612345678900003",
+      "username": "shop_hopper",
+      "acct": "shop_hopper@other.example",
+      "display_name": "Shop Hopper",
+      "locked": false,
+      "bot": false,
+      "discoverable": false,
+      "indexable": true,
+      "group": false,
+      "created_at": "2022-06-30T00:00:00.000Z",
+      "note": "<p></p>",
+      "url": "https://other.example/@shop_hopper",
+      "uri": "https://other.example/users/shop_hopper",
+      "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900003.png",
+      "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900003.png",
+      "avatar_description": "",
+      "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900003.png",
+      "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900003.png",
+      "header_description": "",
+      "followers_count": 48,
+      "following_count": 512,
+      "statuses_count": 220,
+      "last_status_at": "2026-09-22",
+      "hide_collections": false,
+      "show_media": true,
+      "show_media_replies": true,
+      "show_featured": true,
+      "emojis": [],
+      "fields": [],
+      "feature_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    },
+    "status": {
+      "id": "113140123456789012",
+      "created_at": "2026-09-20T14:03:11.000Z",
+      "in_reply_to_id": null,
+      "in_reply_to_account_id": null,
+      "sensitive": false,
+      "spoiler_text": "",
+      "visibility": "public",
+      "language": "en",
+      "uri": "https://social.example/users/fridgedoor/statuses/113140123456789012",
+      "url": "https://social.example/@fridgedoor/113140123456789012",
+      "replies_count": 5,
+      "reblogs_count": 3,
+      "favourites_count": 9,
+      "quotes_count": 0,
+      "edited_at": null,
+      "favourited": false,
+      "reblogged": false,
+      "muted": false,
+      "bookmarked": false,
+      "pinned": false,
+      "filtered": [],
+      "content": "<p>Spring clear-out on the shop floor today <span class=\"h-card\" translate=\"no\"><a href=\"https://other.example/@mabel_finds\" class=\"u-url mention\">@<span>mabel_finds</span></a></span> — come say hi! Two new arrivals just landed: a walnut record cabinet and a set of amber glass tumblers. Full details here: <a href=\"https://fridgedoorvintage.example/shop\" target=\"_blank\" rel=\"nofollow noopener\" translate=\"no\"><span class=\"invisible\">https://</span><span class=\"\">fridgedoorvintage.example/shop</span><span class=\"invisible\"></span></a></p><p><a href=\"https://social.example/tags/fridgesale\" class=\"mention hashtag\" rel=\"tag\">#<span>fridgesale</span></a></p>",
+      "reblog": null,
+      "application": {
+        "name": "Web",
+        "website": null
+      },
+      "account": {
+        "id": "113140000000000001",
+        "username": "fridgedoor",
+        "acct": "fridgedoor",
+        "display_name": "Fridge Door Vintage",
+        "locked": false,
+        "bot": false,
+        "discoverable": true,
+        "indexable": true,
+        "group": false,
+        "created_at": "2023-04-02T00:00:00.000Z",
+        "note": "<p>Secondhand furniture and homeware, sourced and restored by hand. Open Tue–Sat, 10–5. Ask us about local delivery. :fridgemagnet:</p>",
+        "url": "https://social.example/@fridgedoor",
+        "uri": "https://social.example/users/fridgedoor",
+        "avatar": "https://social.example/system/accounts/avatars/000/000/001/original/113140000000000001.png",
+        "avatar_static": "https://social.example/system/accounts/avatars/000/000/001/original/113140000000000001.png",
+        "avatar_description": "The Fridge Door Vintage logo: a mint-green fridge door with a house-shaped magnet.",
+        "header": "https://social.example/system/accounts/headers/000/000/001/original/113140000000000001.png",
+        "header_static": "https://social.example/system/accounts/headers/000/000/001/original/113140000000000001.png",
+        "header_description": "Racks of vintage furniture inside the shop.",
+        "followers_count": 812,
+        "following_count": 96,
+        "statuses_count": 1204,
+        "last_status_at": "2026-09-24",
+        "hide_collections": false,
+        "show_media": true,
+        "show_media_replies": true,
+        "show_featured": true,
+        "emojis": [
+          {
+            "shortcode": "fridgemagnet",
+            "url": "https://social.example/system/custom_emojis/images/000/000/012/original/fridgemagnet.png",
+            "static_url": "https://social.example/system/custom_emojis/images/000/000/012/static/fridgemagnet.png",
+            "visible_in_picker": true
+          }
+        ],
+        "fields": [
+          {
+            "name": "Shop",
+            "value": "<a href=\"https://fridgedoorvintage.example\" target=\"_blank\" rel=\"nofollow noopener me\" translate=\"no\"><span class=\"invisible\">https://</span><span class=\"\">fridgedoorvintage.example</span><span class=\"invisible\"></span></a>",
+            "verified_at": "2024-01-15T09:12:44.000+00:00"
+          },
+          {
+            "name": "Location",
+            "value": "Riverside Market, Unit 4",
+            "verified_at": null
+          }
+        ],
+        "feature_approval": {
+          "automatic": [
+            "public"
+          ],
+          "manual": [],
+          "current_user": "automatic"
+        },
+        "roles": [],
+        "noindex": false
+      },
+      "media_attachments": [
+        {
+          "id": "113140120000000001",
+          "type": "image",
+          "url": "https://social.example/system/media_attachments/files/113/140/120/000/000/001/original/a1b2c3d4e5f6a7b8.jpg",
+          "preview_url": "https://social.example/system/media_attachments/files/113/140/120/000/000/001/small/a1b2c3d4e5f6a7b8.jpg",
+          "remote_url": null,
+          "preview_remote_url": null,
+          "text_url": null,
+          "meta": {
+            "original": {
+              "width": 1600,
+              "height": 1200,
+              "size": "1600x1200",
+              "aspect": 1.3333333333333333
+            },
+            "small": {
+              "width": 461,
+              "height": 346,
+              "size": "461x346",
+              "aspect": 1.3323699421965318
+            },
+            "focus": {
+              "x": -0.1,
+              "y": 0.3
+            }
+          },
+          "description": "A walnut mid-century record cabinet with the doors open, showing the vinyl storage inside.",
+          "blurhash": "L6PZfSi_.AyEM{ofWBay~qofWBj["
+        },
+        {
+          "id": "113140120000000002",
+          "type": "image",
+          "url": "https://social.example/system/media_attachments/files/113/140/120/000/000/002/original/f9e8d7c6b5a4f3e2.jpg",
+          "preview_url": "https://social.example/system/media_attachments/files/113/140/120/000/000/002/small/f9e8d7c6b5a4f3e2.jpg",
+          "remote_url": null,
+          "preview_remote_url": null,
+          "text_url": null,
+          "meta": {
+            "original": {
+              "width": 1600,
+              "height": 1067,
+              "size": "1600x1067",
+              "aspect": 1.4995314
+            },
+            "small": {
+              "width": 461,
+              "height": 307,
+              "size": "461x307",
+              "aspect": 1.501628664495114
+            }
+          },
+          "description": "Six amber glass tumblers arranged in a row on a shelf.",
+          "blurhash": "UHDbG9~qxu%M~qWBt7ay-;WBWBof"
+        }
+      ],
+      "mentions": [
+        {
+          "id": "109612345678900001",
+          "username": "mabel_finds",
+          "url": "https://other.example/@mabel_finds",
+          "acct": "mabel_finds@other.example"
+        }
+      ],
+      "tags": [
+        {
+          "name": "fridgesale",
+          "url": "https://social.example/tags/fridgesale"
+        }
+      ],
+      "emojis": [],
+      "tagged_collections": [],
+      "quote": null,
+      "card": {
+        "url": "https://fridgedoorvintage.example/shop",
+        "title": "Shop — Fridge Door Vintage",
+        "description": "Restored furniture and homeware, added weekly.",
+        "type": "link",
+        "authors": [],
+        "author_name": "",
+        "author_url": "",
+        "provider_name": "Fridge Door Vintage",
+        "provider_url": "",
+        "html": "",
+        "width": 400,
+        "height": 280,
+        "image": "https://social.example/system/preview_cards/images/000/000/456/original/9c8d7e6f5a4b3c2d.jpg",
+        "embed_url": "",
+        "blurhash": "UBC$zY9Fxut7Iot7WBWBWCoft7WBt7t7WB",
+        "missing_attribution": false,
+        "published_at": null
+      },
+      "poll": null,
+      "quote_approval": {
+        "automatic": [
+          "public"
+        ],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    }
+  },
+  {
+    "id": "118940100000000004",
+    "type": "favourite",
+    "created_at": "2026-09-21T16:45:00.000Z",
+    "group_key": "favourite-113140123456789012-497224",
+    "account": {
+      "id": "109612345678900005",
+      "username": "collector_kate",
+      "acct": "collector_kate@other.example",
+      "display_name": "Kate | glass & ceramics",
+      "locked": false,
+      "bot": false,
+      "discoverable": true,
+      "indexable": true,
+      "group": false,
+      "created_at": "2020-05-19T00:00:00.000Z",
+      "note": "<p>Amber glass collector. I will absolutely outbid you.</p>",
+      "url": "https://other.example/@collector_kate",
+      "uri": "https://other.example/users/collector_kate",
+      "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900005.png",
+      "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900005.png",
+      "avatar_description": "",
+      "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900005.png",
+      "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900005.png",
+      "header_description": "",
+      "followers_count": 1988,
+      "following_count": 140,
+      "statuses_count": 5521,
+      "last_status_at": "2026-09-21",
+      "hide_collections": false,
+      "show_media": true,
+      "show_media_replies": true,
+      "show_featured": true,
+      "emojis": [],
+      "fields": [],
+      "feature_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    },
+    "status": {
+      "id": "113140123456789012",
+      "created_at": "2026-09-20T14:03:11.000Z",
+      "in_reply_to_id": null,
+      "in_reply_to_account_id": null,
+      "sensitive": false,
+      "spoiler_text": "",
+      "visibility": "public",
+      "language": "en",
+      "uri": "https://social.example/users/fridgedoor/statuses/113140123456789012",
+      "url": "https://social.example/@fridgedoor/113140123456789012",
+      "replies_count": 5,
+      "reblogs_count": 3,
+      "favourites_count": 9,
+      "quotes_count": 0,
+      "edited_at": null,
+      "favourited": false,
+      "reblogged": false,
+      "muted": false,
+      "bookmarked": false,
+      "pinned": false,
+      "filtered": [],
+      "content": "<p>Spring clear-out on the shop floor today <span class=\"h-card\" translate=\"no\"><a href=\"https://other.example/@mabel_finds\" class=\"u-url mention\">@<span>mabel_finds</span></a></span> — come say hi! Two new arrivals just landed: a walnut record cabinet and a set of amber glass tumblers. Full details here: <a href=\"https://fridgedoorvintage.example/shop\" target=\"_blank\" rel=\"nofollow noopener\" translate=\"no\"><span class=\"invisible\">https://</span><span class=\"\">fridgedoorvintage.example/shop</span><span class=\"invisible\"></span></a></p><p><a href=\"https://social.example/tags/fridgesale\" class=\"mention hashtag\" rel=\"tag\">#<span>fridgesale</span></a></p>",
+      "reblog": null,
+      "application": {
+        "name": "Web",
+        "website": null
+      },
+      "account": {
+        "id": "113140000000000001",
+        "username": "fridgedoor",
+        "acct": "fridgedoor",
+        "display_name": "Fridge Door Vintage",
+        "locked": false,
+        "bot": false,
+        "discoverable": true,
+        "indexable": true,
+        "group": false,
+        "created_at": "2023-04-02T00:00:00.000Z",
+        "note": "<p>Secondhand furniture and homeware, sourced and restored by hand. Open Tue–Sat, 10–5. Ask us about local delivery. :fridgemagnet:</p>",
+        "url": "https://social.example/@fridgedoor",
+        "uri": "https://social.example/users/fridgedoor",
+        "avatar": "https://social.example/system/accounts/avatars/000/000/001/original/113140000000000001.png",
+        "avatar_static": "https://social.example/system/accounts/avatars/000/000/001/original/113140000000000001.png",
+        "avatar_description": "The Fridge Door Vintage logo: a mint-green fridge door with a house-shaped magnet.",
+        "header": "https://social.example/system/accounts/headers/000/000/001/original/113140000000000001.png",
+        "header_static": "https://social.example/system/accounts/headers/000/000/001/original/113140000000000001.png",
+        "header_description": "Racks of vintage furniture inside the shop.",
+        "followers_count": 812,
+        "following_count": 96,
+        "statuses_count": 1204,
+        "last_status_at": "2026-09-24",
+        "hide_collections": false,
+        "show_media": true,
+        "show_media_replies": true,
+        "show_featured": true,
+        "emojis": [
+          {
+            "shortcode": "fridgemagnet",
+            "url": "https://social.example/system/custom_emojis/images/000/000/012/original/fridgemagnet.png",
+            "static_url": "https://social.example/system/custom_emojis/images/000/000/012/static/fridgemagnet.png",
+            "visible_in_picker": true
+          }
+        ],
+        "fields": [
+          {
+            "name": "Shop",
+            "value": "<a href=\"https://fridgedoorvintage.example\" target=\"_blank\" rel=\"nofollow noopener me\" translate=\"no\"><span class=\"invisible\">https://</span><span class=\"\">fridgedoorvintage.example</span><span class=\"invisible\"></span></a>",
+            "verified_at": "2024-01-15T09:12:44.000+00:00"
+          },
+          {
+            "name": "Location",
+            "value": "Riverside Market, Unit 4",
+            "verified_at": null
+          }
+        ],
+        "feature_approval": {
+          "automatic": [
+            "public"
+          ],
+          "manual": [],
+          "current_user": "automatic"
+        },
+        "roles": [],
+        "noindex": false
+      },
+      "media_attachments": [
+        {
+          "id": "113140120000000001",
+          "type": "image",
+          "url": "https://social.example/system/media_attachments/files/113/140/120/000/000/001/original/a1b2c3d4e5f6a7b8.jpg",
+          "preview_url": "https://social.example/system/media_attachments/files/113/140/120/000/000/001/small/a1b2c3d4e5f6a7b8.jpg",
+          "remote_url": null,
+          "preview_remote_url": null,
+          "text_url": null,
+          "meta": {
+            "original": {
+              "width": 1600,
+              "height": 1200,
+              "size": "1600x1200",
+              "aspect": 1.3333333333333333
+            },
+            "small": {
+              "width": 461,
+              "height": 346,
+              "size": "461x346",
+              "aspect": 1.3323699421965318
+            },
+            "focus": {
+              "x": -0.1,
+              "y": 0.3
+            }
+          },
+          "description": "A walnut mid-century record cabinet with the doors open, showing the vinyl storage inside.",
+          "blurhash": "L6PZfSi_.AyEM{ofWBay~qofWBj["
+        },
+        {
+          "id": "113140120000000002",
+          "type": "image",
+          "url": "https://social.example/system/media_attachments/files/113/140/120/000/000/002/original/f9e8d7c6b5a4f3e2.jpg",
+          "preview_url": "https://social.example/system/media_attachments/files/113/140/120/000/000/002/small/f9e8d7c6b5a4f3e2.jpg",
+          "remote_url": null,
+          "preview_remote_url": null,
+          "text_url": null,
+          "meta": {
+            "original": {
+              "width": 1600,
+              "height": 1067,
+              "size": "1600x1067",
+              "aspect": 1.4995314
+            },
+            "small": {
+              "width": 461,
+              "height": 307,
+              "size": "461x307",
+              "aspect": 1.501628664495114
+            }
+          },
+          "description": "Six amber glass tumblers arranged in a row on a shelf.",
+          "blurhash": "UHDbG9~qxu%M~qWBt7ay-;WBWBof"
+        }
+      ],
+      "mentions": [
+        {
+          "id": "109612345678900001",
+          "username": "mabel_finds",
+          "url": "https://other.example/@mabel_finds",
+          "acct": "mabel_finds@other.example"
+        }
+      ],
+      "tags": [
+        {
+          "name": "fridgesale",
+          "url": "https://social.example/tags/fridgesale"
+        }
+      ],
+      "emojis": [],
+      "tagged_collections": [],
+      "quote": null,
+      "card": {
+        "url": "https://fridgedoorvintage.example/shop",
+        "title": "Shop — Fridge Door Vintage",
+        "description": "Restored furniture and homeware, added weekly.",
+        "type": "link",
+        "authors": [],
+        "author_name": "",
+        "author_url": "",
+        "provider_name": "Fridge Door Vintage",
+        "provider_url": "",
+        "html": "",
+        "width": 400,
+        "height": 280,
+        "image": "https://social.example/system/preview_cards/images/000/000/456/original/9c8d7e6f5a4b3c2d.jpg",
+        "embed_url": "",
+        "blurhash": "UBC$zY9Fxut7Iot7WBWBWCoft7WBt7t7WB",
+        "missing_attribution": false,
+        "published_at": null
+      },
+      "poll": null,
+      "quote_approval": {
+        "automatic": [
+          "public"
+        ],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    }
+  },
+  {
+    "id": "118915600000000003",
+    "type": "mention",
+    "created_at": "2026-09-20T14:10:03.000Z",
+    "group_key": "ungrouped-118915600000000003",
+    "account": {
+      "id": "109612345678900001",
+      "username": "mabel_finds",
+      "acct": "mabel_finds@other.example",
+      "display_name": "Mabel 🧵 finds & fixes",
+      "locked": false,
+      "bot": false,
+      "discoverable": true,
+      "indexable": true,
+      "group": false,
+      "created_at": "2021-08-11T00:00:00.000Z",
+      "note": "<p>Buying, mending, reselling. DMs open for trades.</p>",
+      "url": "https://other.example/@mabel_finds",
+      "uri": "https://other.example/users/mabel_finds",
+      "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900001.png",
+      "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900001.png",
+      "avatar_description": "",
+      "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900001.png",
+      "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900001.png",
+      "header_description": "",
+      "followers_count": 2140,
+      "following_count": 380,
+      "statuses_count": 9042,
+      "last_status_at": "2026-09-20",
+      "hide_collections": false,
+      "show_media": true,
+      "show_media_replies": true,
+      "show_featured": true,
+      "emojis": [],
+      "fields": [],
+      "feature_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    },
+    "status": {
+      "id": "113140126000000001",
+      "created_at": "2026-09-20T14:10:02.000Z",
+      "in_reply_to_id": "113140123456789012",
+      "in_reply_to_account_id": "113140000000000001",
+      "sensitive": false,
+      "spoiler_text": "",
+      "visibility": "public",
+      "language": "en",
+      "uri": "https://other.example/users/mabel_finds/statuses/113140126000000001",
+      "url": "https://other.example/@mabel_finds/113140126000000001",
+      "replies_count": 2,
+      "reblogs_count": 0,
+      "favourites_count": 1,
+      "quotes_count": 0,
+      "edited_at": null,
+      "favourited": false,
+      "reblogged": false,
+      "muted": false,
+      "bookmarked": false,
+      "filtered": [],
+      "content": "<p>Oh the record cabinet is gorgeous :blobheart: is it still there on Saturday?</p>",
+      "reblog": null,
+      "account": {
+        "id": "109612345678900001",
+        "username": "mabel_finds",
+        "acct": "mabel_finds@other.example",
+        "display_name": "Mabel 🧵 finds & fixes",
+        "locked": false,
+        "bot": false,
+        "discoverable": true,
+        "indexable": true,
+        "group": false,
+        "created_at": "2021-08-11T00:00:00.000Z",
+        "note": "<p>Buying, mending, reselling. DMs open for trades.</p>",
+        "url": "https://other.example/@mabel_finds",
+        "uri": "https://other.example/users/mabel_finds",
+        "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900001.png",
+        "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900001.png",
+        "avatar_description": "",
+        "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900001.png",
+        "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900001.png",
+        "header_description": "",
+        "followers_count": 2140,
+        "following_count": 380,
+        "statuses_count": 9042,
+        "last_status_at": "2026-09-20",
+        "hide_collections": false,
+        "show_media": true,
+        "show_media_replies": true,
+        "show_featured": true,
+        "emojis": [],
+        "fields": [],
+        "feature_approval": {
+          "automatic": [],
+          "manual": [],
+          "current_user": "automatic"
+        }
+      },
+      "media_attachments": [],
+      "mentions": [
+        {
+          "id": "113140000000000001",
+          "username": "fridgedoor",
+          "url": "https://social.example/@fridgedoor",
+          "acct": "fridgedoor"
+        }
+      ],
+      "tags": [],
+      "emojis": [
+        {
+          "shortcode": "blobheart",
+          "url": "https://other.example/system/custom_emojis/images/000/000/771/original/blobheart.png",
+          "static_url": "https://other.example/system/custom_emojis/images/000/000/771/static/blobheart.png",
+          "visible_in_picker": true
+        }
+      ],
+      "tagged_collections": [],
+      "quote": null,
+      "card": null,
+      "poll": null,
+      "quote_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    }
+  },
+  {
+    "id": "118912300000000002",
+    "type": "follow",
+    "created_at": "2026-09-20T08:00:00.000Z",
+    "group_key": "follow-497192",
+    "account": {
+      "id": "109612345678900008",
+      "username": "newintown",
+      "acct": "newintown@other.example",
+      "display_name": "New in Town",
+      "locked": false,
+      "bot": false,
+      "discoverable": true,
+      "indexable": true,
+      "group": false,
+      "created_at": "2026-08-30T00:00:00.000Z",
+      "note": "<p>Just moved here, looking for good local shops.</p>",
+      "url": "https://other.example/@newintown",
+      "uri": "https://other.example/users/newintown",
+      "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900008.png",
+      "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900008.png",
+      "avatar_description": "",
+      "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900008.png",
+      "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900008.png",
+      "header_description": "",
+      "followers_count": 4,
+      "following_count": 61,
+      "statuses_count": 2,
+      "last_status_at": "2026-09-19",
+      "hide_collections": false,
+      "show_media": true,
+      "show_media_replies": true,
+      "show_featured": true,
+      "emojis": [],
+      "fields": [],
+      "feature_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    }
+  },
+  {
+    "id": "118902200000000001",
+    "type": "mention",
+    "created_at": "2026-09-19T10:59:51.000Z",
+    "group_key": "ungrouped-118902200000000001",
+    "account": {
+      "id": "109612345678900005",
+      "username": "collector_kate",
+      "acct": "collector_kate@other.example",
+      "display_name": "Kate | glass & ceramics",
+      "locked": false,
+      "bot": false,
+      "discoverable": true,
+      "indexable": true,
+      "group": false,
+      "created_at": "2020-05-19T00:00:00.000Z",
+      "note": "<p>Amber glass collector. I will absolutely outbid you.</p>",
+      "url": "https://other.example/@collector_kate",
+      "uri": "https://other.example/users/collector_kate",
+      "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900005.png",
+      "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900005.png",
+      "avatar_description": "",
+      "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900005.png",
+      "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900005.png",
+      "header_description": "",
+      "followers_count": 1988,
+      "following_count": 140,
+      "statuses_count": 5521,
+      "last_status_at": "2026-09-21",
+      "hide_collections": false,
+      "show_media": true,
+      "show_media_replies": true,
+      "show_featured": true,
+      "emojis": [],
+      "fields": [],
+      "feature_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    },
+    "status": {
+      "id": "113140050000000009",
+      "created_at": "2026-09-19T10:59:50.000Z",
+      "in_reply_to_id": null,
+      "in_reply_to_account_id": null,
+      "sensitive": false,
+      "spoiler_text": "",
+      "visibility": "public",
+      "language": "en",
+      "uri": "https://other.example/users/collector_kate/statuses/113140050000000009",
+      "url": "https://other.example/@collector_kate/113140050000000009",
+      "replies_count": 0,
+      "reblogs_count": 0,
+      "favourites_count": 0,
+      "quotes_count": 0,
+      "edited_at": null,
+      "favourited": false,
+      "reblogged": false,
+      "muted": false,
+      "bookmarked": false,
+      "filtered": [],
+      "content": "<p><span class=\"h-card\" translate=\"no\"><a href=\"https://social.example/@fridgedoor\" class=\"u-url mention\">@<span>fridgedoor</span></a></span> what time do you open on Sundays?</p>",
+      "reblog": null,
+      "account": {
+        "id": "109612345678900005",
+        "username": "collector_kate",
+        "acct": "collector_kate@other.example",
+        "display_name": "Kate | glass & ceramics",
+        "locked": false,
+        "bot": false,
+        "discoverable": true,
+        "indexable": true,
+        "group": false,
+        "created_at": "2020-05-19T00:00:00.000Z",
+        "note": "<p>Amber glass collector. I will absolutely outbid you.</p>",
+        "url": "https://other.example/@collector_kate",
+        "uri": "https://other.example/users/collector_kate",
+        "avatar": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900005.png",
+        "avatar_static": "https://other.example/system/accounts/avatars/000/000/001/original/109612345678900005.png",
+        "avatar_description": "",
+        "header": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900005.png",
+        "header_static": "https://other.example/system/accounts/headers/000/000/001/original/109612345678900005.png",
+        "header_description": "",
+        "followers_count": 1988,
+        "following_count": 140,
+        "statuses_count": 5521,
+        "last_status_at": "2026-09-21",
+        "hide_collections": false,
+        "show_media": true,
+        "show_media_replies": true,
+        "show_featured": true,
+        "emojis": [],
+        "fields": [],
+        "feature_approval": {
+          "automatic": [],
+          "manual": [],
+          "current_user": "automatic"
+        }
+      },
+      "media_attachments": [],
+      "mentions": [
+        {
+          "id": "113140000000000001",
+          "username": "fridgedoor",
+          "url": "https://social.example/@fridgedoor",
+          "acct": "fridgedoor"
+        }
+      ],
+      "tags": [],
+      "emojis": [],
+      "tagged_collections": [],
+      "quote": null,
+      "card": null,
+      "poll": null,
+      "quote_approval": {
+        "automatic": [],
+        "manual": [],
+        "current_user": "automatic"
+      }
+    }
+  }
+]

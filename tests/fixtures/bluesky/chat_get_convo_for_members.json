@@ -1,0 +1,26 @@
+{
+  "convo": {
+    "id": "yuf7t6awrceda",
+    "rev": "ubxrgaxoeoz5g",
+    "members": [
+      {
+        "did": "did:plc:dc7hcchu6gliiknwqdeffydi",
+        "handle": "fridgedoor.bsky.social",
+        "displayName": "Fridge Door Parts",
+        "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreidcu3anamzhvq64lgv7pqm7g3xtn46dbxdp5b4fmriyijr6bu7lda@jpeg"
+      },
+      {
+        "did": "did:plc:d2yalmapuaocmlqbfzwwl33y",
+        "handle": "wholesalewill.bsky.social",
+        "displayName": "Will",
+        "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:d2yalmapuaocmlqbfzwwl33y/bafkreiphrdz2numm5wxsggzzkpyuc3hqnlxbuqz6fioddvv6sdx7dqkbdr@jpeg"
+      }
+    ],
+    "muted": false,
+    "status": "accepted",
+    "unreadCount": 0,
+    "kind": {
+      "$type": "chat.bsky.convo.defs#directConvo"
+    }
+  }
+}

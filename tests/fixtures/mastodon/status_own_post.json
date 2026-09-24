@@ -1,0 +1,187 @@
+{
+  "id": "113140123456789012",
+  "created_at": "2026-09-20T14:03:11.000Z",
+  "in_reply_to_id": null,
+  "in_reply_to_account_id": null,
+  "sensitive": false,
+  "spoiler_text": "",
+  "visibility": "public",
+  "language": "en",
+  "uri": "https://social.example/users/fridgedoor/statuses/113140123456789012",
+  "url": "https://social.example/@fridgedoor/113140123456789012",
+  "replies_count": 5,
+  "reblogs_count": 3,
+  "favourites_count": 9,
+  "quotes_count": 0,
+  "edited_at": null,
+  "favourited": false,
+  "reblogged": false,
+  "muted": false,
+  "bookmarked": false,
+  "pinned": false,
+  "filtered": [],
+  "content": "<p>Spring clear-out on the shop floor today <span class=\"h-card\" translate=\"no\"><a href=\"https://other.example/@mabel_finds\" class=\"u-url mention\">@<span>mabel_finds</span></a></span> — come say hi! Two new arrivals just landed: a walnut record cabinet and a set of amber glass tumblers. Full details here: <a href=\"https://fridgedoorvintage.example/shop\" target=\"_blank\" rel=\"nofollow noopener\" translate=\"no\"><span class=\"invisible\">https://</span><span class=\"\">fridgedoorvintage.example/shop</span><span class=\"invisible\"></span></a></p><p><a href=\"https://social.example/tags/fridgesale\" class=\"mention hashtag\" rel=\"tag\">#<span>fridgesale</span></a></p>",
+  "reblog": null,
+  "application": {
+    "name": "Web",
+    "website": null
+  },
+  "account": {
+    "id": "113140000000000001",
+    "username": "fridgedoor",
+    "acct": "fridgedoor",
+    "display_name": "Fridge Door Vintage",
+    "locked": false,
+    "bot": false,
+    "discoverable": true,
+    "indexable": true,
+    "group": false,
+    "created_at": "2023-04-02T00:00:00.000Z",
+    "note": "<p>Secondhand furniture and homeware, sourced and restored by hand. Open Tue–Sat, 10–5. Ask us about local delivery. :fridgemagnet:</p>",
+    "url": "https://social.example/@fridgedoor",
+    "uri": "https://social.example/users/fridgedoor",
+    "avatar": "https://social.example/system/accounts/avatars/000/000/001/original/113140000000000001.png",
+    "avatar_static": "https://social.example/system/accounts/avatars/000/000/001/original/113140000000000001.png",
+    "avatar_description": "The Fridge Door Vintage logo: a mint-green fridge door with a house-shaped magnet.",
+    "header": "https://social.example/system/accounts/headers/000/000/001/original/113140000000000001.png",
+    "header_static": "https://social.example/system/accounts/headers/000/000/001/original/113140000000000001.png",
+    "header_description": "Racks of vintage furniture inside the shop.",
+    "followers_count": 812,
+    "following_count": 96,
+    "statuses_count": 1204,
+    "last_status_at": "2026-09-24",
+    "hide_collections": false,
+    "show_media": true,
+    "show_media_replies": true,
+    "show_featured": true,
+    "emojis": [
+      {
+        "shortcode": "fridgemagnet",
+        "url": "https://social.example/system/custom_emojis/images/000/000/012/original/fridgemagnet.png",
+        "static_url": "https://social.example/system/custom_emojis/images/000/000/012/static/fridgemagnet.png",
+        "visible_in_picker": true
+      }
+    ],
+    "fields": [
+      {
+        "name": "Shop",
+        "value": "<a href=\"https://fridgedoorvintage.example\" target=\"_blank\" rel=\"nofollow noopener me\" translate=\"no\"><span class=\"invisible\">https://</span><span class=\"\">fridgedoorvintage.example</span><span class=\"invisible\"></span></a>",
+        "verified_at": "2024-01-15T09:12:44.000+00:00"
+      },
+      {
+        "name": "Location",
+        "value": "Riverside Market, Unit 4",
+        "verified_at": null
+      }
+    ],
+    "feature_approval": {
+      "automatic": [
+        "public"
+      ],
+      "manual": [],
+      "current_user": "automatic"
+    },
+    "roles": [],
+    "noindex": false
+  },
+  "media_attachments": [
+    {
+      "id": "113140120000000001",
+      "type": "image",
+      "url": "https://social.example/system/media_attachments/files/113/140/120/000/000/001/original/a1b2c3d4e5f6a7b8.jpg",
+      "preview_url": "https://social.example/system/media_attachments/files/113/140/120/000/000/001/small/a1b2c3d4e5f6a7b8.jpg",
+      "remote_url": null,
+      "preview_remote_url": null,
+      "text_url": null,
+      "meta": {
+        "original": {
+          "width": 1600,
+          "height": 1200,
+          "size": "1600x1200",
+          "aspect": 1.3333333333333333
+        },
+        "small": {
+          "width": 461,
+          "height": 346,
+          "size": "461x346",
+          "aspect": 1.3323699421965318
+        },
+        "focus": {
+          "x": -0.1,
+          "y": 0.3
+        }
+      },
+      "description": "A walnut mid-century record cabinet with the doors open, showing the vinyl storage inside.",
+      "blurhash": "L6PZfSi_.AyEM{ofWBay~qofWBj["
+    },
+    {
+      "id": "113140120000000002",
+      "type": "image",
+      "url": "https://social.example/system/media_attachments/files/113/140/120/000/000/002/original/f9e8d7c6b5a4f3e2.jpg",
+      "preview_url": "https://social.example/system/media_attachments/files/113/140/120/000/000/002/small/f9e8d7c6b5a4f3e2.jpg",
+      "remote_url": null,
+      "preview_remote_url": null,
+      "text_url": null,
+      "meta": {
+        "original": {
+          "width": 1600,
+          "height": 1067,
+          "size": "1600x1067",
+          "aspect": 1.4995314
+        },
+        "small": {
+          "width": 461,
+          "height": 307,
+          "size": "461x307",
+          "aspect": 1.501628664495114
+        }
+      },
+      "description": "Six amber glass tumblers arranged in a row on a shelf.",
+      "blurhash": "UHDbG9~qxu%M~qWBt7ay-;WBWBof"
+    }
+  ],
+  "mentions": [
+    {
+      "id": "109612345678900001",
+      "username": "mabel_finds",
+      "url": "https://other.example/@mabel_finds",
+      "acct": "mabel_finds@other.example"
+    }
+  ],
+  "tags": [
+    {
+      "name": "fridgesale",
+      "url": "https://social.example/tags/fridgesale"
+    }
+  ],
+  "emojis": [],
+  "tagged_collections": [],
+  "quote": null,
+  "card": {
+    "url": "https://fridgedoorvintage.example/shop",
+    "title": "Shop — Fridge Door Vintage",
+    "description": "Restored furniture and homeware, added weekly.",
+    "type": "link",
+    "authors": [],
+    "author_name": "",
+    "author_url": "",
+    "provider_name": "Fridge Door Vintage",
+    "provider_url": "",
+    "html": "",
+    "width": 400,
+    "height": 280,
+    "image": "https://social.example/system/preview_cards/images/000/000/456/original/9c8d7e6f5a4b3c2d.jpg",
+    "embed_url": "",
+    "blurhash": "UBC$zY9Fxut7Iot7WBWBWCoft7WBt7t7WB",
+    "missing_attribution": false,
+    "published_at": null
+  },
+  "poll": null,
+  "quote_approval": {
+    "automatic": [
+      "public"
+    ],
+    "manual": [],
+    "current_user": "automatic"
+  }
+}

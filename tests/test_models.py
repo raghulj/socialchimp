@@ -8,17 +8,30 @@ import pytest
 
 from socialchimp import (
     AppCredentials,
+    Attachment,
     ConfigError,
     Connection,
+    Conversation,
     InvalidPostError,
+    Like,
+    LikeResult,
+    LinkKind,
     Media,
     MediaKind,
+    Message,
+    Page,
+    Person,
     Post,
+    PostDetails,
     PostResult,
     PostState,
     PostStats,
     SocialChimpError,
+    TextLink,
+    Thread,
     Token,
+    Unavailable,
+    Visibility,
 )
 
 
@@ -251,6 +264,356 @@ class TestPostResult:
         result = PostResult(id="1", url=None, state=PostState.PROCESSING)
 
         assert result.is_done is False
+
+    def test_cid_defaults_to_none_so_old_code_keeps_working(self) -> None:
+        # PostResult existed before Bluesky's content hash did. Nothing that
+        # built one before 0.8.0 passed cid, so it has to default quietly.
+        result = PostResult(id="1")
+
+        assert result.cid is None
+
+    def test_bluesky_fills_cid_alongside_the_rest(self) -> None:
+        result = PostResult(id="at://did:plc:abc/app.bsky.feed.post/1", cid="bafyabc")
+
+        assert result.cid == "bafyabc"
+
+    def test_it_can_still_be_built_by_position(self) -> None:
+        # Every existing construction site passes these by position or by
+        # keyword; either way, adding cid after raw must not break it.
+        result = PostResult("1", "https://example.com/1", PostState.DONE)
+
+        assert result.id == "1"
+        assert result.cid is None
+
+    def test_a_positional_raw_still_lands_in_raw(self) -> None:
+        # Code written before cid existed could call
+        # PostResult(id, url, state, raw) by position. cid has to sit after
+        # raw, or this fourth argument lands in cid instead of raw.
+        result = PostResult("1", "https://example.com/1", PostState.DONE, {"ok": True})
+
+        assert result.raw == {"ok": True}
+        assert result.cid is None
+
+
+class TestPage:
+    def test_a_page_holds_its_items_and_where_to_go_next(self) -> None:
+        page = Page(items=(1, 2, 3), next="cursor-2")
+
+        assert page.items == (1, 2, 3)
+        assert page.next == "cursor-2"
+
+    def test_no_next_means_no_more_pages(self) -> None:
+        page: Page[int] = Page(items=())
+
+        assert page.next is None
+
+
+class TestPerson:
+    def test_a_person_carries_what_a_network_says_about_them(self) -> None:
+        person = Person(
+            id="did:plc:abc",
+            handle="ada.bsky.social",
+            display_name="Ada",
+            avatar_url="https://example.com/ada.jpg",
+            url="https://bsky.app/profile/ada.bsky.social",
+        )
+
+        assert person.id == "did:plc:abc"
+        assert person.handle == "ada.bsky.social"
+        assert person.raw == {}
+
+    def test_meta_messaging_has_no_handle(self) -> None:
+        person = Person(
+            id="psid-1",
+            handle=None,
+            display_name=None,
+            avatar_url=None,
+            url=None,
+        )
+
+        assert person.handle is None
+
+
+class TestTextLink:
+    def test_a_mention_names_the_person_and_the_offsets(self) -> None:
+        link = TextLink(
+            start=0, end=4, kind=LinkKind.MENTION, target="acct-1", url=None
+        )
+
+        assert link.kind is LinkKind.MENTION
+        assert link.start == 0
+        assert link.end == 4
+
+    def test_a_tag_has_no_hash_in_its_target(self) -> None:
+        link = TextLink(
+            start=5, end=10, kind=LinkKind.TAG, target="socialchimp", url=None
+        )
+
+        assert link.target == "socialchimp"
+
+
+class TestAttachment:
+    def test_an_attachment_keeps_what_it_needs_to_show_the_file(self) -> None:
+        attachment = Attachment(
+            kind="image",
+            url="https://example.com/cat.jpg",
+            preview_url="https://example.com/cat-small.jpg",
+            alt_text="A cat",
+            width=800,
+            height=600,
+        )
+
+        assert attachment.kind == "image"
+        assert attachment.alt_text == "A cat"
+        assert attachment.raw == {}
+
+
+class TestPostDetails:
+    def test_it_keeps_a_created_time_with_a_timezone(self) -> None:
+        with pytest.raises(ConfigError, match="timezone"):
+            PostDetails(
+                id="1",
+                cid=None,
+                url=None,
+                author=None,
+                text="hi",
+                html=None,
+                links=(),
+                attachments=(),
+                created_at=datetime(2030, 1, 1),  # noqa: DTZ001
+                visibility=None,
+                parent_id=None,
+                root_id=None,
+                reply_count=None,
+                like_count=None,
+                repost_count=None,
+                quote_count=None,
+                liked_by_me=None,
+                my_like_id=None,
+                is_mine=False,
+                unavailable=None,
+            )
+
+    def test_a_counted_thing_the_network_never_mentioned_is_none_not_zero(self) -> None:
+        details = PostDetails(
+            id="1",
+            cid=None,
+            url="https://example.com/1",
+            author=None,
+            text="hi",
+            html=None,
+            links=(),
+            attachments=(),
+            created_at=datetime.now(UTC),
+            visibility=Visibility.PUBLIC,
+            parent_id=None,
+            root_id="1",
+            reply_count=None,
+            like_count=None,
+            repost_count=None,
+            quote_count=None,
+            liked_by_me=None,
+            my_like_id=None,
+            is_mine=True,
+            unavailable=None,
+        )
+
+        assert details.reply_count is None
+        assert details.raw == {}
+
+    def test_a_placeholder_for_an_unreachable_post_says_why(self) -> None:
+        details = PostDetails(
+            id="1",
+            cid=None,
+            url=None,
+            author=None,
+            text="",
+            html=None,
+            links=(),
+            attachments=(),
+            created_at=None,
+            visibility=None,
+            parent_id=None,
+            root_id="1",
+            reply_count=None,
+            like_count=None,
+            repost_count=None,
+            quote_count=None,
+            liked_by_me=None,
+            my_like_id=None,
+            is_mine=False,
+            unavailable=Unavailable.DELETED,
+        )
+
+        assert details.unavailable is Unavailable.DELETED
+        assert details.author is None
+
+
+class TestThread:
+    def test_a_thread_holds_the_post_and_its_replies_flat(self) -> None:
+        post = _a_post_details("1")
+        reply = _a_post_details("2", parent_id="1", root_id="1")
+
+        thread = Thread(post=post, replies=(reply,), complete=True)
+
+        assert thread.post.id == "1"
+        assert thread.replies[0].parent_id == "1"
+        assert thread.complete is True
+
+
+class TestLikeResult:
+    def test_bluesky_keeps_the_like_record_uri_to_save_a_lookup(self) -> None:
+        result = LikeResult(
+            post_id="1", like_id="at://did:plc:abc/app.bsky.feed.like/1"
+        )
+
+        assert result.like_id is not None
+
+    def test_mastodon_has_nothing_to_keep(self) -> None:
+        result = LikeResult(post_id="1", like_id=None)
+
+        assert result.like_id is None
+
+
+class TestLike:
+    def test_a_like_can_carry_when_it_happened(self) -> None:
+        when = datetime.now(UTC)
+        like = Like(person=_a_person(), liked_at=when)
+
+        assert like.liked_at == when
+
+    def test_mastodon_never_says_when_a_favourite_happened(self) -> None:
+        like = Like(person=_a_person(), liked_at=None)
+
+        assert like.liked_at is None
+
+    def test_a_liked_at_with_no_timezone_is_rejected(self) -> None:
+        with pytest.raises(ConfigError, match="timezone"):
+            Like(person=_a_person(), liked_at=datetime(2030, 1, 1))  # noqa: DTZ001
+
+
+class TestMessage:
+    def test_a_message_needs_a_timezone_on_when_it_was_sent(self) -> None:
+        with pytest.raises(ConfigError, match="timezone"):
+            Message(
+                id="1",
+                conversation_id="c1",
+                sender=_a_person(),
+                text="hi",
+                sent_at=datetime(2030, 1, 1),  # noqa: DTZ001
+                is_mine=True,
+                deleted=False,
+                attachments=(),
+            )
+
+    def test_a_deleted_message_has_no_text(self) -> None:
+        message = Message(
+            id="1",
+            conversation_id="c1",
+            sender=_a_person(),
+            text="",
+            sent_at=datetime.now(UTC),
+            is_mine=False,
+            deleted=True,
+            attachments=(),
+        )
+
+        assert message.text == ""
+        assert message.deleted is True
+
+
+class TestConversation:
+    def test_mastodon_reports_unread_as_one_or_zero(self) -> None:
+        conversation = Conversation(
+            id="c1",
+            people=(_a_person(),),
+            last_message=None,
+            unread_count=1,
+            updated_at=datetime.now(UTC),
+            can_reply_until=None,
+            full_history=False,
+        )
+
+        assert conversation.unread_count == 1
+        assert conversation.full_history is False
+
+    def test_meta_has_a_deadline_to_reply_by(self) -> None:
+        deadline = datetime.now(UTC)
+        conversation = Conversation(
+            id="c1",
+            people=(_a_person(),),
+            last_message=None,
+            unread_count=None,
+            updated_at=None,
+            can_reply_until=deadline,
+            full_history=True,
+        )
+
+        assert conversation.can_reply_until == deadline
+
+    def test_an_updated_at_with_no_timezone_is_rejected(self) -> None:
+        with pytest.raises(ConfigError, match="timezone"):
+            Conversation(
+                id="c1",
+                people=(),
+                last_message=None,
+                unread_count=None,
+                updated_at=datetime(2030, 1, 1),  # noqa: DTZ001
+                can_reply_until=None,
+                full_history=True,
+            )
+
+    def test_a_reply_deadline_with_no_timezone_is_rejected(self) -> None:
+        with pytest.raises(ConfigError, match="timezone"):
+            Conversation(
+                id="c1",
+                people=(),
+                last_message=None,
+                unread_count=None,
+                updated_at=None,
+                can_reply_until=datetime(2030, 1, 1),  # noqa: DTZ001
+                full_history=True,
+            )
+
+
+def _a_person(person_id: str = "1") -> Person:
+    return Person(
+        id=person_id,
+        handle="someone",
+        display_name="Someone",
+        avatar_url=None,
+        url=None,
+    )
+
+
+def _a_post_details(
+    post_id: str,
+    *,
+    parent_id: str | None = None,
+    root_id: str | None = None,
+) -> PostDetails:
+    return PostDetails(
+        id=post_id,
+        cid=None,
+        url=None,
+        author=_a_person(),
+        text="hi",
+        html=None,
+        links=(),
+        attachments=(),
+        created_at=datetime.now(UTC),
+        visibility=Visibility.PUBLIC,
+        parent_id=parent_id,
+        root_id=root_id if root_id is not None else post_id,
+        reply_count=None,
+        like_count=None,
+        repost_count=None,
+        quote_count=None,
+        liked_by_me=None,
+        my_like_id=None,
+        is_mine=False,
+        unavailable=None,
+    )
 
 
 class TestPostStats:

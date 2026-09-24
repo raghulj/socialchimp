@@ -16,13 +16,20 @@ from socialchimp import (
     BusinessLocation,
     ConfigError,
     Connection,
+    Conversation,
     Feature,
     InMemoryStorage,
     InvalidPostError,
+    Like,
+    LikeResult,
     Limits,
+    Message,
     NotSupportedError,
+    Page,
+    Person,
     PlatformError,
     Post,
+    PostDetails,
     PostResult,
     PostState,
     PostStats,
@@ -30,9 +37,11 @@ from socialchimp import (
     SignatureError,
     SocialChimpError,
     Storage,
+    Thread,
     Token,
     TokenManager,
     Update,
+    UpdateBatch,
     UpdateKind,
     Verification,
     VerificationOption,
@@ -154,6 +163,60 @@ def an_update(connection_id: str = "conn-1") -> Update:
         platform="pusher",
         connection_id=connection_id,
         created_at=datetime.now(UTC),
+    )
+
+
+def _a_person() -> Person:
+    return Person(id="1", handle="ada", display_name="Ada", avatar_url=None, url=None)
+
+
+def _a_post_details(post_id: str = "1") -> PostDetails:
+    return PostDetails(
+        id=post_id,
+        cid=None,
+        url=None,
+        author=_a_person(),
+        text="hi",
+        html=None,
+        links=(),
+        attachments=(),
+        created_at=datetime.now(UTC),
+        visibility=None,
+        parent_id=None,
+        root_id=post_id,
+        reply_count=None,
+        like_count=None,
+        repost_count=None,
+        quote_count=None,
+        liked_by_me=None,
+        my_like_id=None,
+        is_mine=False,
+        unavailable=None,
+    )
+
+
+def _a_message(message_id: str = "m1") -> Message:
+    return Message(
+        id=message_id,
+        conversation_id="c1",
+        sender=_a_person(),
+        text="hi",
+        sent_at=datetime.now(UTC),
+        is_mine=True,
+        deleted=False,
+        attachments=(),
+    )
+
+
+def _a_conversation() -> Conversation:
+    return Conversation(
+        id="c1",
+        people=(_a_person(),),
+        last_message=None,
+        unread_count=None,
+        updated_at=None,
+        can_reply_until=None,
+        full_history=True,
     )
 
 
@@ -331,6 +394,311 @@ class LyingCounter(FakePlatform):
 
     name = "lying-counter"
     features = FakePlatform.features | Feature.READ_STATS
+
+
+class PostReadingPlatform(FakePlatform):
+    """A platform whose posts can be read back in full, like Mastodon's."""
+
+    name = "post-reader"
+    features = FakePlatform.features | Feature.READ_POST
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_posts: list[tuple[Connection, str]] = []
+
+    async def read_post(self, connection: Connection, post_id: str) -> PostDetails:
+        self.read_posts.append((connection, post_id))
+        return _a_post_details(post_id)
+
+
+class LyingPostReader(FakePlatform):
+    """Says posts can be read back in full, but has no method for it."""
+
+    name = "lying-post-reader"
+    features = FakePlatform.features | Feature.READ_POST
+
+
+def made_post_reader() -> PostReadingPlatform:
+    platform = made("post-reader")
+    assert isinstance(platform, PostReadingPlatform)
+    return platform
+
+
+class ThreadReadingPlatform(FakePlatform):
+    """A platform whose threads can be read, like Bluesky's."""
+
+    name = "thread-reader"
+    features = FakePlatform.features | Feature.READ_THREAD
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_threads: list[tuple[Connection, str, int | None, int | None]] = []
+
+    async def read_thread(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        depth: int | None = None,
+        limit: int | None = None,
+    ) -> Thread:
+        self.read_threads.append((connection, post_id, depth, limit))
+        return Thread(post=_a_post_details(post_id), replies=(), complete=True)
+
+
+class LyingThreadReader(FakePlatform):
+    """Says a thread can be read, but has no method for it."""
+
+    name = "lying-thread-reader"
+    features = FakePlatform.features | Feature.READ_THREAD
+
+
+def made_thread_reader() -> ThreadReadingPlatform:
+    platform = made("thread-reader")
+    assert isinstance(platform, ThreadReadingPlatform)
+    return platform
+
+
+class CommentReplyingPlatform(FakePlatform):
+    """A platform that can reply to any post or comment at any depth."""
+
+    name = "comment-replier"
+    features = FakePlatform.features | Feature.REPLY_TO_COMMENTS
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.replies: list[tuple[Connection, str, str]] = []
+
+    async def reply(
+        self,
+        connection: Connection,
+        post_id: str,
+        text: str,
+        *,
+        media: tuple[object, ...] = (),
+        options: RawData | None = None,
+    ) -> PostResult:
+        self.replies.append((connection, post_id, text))
+        return PostResult(id="reply-1")
+
+
+class LyingCommentReplier(FakePlatform):
+    """Says it can reply to a comment, but has no method for it."""
+
+    name = "lying-comment-replier"
+    features = FakePlatform.features | Feature.REPLY_TO_COMMENTS
+
+
+def made_comment_replier() -> CommentReplyingPlatform:
+    platform = made("comment-replier")
+    assert isinstance(platform, CommentReplyingPlatform)
+    return platform
+
+
+class LikingPlatform(FakePlatform):
+    """A platform that can like and unlike a post or a comment."""
+
+    name = "liker"
+    features = FakePlatform.features | Feature.LIKE
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.liked: list[tuple[Connection, str]] = []
+        self.unliked: list[tuple[Connection, str, str | None]] = []
+
+    async def like(self, connection: Connection, post_id: str) -> LikeResult:
+        self.liked.append((connection, post_id))
+        return LikeResult(post_id=post_id, like_id="like-1")
+
+    async def unlike(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        like_id: str | None = None,
+    ) -> None:
+        self.unliked.append((connection, post_id, like_id))
+
+
+class LyingLiker(FakePlatform):
+    """Says it can like a post, but has no methods for it."""
+
+    name = "lying-liker"
+    features = FakePlatform.features | Feature.LIKE
+
+
+def made_liker() -> LikingPlatform:
+    platform = made("liker")
+    assert isinstance(platform, LikingPlatform)
+    return platform
+
+
+class LikesReadingPlatform(FakePlatform):
+    """A platform that can list who liked a post."""
+
+    name = "likes-reader"
+    features = FakePlatform.features | Feature.READ_LIKES
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.read: list[tuple[Connection, str]] = []
+
+    async def read_likes(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Like]:
+        self.read.append((connection, post_id))
+        return Page(items=(Like(person=_a_person(), liked_at=None),))
+
+
+class LyingLikesReader(FakePlatform):
+    """Says likes can be listed, but has no method for it."""
+
+    name = "lying-likes-reader"
+    features = FakePlatform.features | Feature.READ_LIKES
+
+
+def made_likes_reader() -> LikesReadingPlatform:
+    platform = made("likes-reader")
+    assert isinstance(platform, LikesReadingPlatform)
+    return platform
+
+
+class UpdatesAfterPlatform(FakePlatform):
+    """A platform that can be polled with a resumable marker."""
+
+    name = "marker-poller"
+    features = FakePlatform.features | Feature.READ_UPDATES_AFTER
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fetched: list[tuple[Connection, str | None]] = []
+        self.marked: list[tuple[Connection, str]] = []
+
+    async def fetch_updates_after(
+        self,
+        connection: Connection,
+        marker: str | None,
+        *,
+        limit: int | None = None,
+    ) -> UpdateBatch:
+        self.fetched.append((connection, marker))
+        return UpdateBatch(updates=(an_update(connection.id),), marker="m2", more=False)
+
+    async def mark_seen(self, connection: Connection, marker: str) -> None:
+        self.marked.append((connection, marker))
+
+
+class LyingUpdatesAfterPoller(FakePlatform):
+    """Says it can be polled with a marker, but has no methods for it."""
+
+    name = "lying-marker-poller"
+    features = FakePlatform.features | Feature.READ_UPDATES_AFTER
+
+
+def made_updates_after_poller() -> UpdatesAfterPlatform:
+    platform = made("marker-poller")
+    assert isinstance(platform, UpdatesAfterPlatform)
+    return platform
+
+
+class MessagingPlatform(FakePlatform):
+    """A platform that can read and send direct messages."""
+
+    name = "messenger"
+    features = FakePlatform.features | Feature.MESSAGES
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conversations_read: list[Connection] = []
+        self.messages_read: list[tuple[Connection, str]] = []
+        self.sent: list[tuple[Connection, str, str]] = []
+        self.marked_read: list[tuple[Connection, str]] = []
+
+    async def read_conversations(
+        self,
+        connection: Connection,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Conversation]:
+        self.conversations_read.append(connection)
+        return Page(items=(_a_conversation(),))
+
+    async def read_messages(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Message]:
+        self.messages_read.append((connection, conversation_id))
+        return Page(items=(_a_message(),))
+
+    async def send_message(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        self.sent.append((connection, conversation_id, text))
+        return _a_message()
+
+    async def mark_read(self, connection: Connection, conversation_id: str) -> None:
+        self.marked_read.append((connection, conversation_id))
+
+
+class LyingMessenger(FakePlatform):
+    """Says it can message, but has no methods for it."""
+
+    name = "lying-messenger"
+    features = FakePlatform.features | Feature.MESSAGES
+
+
+def made_messenger() -> MessagingPlatform:
+    platform = made("messenger")
+    assert isinstance(platform, MessagingPlatform)
+    return platform
+
+
+class ConversationStartingPlatform(FakePlatform):
+    """A platform that can start a new conversation."""
+
+    name = "conversation-starter"
+    features = FakePlatform.features | Feature.START_CONVERSATIONS
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conversations_started: list[tuple[Connection, tuple[str, ...], str]] = []
+
+    async def start_conversation(
+        self,
+        connection: Connection,
+        person_ids: Sequence[str],
+        text: str,
+    ) -> Message:
+        self.conversations_started.append((connection, tuple(person_ids), text))
+        return _a_message()
+
+
+class LyingConversationStarter(FakePlatform):
+    """Says it can start a conversation, but has no method for it."""
+
+    name = "lying-conversation-starter"
+    features = FakePlatform.features | Feature.START_CONVERSATIONS
+
+
+def made_conversation_starter() -> ConversationStartingPlatform:
+    platform = made("conversation-starter")
+    assert isinstance(platform, ConversationStartingPlatform)
+    return platform
 
 
 class RepliesReadingPlatform(FakePlatform):
@@ -693,6 +1061,22 @@ FAKES: dict[str, type[FakePlatform]] = {
     "no-app": NoAppNeededPlatform,
     "choosy-no-app": ChoosyWithNoApp,
     "broken": BrokenPlatform,
+    "post-reader": PostReadingPlatform,
+    "lying-post-reader": LyingPostReader,
+    "thread-reader": ThreadReadingPlatform,
+    "lying-thread-reader": LyingThreadReader,
+    "comment-replier": CommentReplyingPlatform,
+    "lying-comment-replier": LyingCommentReplier,
+    "liker": LikingPlatform,
+    "lying-liker": LyingLiker,
+    "likes-reader": LikesReadingPlatform,
+    "lying-likes-reader": LyingLikesReader,
+    "marker-poller": UpdatesAfterPlatform,
+    "lying-marker-poller": LyingUpdatesAfterPoller,
+    "messenger": MessagingPlatform,
+    "lying-messenger": LyingMessenger,
+    "conversation-starter": ConversationStartingPlatform,
+    "lying-conversation-starter": LyingConversationStarter,
 }
 
 
@@ -2118,3 +2502,585 @@ class TestASharedLockForSeveralProcesses:
             connection = await sc.fresh_connection("conn-1")
 
         assert connection.token.access_token
+
+
+class TestReadingOnePostBack:
+    async def test_an_account_can_read_one_of_its_posts_back(self) -> None:
+        storage = await storage_holding(a_connection(platform="post-reader"))
+        sc = SocialChimp(storage)
+
+        found = await sc.account("conn-1").read_post("post-9")
+
+        assert found.id == "post-9"
+        assert made_post_reader().read_posts[0][1] == "post-9"
+
+    async def test_reading_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="post-reader"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_post("post-9")
+
+        asked, _ = made_post_reader().read_posts[0]
+        assert asked.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_cannot_read_a_post_back_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").read_post("post-9")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_that_claims_this_but_cannot_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-post-reader"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").read_post("post-9")
+
+        assert "read_post" in str(broken.value)
+
+
+class TestReadingAThread:
+    async def test_an_account_can_read_a_thread(self) -> None:
+        storage = await storage_holding(a_connection(platform="thread-reader"))
+        sc = SocialChimp(storage)
+
+        found = await sc.account("conn-1").read_thread("post-9", depth=3, limit=50)
+
+        assert found.post.id == "post-9"
+        _, post_id, depth, limit = made_thread_reader().read_threads[0]
+        assert post_id == "post-9"
+        assert depth == 3
+        assert limit == 50
+
+    async def test_depth_and_limit_default_to_the_network(self) -> None:
+        storage = await storage_holding(a_connection(platform="thread-reader"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_thread("post-9")
+
+        _, _, depth, limit = made_thread_reader().read_threads[0]
+        assert depth is None
+        assert limit is None
+
+    async def test_reading_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="thread-reader"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_thread("post-9")
+
+        connection, _, _, _ = made_thread_reader().read_threads[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_cannot_read_a_thread_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").read_thread("post-9")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_that_claims_this_but_cannot_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-thread-reader"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").read_thread("post-9")
+
+        assert "read_thread" in str(broken.value)
+
+
+class TestReplyingToAComment:
+    async def test_an_account_can_reply_to_a_comment(self) -> None:
+        storage = await storage_holding(a_connection(platform="comment-replier"))
+        sc = SocialChimp(storage)
+
+        result = await sc.account("conn-1").reply("post-9", "well said")
+
+        assert result.id == "reply-1"
+        assert made_comment_replier().replies[0][1:] == ("post-9", "well said")
+
+    async def test_replying_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="comment-replier"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").reply("post-9", "well said")
+
+        connection, _, _ = made_comment_replier().replies[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_cannot_reply_to_a_comment_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").reply("post-9", "well said")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_that_claims_this_but_cannot_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-comment-replier"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").reply("post-9", "well said")
+
+        assert "reply" in str(broken.value)
+
+
+class TestLikingAndUnliking:
+    async def test_an_account_can_like_a_post(self) -> None:
+        storage = await storage_holding(a_connection(platform="liker"))
+        sc = SocialChimp(storage)
+
+        result = await sc.account("conn-1").like("post-9")
+
+        assert result.post_id == "post-9"
+        assert result.like_id == "like-1"
+        assert made_liker().liked[0][1] == "post-9"
+
+    async def test_an_account_can_unlike_a_post(self) -> None:
+        storage = await storage_holding(a_connection(platform="liker"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").unlike("post-9", like_id="like-1")
+
+        assert made_liker().unliked[0][1:] == ("post-9", "like-1")
+
+    async def test_unliking_without_a_like_id_asks_the_network_to_find_it(self) -> None:
+        storage = await storage_holding(a_connection(platform="liker"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").unlike("post-9")
+
+        assert made_liker().unliked[0][2] is None
+
+    async def test_liking_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="liker"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").like("post-9")
+
+        connection, _ = made_liker().liked[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_unliking_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="liker"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").unlike("post-9")
+
+        connection, _, _ = made_liker().unliked[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_cannot_like_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").like("post-9")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_network_that_cannot_unlike_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").unlike("post-9")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_that_claims_liking_but_cannot_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-liker"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").like("post-9")
+
+        assert "like" in str(broken.value)
+
+    async def test_a_platform_that_claims_unliking_but_cannot_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-liker"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").unlike("post-9")
+
+        assert "unlike" in str(broken.value)
+
+
+class TestReadingLikes:
+    async def test_an_account_can_read_who_liked_a_post(self) -> None:
+        storage = await storage_holding(a_connection(platform="likes-reader"))
+        sc = SocialChimp(storage)
+
+        found = await sc.account("conn-1").read_likes("post-9")
+
+        assert len(found.items) == 1
+        assert made_likes_reader().read[0][1] == "post-9"
+
+    async def test_reading_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="likes-reader"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_likes("post-9")
+
+        connection, _ = made_likes_reader().read[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_cannot_list_likes_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").read_likes("post-9")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_that_claims_this_but_cannot_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-likes-reader"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").read_likes("post-9")
+
+        assert "read_likes" in str(broken.value)
+
+
+class TestReadingUpdatesAfterAMarker:
+    async def test_an_account_can_be_asked_what_is_new_since_a_marker(self) -> None:
+        storage = await storage_holding(a_connection(platform="marker-poller"))
+        sc = SocialChimp(storage)
+
+        batch = await sc.account("conn-1").fetch_updates_after("m1")
+
+        assert batch.marker == "m2"
+        assert made_updates_after_poller().fetched[0][1] == "m1"
+
+    async def test_a_marker_of_none_asks_for_a_starting_point(self) -> None:
+        storage = await storage_holding(a_connection(platform="marker-poller"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").fetch_updates_after(None)
+
+        assert made_updates_after_poller().fetched[0][1] is None
+
+    async def test_an_account_can_mark_a_marker_as_seen(self) -> None:
+        storage = await storage_holding(a_connection(platform="marker-poller"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").mark_seen("m2")
+
+        assert made_updates_after_poller().marked[0][1] == "m2"
+
+    async def test_fetching_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="marker-poller"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").fetch_updates_after("m1")
+
+        connection, _ = made_updates_after_poller().fetched[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_marking_seen_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="marker-poller"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").mark_seen("m2")
+
+        connection, _ = made_updates_after_poller().marked[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_cannot_be_asked_this_way_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").fetch_updates_after("m1")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_network_that_cannot_mark_a_marker_seen_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").mark_seen("m1")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_claiming_fetch_but_unable_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-marker-poller"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").fetch_updates_after("m1")
+
+        assert "fetch_updates_after" in str(broken.value)
+
+    async def test_a_platform_claiming_mark_seen_but_unable_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-marker-poller"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").mark_seen("m1")
+
+        assert "mark_seen" in str(broken.value)
+
+
+class TestDirectMessages:
+    async def test_an_account_can_read_its_conversations(self) -> None:
+        storage = await storage_holding(a_connection(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        found = await sc.account("conn-1").read_conversations()
+
+        assert len(found.items) == 1
+        assert made_messenger().conversations_read[0].id == "conn-1"
+
+    async def test_an_account_can_read_the_messages_in_one_conversation(self) -> None:
+        storage = await storage_holding(a_connection(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        found = await sc.account("conn-1").read_messages("c1")
+
+        assert len(found.items) == 1
+        assert made_messenger().messages_read[0][1] == "c1"
+
+    async def test_an_account_can_send_a_message(self) -> None:
+        storage = await storage_holding(a_connection(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        sent = await sc.account("conn-1").send_message("c1", "hello")
+
+        assert sent.id == "m1"
+        assert made_messenger().sent[0][1:] == ("c1", "hello")
+
+    async def test_an_account_can_mark_a_conversation_read(self) -> None:
+        storage = await storage_holding(a_connection(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").mark_read("c1")
+
+        assert made_messenger().marked_read[0][1] == "c1"
+
+    async def test_reading_conversations_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_conversations()
+
+        assert made_messenger().conversations_read[0].token.access_token == NEW_ACCESS
+
+    async def test_reading_messages_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").read_messages("c1")
+
+        connection, _ = made_messenger().messages_read[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_sending_a_message_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").send_message("c1", "hello")
+
+        connection, _, _ = made_messenger().sent[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_marking_read_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").mark_read("c1")
+
+        connection, _ = made_messenger().marked_read[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_cannot_read_conversations_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").read_conversations()
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_network_that_cannot_read_messages_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError):
+            await sc.account("conn-1").read_messages("c1")
+
+    async def test_a_network_that_cannot_send_a_message_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError):
+            await sc.account("conn-1").send_message("c1", "hello")
+
+    async def test_a_network_that_cannot_mark_read_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError):
+            await sc.account("conn-1").mark_read("c1")
+
+    async def test_a_platform_claiming_conversations_but_unable_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-messenger"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").read_conversations()
+
+        assert "read_conversations" in str(broken.value)
+
+    async def test_a_platform_claiming_read_messages_but_unable_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-messenger"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").read_messages("c1")
+
+        assert "read_messages" in str(broken.value)
+
+    async def test_a_platform_claiming_send_message_but_unable_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-messenger"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").send_message("c1", "hello")
+
+        assert "send_message" in str(broken.value)
+
+    async def test_a_platform_claiming_mark_read_but_unable_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-messenger"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").mark_read("c1")
+
+        assert "mark_read" in str(broken.value)
+
+
+class TestStartingAConversation:
+    async def test_an_account_can_start_a_conversation(self) -> None:
+        storage = await storage_holding(a_connection(platform="conversation-starter"))
+        sc = SocialChimp(storage)
+
+        sent = await sc.account("conn-1").start_conversation(["p1", "p2"], "hi there")
+
+        assert sent.id == "m1"
+        assert made_conversation_starter().conversations_started[0][1:] == (
+            ("p1", "p2"),
+            "hi there",
+        )
+
+    async def test_starting_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="conversation-starter"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").start_conversation(["p1"], "hi")
+
+        connection, _, _ = made_conversation_starter().conversations_started[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_that_cannot_start_a_conversation_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").start_conversation(["p1"], "hi")
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_that_claims_this_but_cannot_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(
+            a_connection(platform="lying-conversation-starter")
+        )
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").start_conversation(["p1"], "hi")
+
+        assert "start_conversation" in str(broken.value)
+
+
+class TestAccountFeatures:
+    async def test_an_account_can_be_asked_what_its_network_can_do(self) -> None:
+        storage = await storage_holding(a_connection(platform="liker"))
+        sc = SocialChimp(storage)
+
+        features = await sc.account("conn-1").features()
+
+        assert Feature.LIKE in features
+        assert Feature.MESSAGES not in features
+
+    async def test_asking_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="liker"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").features()
+
+        assert made("liker").refreshed[0].id == "conn-1"
+
+
+class TestClientFeatures:
+    def test_a_client_can_be_asked_what_a_network_can_do_by_name(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+        register_platform("liker", LikingPlatform)
+
+        try:
+            features = sc.features("liker")
+        finally:
+            unregister_platform("liker")
+
+        assert Feature.LIKE in features
+
+    def test_it_needs_no_connection_at_all(self) -> None:
+        # Unlike Account.features, this is synchronous and looks the
+        # platform up by name - useful for deciding which button to show
+        # before anyone has connected an account.
+        sc = SocialChimp(InMemoryStorage())
+        register_platform("fake", FakePlatform)
+
+        try:
+            features = sc.features("fake")
+        finally:
+            unregister_platform("fake")
+
+        assert Feature.POST_TEXT in features
+        assert Feature.LIKE not in features

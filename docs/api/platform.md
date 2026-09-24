@@ -35,6 +35,28 @@ before calling it.
 
 ::: socialchimp.platform.CanReadPushedUpdates
 
+## The social inbox
+
+Added in 0.8.0. See the [use case](../use-cases/social-inbox.md) for how an
+app calls these through `Account`, and `docs/social-inbox-contract.md` in the
+repository for the design behind them.
+
+::: socialchimp.platform.CanReadPost
+
+::: socialchimp.platform.CanReadThread
+
+::: socialchimp.platform.CanReply
+
+::: socialchimp.platform.CanLike
+
+::: socialchimp.platform.CanReadLikes
+
+::: socialchimp.platform.CanReadUpdatesAfter
+
+::: socialchimp.platform.CanMessage
+
+::: socialchimp.platform.CanStartConversations
+
 ## Signing someone in
 
 `start_login` and `finish_login` return one of these four. socialchimp's

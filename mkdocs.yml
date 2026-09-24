@@ -117,6 +117,7 @@ nav:
       - A shop on Facebook Pages: use-cases/facebook-django.md
       - Video to TikTok: use-cases/tiktok-fastapi.md
       - YouTube Shorts: use-cases/youtube-shorts-flask.md
+      - Building a social inbox: use-cases/social-inbox.md
   - Networks: platforms.md
   - Capability matrix: networks.md
   - Frameworks: frameworks.md

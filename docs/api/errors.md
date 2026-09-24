@@ -26,7 +26,15 @@ before 0.3.0, so code written against that still works. Catch
 
 ::: socialchimp.errors.NotAllowedError
 
+::: socialchimp.errors.MissingPermissionError
+
+::: socialchimp.errors.BlockedError
+
+::: socialchimp.errors.ReplyWindowClosedError
+
 ::: socialchimp.errors.NotFoundError
+
+::: socialchimp.errors.PostGoneError
 
 ::: socialchimp.errors.RateLimitError
 

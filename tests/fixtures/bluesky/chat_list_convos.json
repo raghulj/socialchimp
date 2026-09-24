@@ -1,0 +1,86 @@
+{
+  "cursor": "eej4ivzomvjxu",
+  "convos": [
+    {
+      "id": "eul6tja4znqhx",
+      "rev": "nbvlud33dfnds",
+      "members": [
+        {
+          "did": "did:plc:dc7hcchu6gliiknwqdeffydi",
+          "handle": "fridgedoor.bsky.social",
+          "displayName": "Fridge Door Parts",
+          "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreidcu3anamzhvq64lgv7pqm7g3xtn46dbxdp5b4fmriyijr6bu7lda@jpeg"
+        },
+        {
+          "did": "did:plc:odnwakhejihowygnkxtcrk2s",
+          "handle": "customerchris.bsky.social",
+          "displayName": "Chris",
+          "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:odnwakhejihowygnkxtcrk2s/bafkreigz672bzkftlm2t53r2gd6kdzduuofwfnrfosabtlo3bwwk5zwcvn@jpeg"
+        }
+      ],
+      "lastMessage": {
+        "$type": "chat.bsky.convo.defs#messageView",
+        "id": "l6jtqacpejgzo",
+        "rev": "q3bptbzdbpy7a",
+        "text": "Thanks! Is the wide-body kit in stock? 😊 https://fridgedoor.example/inventory",
+        "facets": [
+          {
+            "index": {
+              "byteStart": 44,
+              "byteEnd": 80
+            },
+            "features": [
+              {
+                "$type": "app.bsky.richtext.facet#link",
+                "uri": "https://fridgedoor.example/inventory"
+              }
+            ]
+          }
+        ],
+        "sender": {
+          "did": "did:plc:odnwakhejihowygnkxtcrk2s"
+        },
+        "sentAt": "2026-09-24T08:15:00.000Z"
+      },
+      "muted": false,
+      "status": "accepted",
+      "unreadCount": 2,
+      "kind": {
+        "$type": "chat.bsky.convo.defs#directConvo"
+      }
+    },
+    {
+      "id": "gd5dlqu7c6spy",
+      "rev": "sgz3ixvgh5pqv",
+      "members": [
+        {
+          "did": "did:plc:dc7hcchu6gliiknwqdeffydi",
+          "handle": "fridgedoor.bsky.social",
+          "displayName": "Fridge Door Parts",
+          "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:dc7hcchu6gliiknwqdeffydi/bafkreidcu3anamzhvq64lgv7pqm7g3xtn46dbxdp5b4fmriyijr6bu7lda@jpeg"
+        },
+        {
+          "did": "did:plc:rvon2m3arlvypxwg45tyqmpx",
+          "handle": "buyerbecca.bsky.social",
+          "displayName": "Becca",
+          "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:rvon2m3arlvypxwg45tyqmpx/bafkreijmc3lsliuzsniv3tagho6g2fi63dknjdcjwdg42zlwn26r732llo@jpeg"
+        }
+      ],
+      "lastMessage": {
+        "$type": "chat.bsky.convo.defs#deletedMessageView",
+        "id": "w4idzq4ztuhfo",
+        "rev": "k7i26xpmsu2rz",
+        "sender": {
+          "did": "did:plc:dc7hcchu6gliiknwqdeffydi"
+        },
+        "sentAt": "2026-09-22T11:00:00.000Z"
+      },
+      "muted": false,
+      "status": "accepted",
+      "unreadCount": 0,
+      "kind": {
+        "$type": "chat.bsky.convo.defs#directConvo"
+      }
+    }
+  ]
+}

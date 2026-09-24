@@ -4,6 +4,184 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.8.0 - 2026-09-25
+
+### Added: read a post and its thread, reply to a comment, and like
+
+- **`account.read_post(post_id)`** reads any post or comment back in full -
+  text, author, links, attachments, the counts, and whether it is a reply -
+  as a `PostDetails`, not only what publishing it returned. One request on
+  both networks: `GET /api/v1/statuses/:id` on Mastodon,
+  `app.bsky.feed.getPosts` on Bluesky. `Feature.READ_POST`.
+- **`account.read_thread(post_id, *, depth=None, limit=None)`** reads a post
+  together with its replies, flat and oldest first - build the tree
+  yourself with `parent_id`. `Thread.complete` is `False` when `depth`,
+  `limit` or the network's own cap cut it short. Mastodon: one request to
+  `GET /api/v1/statuses/:id` plus one to `/context` (no pagination; up to
+  4096 replies signed in; a `Mastodon-Async-Refresh` header, meaning remote
+  replies are still arriving, also sets `complete=False`). Bluesky: one
+  request to `app.bsky.feed.getPostThread` (depth 6 by default, 1000 at
+  most); a deleted or blocked reply comes back as a placeholder with
+  `unavailable` set instead of vanishing. `Feature.READ_THREAD`.
+- **`account.reply(post_id, text, *, media=(), options=None)`** replies to
+  any post or comment at any depth and hands back a `PostResult` - the
+  recommended way to answer somebody now; `publish(Post(reply_to=...))`
+  keeps working too. One request to read the parent, plus whatever
+  `publish` already costs. Mastodon: a reply to a `direct` or
+  followers-only parent keeps that visibility, whatever `options` asks for;
+  otherwise nothing is sent, so the account's own default applies. It also
+  names the parent's author and anyone else the parent mentions, the way
+  Mastodon's own web app does, skipping the connected account and anyone
+  already named in `text`. Bluesky builds the reply's root and parent from
+  the target with one lookup. `Feature.REPLY_TO_COMMENTS`.
+- **`account.like(post_id)`** and **`account.unlike(post_id, *,
+  like_id=None)`** like and unlike a post or a comment. Both are
+  idempotent: liking something twice, or unliking something not liked,
+  succeeds and does nothing. Mastodon's favourite and unfavourite are
+  already idempotent on the server - one request each. Bluesky's
+  `createRecord` is not deduplicated by the network, so `like()` reads
+  `viewer.like` first and hands back the existing like rather than making a
+  second one; `unlike()` costs nothing extra when you pass `like_id` from
+  `LikeResult`, or one lookup plus the delete when you do not.
+  `Feature.LIKE`.
+- **`account.read_likes(post_id, *, after=None, limit=None)`** lists who
+  liked a post, as a `Page[Like]`. Mastodon has no `liked_at` - always
+  `None` - Bluesky does. A network that can like something but cannot list
+  who did - a Facebook Page can like a comment but only ever sees the count
+  - lists `Feature.LIKE` without this one. `Feature.READ_LIKES`.
+
+### Added: picking up updates where you left off
+
+- **`account.fetch_updates_after(marker, *, limit=None)`** and
+  **`account.mark_seen(marker)`** poll with an opaque marker your app
+  stores and passes back, rather than a moment in time - a moment can miss
+  or repeat updates at the edges, a marker cannot. `marker=None` on the
+  first call reads the latest page, which sets a starting point.
+  **A marker your app made up, or one from a different platform, raises
+  `ConfigError`** on both Mastodon and Bluesky, rather than silently
+  starting over and risking a dropped update - pass `None` to start afresh
+  instead. Mastodon: the marker is the newest notification id, fetched with
+  `min_id=` (one request, pages forward with no gaps); `mark_seen` is
+  `POST /api/v1/markers`. Bluesky: notifications only page backwards, so
+  the marker is the newest `indexedAt` plus uri; the library pages back
+  looking for it, up to five requests, and says `more=True` if it is still
+  not found rather than holding a request open forever; `mark_seen` is
+  `app.bsky.notification.updateSeen`. `Feature.READ_UPDATES_AFTER`. The
+  existing `fetch_updates(since)` and `Poller` are unchanged.
+- **`Update` gains five optional fields**, all defaulting to `None` so
+  existing code keeps working: `actor` (who did it), `post_id` (the thing
+  that happened - the reply, the mention, the message itself),
+  `about_post_id` (the connected account's own post this concerns),
+  `thread_root_id`, and `conversation_id` (for `MESSAGE_RECEIVED`). A
+  Bluesky quote's `about_post_id` is the quoted post, read from
+  `reasonSubject` the same as a like or a repost - a quote's own record has
+  no `record.reply` to read instead, because quoting is not replying.
+
+### Added: direct messages
+
+- **`account.read_conversations(*, after=None, limit=None)`**,
+  **`account.read_messages(conversation_id, *, after=None, limit=None)`**,
+  **`account.send_message(conversation_id, text, *, options=None)`** and
+  **`account.mark_read(conversation_id)`** read and answer direct messages.
+  Messages come back in `Page`s, newest first; `after` goes further back in
+  time. `Feature.MESSAGES`.
+- **`account.start_conversation(person_ids, text)`** opens a new
+  conversation. Meta cannot do this - the customer has to write first - so
+  a platform can offer `CanMessage` without offering this one.
+  `Feature.START_CONVERSATIONS`.
+- Mastodon: conversations are `GET /api/v1/conversations`, one request.
+  Mastodon has no "every message in this conversation" call, so
+  `read_messages` reads the `/context` of the conversation's last status
+  and keeps only the direct-visibility statuses sent between this
+  conversation's own participants - that is why `Conversation.full_history`
+  is `False`, and why it never returns a `next`. `send_message` posts a
+  direct status mentioning every participant, as a reply to the last one.
+  `start_conversation` returns the real Mastodon conversation id once it
+  can find one; in the rare case Mastodon has not listed it yet, it returns
+  an opaque `"status:<id>"` marker instead, and `send_message`,
+  `read_messages` and `mark_read` all accept that form too - treat it as
+  opaque either way.
+- Bluesky: `chat.bsky.convo.listConvos` / `getMessages` / `sendMessage` /
+  `updateRead`, plus `getConvoForMembers` for `start_conversation`, every
+  one sent with the `atproto-proxy` header Bluesky's chat API needs.
+  **An app password made without "Allow access to your direct messages"
+  raises `MissingPermissionError(needs="direct messages")`** - a new app
+  password has to be made with the box ticked, because an existing one
+  cannot have it turned on afterwards.
+
+### Added: asking what a network supports
+
+- **`await account.features()`** and **`client.features(platform)`**
+  answer with the `Feature` flags a network supports. The first looks the
+  connection up lazily, so it is safe to call before deciding which button
+  to show; the second takes a platform name and needs no connection, for
+  deciding what to show before anyone has connected an account. New flags:
+  `READ_POST`, `READ_THREAD`, `REPLY_TO_COMMENTS`, `LIKE`, `READ_LIKES`,
+  `READ_UPDATES_AFTER`, `MESSAGES`, `START_CONVERSATIONS`
+  (`SUBSCRIBE_UPDATES` is reserved for a later release - see the push note
+  below). Each flag matches one protocol above, and the tests enforce that
+  the two always agree, on every platform.
+
+### Added: new errors
+
+- **`MissingPermissionError(needs, suggestion=None)`**, a
+  `NotAllowedError`, names the one permission that is missing rather than
+  only saying no - Bluesky's DM app-password gap raises it.
+- **`BlockedError`**, a `NotAllowedError` - the other person blocked us, or
+  we blocked them; nothing to retry until a person undoes it on the
+  network itself.
+- **`ReplyWindowClosedError(closed_at=None)`**, a `NotAllowedError` -
+  reserved for Meta's 24-hour reply window, in a later release.
+- **`PostGoneError`**, a `NotFoundError` - the post or comment asked for
+  was deleted, or never existed, more precise than a plain `NotFoundError`
+  for the one thing an app asks for by id constantly: a post to reply to,
+  to like, to read the thread of.
+
+All four subclass an error that already existed, so an `except
+NotAllowedError` or `except NotFoundError` written before 0.8.0 still
+catches them.
+
+### Added: `FakePlatform` for testing apps
+
+- **`FakePlatform`** now implements every social-inbox protocol above, with
+  nothing but socialchimp itself - no pytest needed. `add_post` and
+  `add_reply` seed what `read_post` and `read_thread` hand back, `add_like`
+  seeds `read_likes`, `add_update` seeds `fetch_updates_after`, and
+  `add_conversation` seeds direct messages.
+- **`fetch_updates_after(None)` returns the latest page** - `limit`, or
+  `page_size` when that is left out - the same as a real platform's first
+  call, rather than every update ever queued.
+- **An unrecognised marker raises `ConfigError`**, on `fetch_updates_after`
+  and `mark_seen` alike, matching Bluesky.
+
+**Push is not in 0.8.0.** Mastodon and Bluesky are both polled with
+`fetch_updates_after`, the same as `fetch_updates` always has been. Push
+delivery - Mastodon Web Push and Meta's webhooks - is planned for a later
+release, built together, because both need the same `Update`-shaped payload
+and lifecycle handling. `push` is already in Mastodon's `DEFAULT_SCOPES` (see
+Changed, below) so a connection made today is ready for it without anyone
+having to reconnect.
+
+### Changed
+
+- **Mastodon and Bluesky reposts now arrive as `UpdateKind.REPOST_ADDED`**,
+  not `REACTION_ADDED`. A handler that only checked `REACTION_ADDED` for
+  "something happened to my post" now needs `REPOST_ADDED` too.
+- **A follow now arrives as `UpdateKind.FOLLOWED`**, not `UNKNOWN`.
+- **Mastodon's mention notification is classified more precisely.** A
+  direct-visibility status is checked first and always comes out as
+  `MESSAGE_RECEIVED`, even when it also replies to the connected account.
+  Otherwise, a reply where `in_reply_to_account_id` is the connected
+  account comes out as `COMMENT_CREATED` (`about_post_id` is
+  `in_reply_to_id`); anything else stays `MENTION`.
+- **Mastodon's `DEFAULT_SCOPES` widen to `("read", "write", "push")`**, so a
+  freshly connected account already has the scope Web Push will need.
+  Nothing already working is affected - "read write" still covers
+  everything except Web Push.
+- **Rate-limit waits also read `X-RateLimit-Reset` (Mastodon) and
+  `RateLimit-Reset` (Bluesky)** when `Retry-After` is missing, so
+  `RateLimitError.retry_after` is filled in more often than before.
+
 ## 0.7.3 - unreleased
 
 ### Added: reply to a Thread, read its replies, and read a post's numbers
