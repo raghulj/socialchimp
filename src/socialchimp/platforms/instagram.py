@@ -154,6 +154,7 @@ from socialchimp.features import (
 )
 from socialchimp.http import HttpClient, read_body
 from socialchimp.models import (
+    AccountProfile,
     Connection,
     MediaKind,
     Post,
@@ -161,6 +162,7 @@ from socialchimp.models import (
     PostState,
     RawData,
     Token,
+    picture_url,
 )
 from socialchimp.platform import Finished, LoginRequest, SendToNetwork
 from socialchimp.platforms._meta import (
@@ -233,11 +235,19 @@ RENEW_PATH: Final = "/refresh_access_token"
 """Where a long-lived token gets another sixty days. A GET, on
 `IG_GRAPH_HOST`, unversioned, and a real renewal - see `refresh`."""
 
-ACCOUNT_FIELDS: Final = "user_id,username"
+ACCOUNT_FIELDS: Final = "user_id,username,profile_picture_url"
 """What to ask about the account once the long-lived token is ready.
 
 The account's id itself is already known by this point, from the
-code-exchange reply - this is only to read a username worth showing someone.
+code-exchange reply - this is only to read a username and a picture worth
+showing someone.
+"""
+
+PROFILE_FIELDS: Final = "username,profile_picture_url"
+"""What `read_profile` asks Instagram for: a name and a picture, nothing else.
+
+The account's id is already known by the caller, so unlike `ACCOUNT_FIELDS`
+this does not ask for `user_id` again.
 """
 
 DEFAULT_SCOPES: Final = (
@@ -1387,6 +1397,7 @@ class InstagramPlatform:
                 account_name=name,
                 token=long,
                 scopes=request.scopes or DEFAULT_SCOPES,
+                avatar_url=picture_url(profile.get("profile_picture_url")),
                 extra={
                     "instagram_id": account_id,
                     "username": name,
@@ -1530,6 +1541,44 @@ class InstagramPlatform:
                 self._note(graph)
 
         return token_from(reply, platform=PLATFORM_NAME, when="renew a token")
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask Instagram for this account's current username and picture.
+
+        One request, to the account's own object - the same one `finish_login`
+        already reads at sign-in, but asking for only a username and a
+        picture.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The account's username, and its picture if it has one right now.
+
+        Raises:
+            ConfigError: If the connection names no Instagram account.
+            SocialChimpError: If Instagram refuses the question.
+        """
+        account_id = _instagram_account_of(connection)
+
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                reply = await _ask(
+                    graph,
+                    "GET",
+                    f"/{account_id}",
+                    params={"fields": PROFILE_FIELDS},
+                )
+            finally:
+                self._note(graph)
+
+        username = reply.get("username")
+        return AccountProfile(
+            # An account always has a username, but showing the id is better
+            # than showing nothing if one ever arrives without.
+            name=username if isinstance(username, str) and username else account_id,
+            avatar_url=picture_url(reply.get("profile_picture_url")),
+        )
 
     async def publish(self, connection: Connection, post: Post) -> PostResult:
         """Publish a post: build it, wait for it, then put it out.

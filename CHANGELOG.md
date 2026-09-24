@@ -4,6 +4,43 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.9.0 - 2026-09-25
+
+### Added: the connected account's picture
+
+- **`Connection.avatar_url`** is the account's picture, filled in by
+  `finish_login` (or `resume_login`, where you pick a page or channel). It
+  defaults to `None`, so connections saved before 0.9.0, and code that builds
+  a `Connection` without it, keep working. A missing, empty or garbled
+  picture is `None`, never an error. `with_token` carries it over.
+- **`account.profile()`** asks the network for the account's current name
+  and picture as an `AccountProfile(name, avatar_url)`. One request, token
+  renewed first like every other account call, and nothing saved - some
+  networks' picture addresses expire (Facebook, Instagram), so this is how
+  you get a fresh one. Networks that plug in do it through the new
+  `CanReadProfile.read_profile`. Raises `NotSupportedError` where there is
+  no picture to read.
+- **`socialchimp.picture_url(value)`** turns whatever a network sent into a
+  clean `http(s)` address or `None`, for people writing their own platform.
+- **`FakePlatform(avatar_url=...)`** puts that picture on every connection it
+  makes, and has `read_profile`.
+
+Where the picture comes from:
+
+| Network | At login | `profile()` |
+| --- | --- | --- |
+| Mastodon | `avatar` from `verify_credentials`, already fetched | same request |
+| Bluesky | `avatar` from one added `app.bsky.actor.getProfile`; if that request fails, sign-in still finishes with `None` | `getProfile` |
+| Facebook | the Page's `picture{url}`, added to the page fields already asked for | `GET /{page-id}?fields=name,picture{url}` |
+| Instagram | `profile_picture_url`, added to the account fields | `GET /{account-id}?fields=username,profile_picture_url` |
+| Threads | `threads_profile_picture_url`, added to the `/me` fields | `GET /{account-id}?fields=username,threads_profile_picture_url` |
+| TikTok | `avatar_url`, added to `/v2/user/info/` fields (no new scope) | same request |
+| Pinterest | `profile_image` from `/v5/user_account`, already fetched | same request |
+| YouTube | the channel's `snippet.thumbnails` from the channel list already fetched; resume tokens from before 0.9.0 still work, with `None` | `GET /channels?part=snippet&id=...` |
+| X | `profile_image_url`, added to `/users/me` as `user.fields` | same request |
+| TikTok Business | `None` - login reads no identity at all | `NotSupportedError` |
+| Google Business | `None` - no documented picture field | `NotSupportedError` |
+
 ## 0.8.0 - 2026-09-25
 
 ### Added: read a post and its thread, reply to a comment, and like

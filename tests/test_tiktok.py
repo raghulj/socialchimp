@@ -42,6 +42,7 @@ from socialchimp.platform import (
     CanCheckSignature,
     CanCheckState,
     CanCreateApp,
+    CanReadProfile,
     CanReadPushedUpdates,
     CanReadUpdates,
     CanResumeLogin,
@@ -64,6 +65,7 @@ from socialchimp.testing import PlatformChecks, RecordingTransport
 
 REDIRECT = "https://app.example/callback"
 OPEN_ID = "open-id-ada"
+AVATAR_URL = "https://p16-sign.tiktokcdn-us.com/ada~c5_100x100.jpeg"
 PUBLISH_ID = "v_pub_file~v2-1.1234567890"
 UPLOAD_TO = "https://open-upload.tiktokapis.com/upload"
 
@@ -191,6 +193,7 @@ def user_reply(**extra: object) -> dict[str, Any]:
         "open_id": OPEN_ID,
         "display_name": "Ada Lovelace",
         "username": "ada",
+        "avatar_url": AVATAR_URL,
     }
     user.update(extra)
     return ok({"user": user})
@@ -559,6 +562,7 @@ class TestSwappingTheCodeForAToken:
         assert connected.token.refresh_token == "refresh-one"
         assert connected.scopes == ("user.info.basic", "video.upload", "video.publish")
         assert connected.extra["username"] == "ada"
+        assert connected.avatar_url == AVATAR_URL
 
     async def test_the_token_it_saves_runs_out_when_tiktok_says_it_does(
         self, platform: TikTokPlatform
@@ -594,6 +598,70 @@ class TestSwappingTheCodeForAToken:
         expires_at = step.connection.token.expires_at
         assert expires_at is not None
         assert timedelta(hours=23) < expires_at - before < timedelta(hours=25)
+
+    async def test_it_asks_for_the_avatar_alongside_the_name(
+        self, platform: TikTokPlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post(TOKEN_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            route = network.get(USER_URL).mock(
+                return_value=httpx.Response(200, json=user_reply())
+            )
+
+            await platform.finish_login(login(), {"code": "the-code"})
+
+        fields = route.calls.last.request.url.params["fields"].split(",")
+        assert "avatar_url" in fields
+
+    async def test_no_avatar_url_leaves_the_picture_empty(
+        self, platform: TikTokPlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post(TOKEN_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            network.get(USER_URL).mock(
+                return_value=httpx.Response(200, json=user_reply(avatar_url=None))
+            )
+
+            step = await platform.finish_login(login(), {"code": "the-code"})
+
+        assert isinstance(step, Finished)
+        assert step.connection.avatar_url is None
+
+    async def test_a_blank_avatar_url_leaves_the_picture_empty(
+        self, platform: TikTokPlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post(TOKEN_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            network.get(USER_URL).mock(
+                return_value=httpx.Response(200, json=user_reply(avatar_url=""))
+            )
+
+            step = await platform.finish_login(login(), {"code": "the-code"})
+
+        assert isinstance(step, Finished)
+        assert step.connection.avatar_url is None
+
+    async def test_an_avatar_url_that_is_not_a_string_leaves_the_picture_empty(
+        self, platform: TikTokPlatform
+    ) -> None:
+        with respx.mock() as network:
+            network.post(TOKEN_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=token_reply())
+            )
+            network.get(USER_URL).mock(
+                return_value=httpx.Response(200, json=user_reply(avatar_url=123))
+            )
+
+            step = await platform.finish_login(login(), {"code": "the-code"})
+
+        assert isinstance(step, Finished)
+        assert step.connection.avatar_url is None
 
     async def test_the_username_is_used_when_tiktok_gives_no_display_name(
         self, platform: TikTokPlatform
@@ -756,6 +824,87 @@ class TestSwappingTheCodeForAToken:
                 await platform.finish_login(login(), {"code": "the-code"})
 
         assert "code already used" in str(refused.value)
+
+
+# ---------------------------------------------------------------------------
+# Reading the profile again
+# ---------------------------------------------------------------------------
+
+
+class TestReadingTheProfileAgain:
+    async def test_it_offers_reading_the_profile_again(
+        self, platform: TikTokPlatform
+    ) -> None:
+        assert isinstance(platform, CanReadProfile)
+
+    async def test_it_makes_exactly_one_request(
+        self, platform: TikTokPlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            route = network.get(USER_URL).mock(
+                return_value=httpx.Response(200, json=user_reply())
+            )
+
+            await platform.read_profile(account)
+
+        assert route.call_count == 1
+        sent = route.calls.last.request
+        assert sent.url.path == "/v2/user/info/"
+        assert sent.headers["Authorization"] == "Bearer access-one"
+        fields = sent.url.params["fields"].split(",")
+        assert "avatar_url" in fields
+
+    async def test_it_hands_back_the_name_and_picture(
+        self, platform: TikTokPlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            network.get(USER_URL).mock(
+                return_value=httpx.Response(200, json=user_reply())
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == "Ada Lovelace"
+        assert profile.avatar_url == AVATAR_URL
+
+    async def test_the_username_is_used_when_there_is_no_display_name(
+        self, platform: TikTokPlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            network.get(USER_URL).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=ok({"user": {"username": "ada", "avatar_url": AVATAR_URL}}),
+                )
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == "ada"
+
+    async def test_the_connections_own_id_is_used_when_tiktok_gives_no_name(
+        self, platform: TikTokPlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            network.get(USER_URL).mock(
+                return_value=httpx.Response(200, json=ok({"user": {}}))
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == account.account_id
+
+    async def test_no_picture_leaves_it_empty(
+        self, platform: TikTokPlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            network.get(USER_URL).mock(
+                return_value=httpx.Response(200, json=user_reply(avatar_url=None))
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
 
 
 # ---------------------------------------------------------------------------

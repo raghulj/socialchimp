@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from socialchimp.events import Update, UpdateBatch
     from socialchimp.features import Feature, Limits
     from socialchimp.models import (
+        AccountProfile,
         AppCredentials,
         BusinessLocation,
         Connection,
@@ -60,6 +61,7 @@ __all__ = [
     "CanModerateComments",
     "CanReadLikes",
     "CanReadPost",
+    "CanReadProfile",
     "CanReadPushedUpdates",
     "CanReadReplies",
     "CanReadStats",
@@ -977,6 +979,35 @@ class CanReadPost(Protocol):
 
         Raises:
             SocialChimpError: If the network refuses, or the post is gone.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadProfile(Protocol):
+    """Extra for reading the account's own name and picture back.
+
+    Some networks put a picture address on the connection when it is first
+    made, and that address can go stale - Facebook's, for one, expires after
+    a while. `Account.profile` is what your app calls to get a fresh one, or
+    to show the current name and picture without saving anything.
+    """
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask the network for this account's current name and picture.
+
+        Makes exactly one request. Nothing is saved to storage here - saving
+        a refreshed picture address, if your app wants to keep one, is for
+        you to do with what comes back.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The name and picture the network has on file right now.
+
+        Raises:
+            SocialChimpError: If the network refuses the question.
         """
         ...
 

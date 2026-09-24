@@ -37,6 +37,7 @@ from socialchimp.http import Retries
 from socialchimp.platform import (
     CanAnswerSetupCheck,
     CanCheckSignature,
+    CanReadProfile,
     CanReadPushedUpdates,
     Finished,
     LoginRequest,
@@ -256,9 +257,11 @@ class TestWhatItSaysItCanDo:
     ) -> None:
         checked: Platform = platform
         listens: CanCheckSignature = platform
+        reads_profile: CanReadProfile = platform
 
         assert isinstance(checked, Platform)
         assert isinstance(listens, CanCheckSignature)
+        assert isinstance(reads_profile, CanReadProfile)
         assert platform.name == "instagram"
 
     def test_it_lists_the_features_instagram_really_has(
@@ -420,6 +423,31 @@ class TestStartingALogin:
         assert not network.calls
 
 
+async def _finish_login_with_profile(
+    platform: InstagramPlatform,
+    profile: dict[str, Any],
+) -> Finished:
+    """Run finish_login through mocked Meta hosts and hand back the result."""
+    with respx.mock(base_url=IG_LOGIN_HOST) as network:
+        network.post("/oauth/access_token").mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "short-lived", "user_id": int(IG_ID)}
+            )
+        )
+        with respx.mock(base_url="https://graph.instagram.com") as graph_network:
+            graph_network.get("/access_token").mock(
+                return_value=httpx.Response(
+                    200, json={"access_token": "long-lived", "expires_in": 5_184_000}
+                )
+            )
+            graph_network.get(f"/v21.0/{IG_ID}").mock(
+                return_value=httpx.Response(200, json=profile)
+            )
+            step = await platform.finish_login(a_request(), {"code": "abc"})
+    assert isinstance(step, Finished)
+    return step
+
+
 class TestFinishingALogin:
     async def test_it_swaps_the_code_makes_it_last_and_reads_the_profile(
         self,
@@ -445,7 +473,12 @@ class TestFinishingALogin:
                 )
                 profile = graph_network.get(f"/v21.0/{IG_ID}").mock(
                     return_value=httpx.Response(
-                        200, json={"id": IG_ID, "username": IG_NAME}
+                        200,
+                        json={
+                            "id": IG_ID,
+                            "username": IG_NAME,
+                            "profile_picture_url": PICTURE_URL,
+                        },
                     )
                 )
 
@@ -466,12 +499,14 @@ class TestFinishingALogin:
         assert profile.calls[-1].request.headers["Authorization"] == (
             "Bearer long-lived"
         )
+        assert "profile_picture_url" in profile.calls[-1].request.url.params["fields"]
 
         assert isinstance(step, Finished)
         saved = step.connection
         assert saved.id == f"instagram:{IG_ID}"
         assert saved.account_id == IG_ID
         assert saved.account_name == IG_NAME
+        assert saved.avatar_url == PICTURE_URL
         assert saved.token.access_token == "long-lived"
         assert saved.token.expires_at == NOW + timedelta(seconds=5_184_000)
 
@@ -543,6 +578,26 @@ class TestFinishingALogin:
         assert step.connection.extra["instagram_id"] == IG_ID
         assert step.connection.extra["username"] == IG_NAME
         assert IG_NAME in str(step.connection.extra["profile_url"])
+
+    @pytest.mark.parametrize(
+        "profile",
+        [
+            {"id": IG_ID, "username": IG_NAME},
+            {"id": IG_ID, "username": IG_NAME, "profile_picture_url": ""},
+            {"id": IG_ID, "username": IG_NAME, "profile_picture_url": "not a url"},
+            {"id": IG_ID, "username": IG_NAME, "profile_picture_url": 7},
+            {"id": IG_ID, "username": IG_NAME, "profile_picture_url": None},
+        ],
+    )
+    async def test_no_usable_picture_leaves_the_avatar_unset(
+        self,
+        platform: InstagramPlatform,
+        clock: dict[str, datetime],
+        profile: dict[str, Any],
+    ) -> None:
+        step = await _finish_login_with_profile(platform, profile)
+
+        assert step.connection.avatar_url is None
 
     async def test_it_uses_the_permissions_the_login_asked_for(
         self,
@@ -817,6 +872,82 @@ class TestRenewingAToken:
             token = await platform.refresh(running_out, an_app())
 
         assert token.access_token == "fresh"
+
+
+# ---------------------------------------------------------------------------
+# Reading the profile back
+# ---------------------------------------------------------------------------
+
+
+class TestReadingTheProfile:
+    async def test_it_makes_exactly_one_request(
+        self,
+        platform: InstagramPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
+            route = network.get(f"/{IG_ID}").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"username": IG_NAME, "profile_picture_url": PICTURE_URL},
+                )
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert route.call_count == 1
+        asked = route.calls.last.request
+        assert asked.headers["Authorization"] == f"Bearer {ACCESS_TOKEN}"
+        assert asked.url.params["fields"] == "username,profile_picture_url"
+        assert profile.name == IG_NAME
+        assert profile.avatar_url == PICTURE_URL
+
+    async def test_no_picture_gives_no_avatar(
+        self,
+        platform: InstagramPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
+            network.get(f"/{IG_ID}").mock(
+                return_value=httpx.Response(200, json={"username": IG_NAME})
+            )
+
+            profile = await platform.read_profile(account)
+
+        assert profile.avatar_url is None
+
+    async def test_a_reply_with_no_username_is_shown_by_its_id(
+        self,
+        platform: InstagramPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=IG_GRAPH_API) as network:
+            network.get(f"/{IG_ID}").mock(return_value=httpx.Response(200, json={}))
+
+            profile = await platform.read_profile(account)
+
+        assert profile.name == IG_ID
+
+    async def test_it_refuses_a_connection_that_names_no_account(
+        self,
+        platform: InstagramPlatform,
+    ) -> None:
+        nowhere = Connection(
+            id="instagram:mystery",
+            platform="instagram",
+            host=None,
+            account_id="",
+            account_name="",
+            token=Token(access_token="token"),
+        )
+
+        with (
+            respx.mock(assert_all_called=False) as network,
+            pytest.raises(ConfigError, match="instagram_id"),
+        ):
+            await platform.read_profile(nowhere)
+
+        assert not network.calls
 
 
 # ---------------------------------------------------------------------------

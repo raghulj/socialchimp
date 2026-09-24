@@ -43,6 +43,7 @@ from socialchimp.platforms._meta import (
     first_update,
     long_lived_token,
     meta_errors,
+    meta_picture_url,
     page_by_id,
     pages_of,
     quota_left,
@@ -113,11 +114,14 @@ def a_page(
     *,
     name: str = "Ada's Cakes",
     token: str | None = PAGE_TOKEN,
+    picture: object = None,
 ) -> dict[str, Any]:
     """One entry from the list of pages somebody manages."""
     page: dict[str, Any] = {"id": page_id, "name": name, "category": "Bakery"}
     if token is not None:
         page["access_token"] = token
+    if picture is not None:
+        page["picture"] = picture
     return page
 
 
@@ -332,6 +336,46 @@ class TestReadingAValueMetaAlwaysSends:
         assert complaint.value.raw == reply
 
 
+class TestReadingAPictureAddress:
+    def test_it_reads_the_nested_url(self) -> None:
+        raw = {"picture": {"data": {"url": "https://example.com/cake.jpg"}}}
+
+        assert meta_picture_url(raw) == "https://example.com/cake.jpg"
+
+    def test_it_can_be_asked_about_a_field_of_a_different_name(self) -> None:
+        raw = {"avatar": {"data": {"url": "https://example.com/cake.jpg"}}}
+
+        assert meta_picture_url(raw, key="avatar") == "https://example.com/cake.jpg"
+
+    def test_it_cleans_the_address_the_same_way_every_other_picture_is(self) -> None:
+        # Leading and trailing space is not part of a web address.
+        raw = {"picture": {"data": {"url": "  https://example.com/cake.jpg  "}}}
+
+        assert meta_picture_url(raw) == "https://example.com/cake.jpg"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {},
+            {"picture": None},
+            {"picture": "not an object"},
+            {"picture": {}},
+            {"picture": {"data": None}},
+            {"picture": {"data": "not an object"}},
+            {"picture": {"data": {}}},
+            {"picture": {"data": {"url": ""}}},
+            {"picture": {"data": {"url": "not a web address"}}},
+            {"picture": {"data": {"url": 7}}},
+            {"picture": {"data": {"url": None}}},
+        ],
+    )
+    def test_missing_empty_or_malformed_is_none_never_an_error(
+        self,
+        raw: dict[str, Any],
+    ) -> None:
+        assert meta_picture_url(raw) is None
+
+
 # ---------------------------------------------------------------------------
 # Which pages somebody manages
 # ---------------------------------------------------------------------------
@@ -347,12 +391,38 @@ class TestListingThePagesSomebodyManages:
             async with a_graph(USER_TOKEN) as graph:
                 pages = await pages_of(graph)
 
-        assert "access_token" in route.calls.last.request.url.params["fields"]
+        asked = route.calls.last.request.url.params["fields"]
+        assert "access_token" in asked
+        assert "picture{url}" in asked
         assert len(pages) == 1
         assert pages[0].id == PAGE_ID
         assert pages[0].name == "Ada's Cakes"
         assert pages[0].token == PAGE_TOKEN
         assert pages[0].category == "Bakery"
+        # This entry carried no picture, so there is nothing to show.
+        assert pages[0].avatar_url is None
+
+    async def test_it_reads_a_pages_own_picture(self) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get("/me/accounts").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "data": [
+                            a_page(
+                                picture={
+                                    "data": {"url": "https://example.com/cake.jpg"}
+                                }
+                            )
+                        ]
+                    },
+                )
+            )
+
+            async with a_graph(USER_TOKEN) as graph:
+                pages = await pages_of(graph)
+
+        assert pages[0].avatar_url == "https://example.com/cake.jpg"
 
     async def test_it_keeps_reading_while_meta_offers_another_page(self) -> None:
         with respx.mock(base_url=GRAPH_API) as network:
@@ -494,9 +564,28 @@ class TestLookingUpOnePage:
             async with a_graph(USER_TOKEN) as graph:
                 page = await page_by_id(graph, page_id=PAGE_ID)
 
-        assert "access_token" in route.calls.last.request.url.params["fields"]
+        asked = route.calls.last.request.url.params["fields"]
+        assert "access_token" in asked
+        assert "picture{url}" in asked
         assert page.id == PAGE_ID
         assert page.token == PAGE_TOKEN
+        assert page.avatar_url is None
+
+    async def test_it_reads_that_pages_own_picture(self) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get(f"/{PAGE_ID}").mock(
+                return_value=httpx.Response(
+                    200,
+                    json=a_page(
+                        picture={"data": {"url": "https://example.com/cake.jpg"}}
+                    ),
+                )
+            )
+
+            async with a_graph(USER_TOKEN) as graph:
+                page = await page_by_id(graph, page_id=PAGE_ID)
+
+        assert page.avatar_url == "https://example.com/cake.jpg"
 
     async def test_a_page_without_a_token_says_what_to_do_about_it(self) -> None:
         with respx.mock(base_url=GRAPH_API) as network:

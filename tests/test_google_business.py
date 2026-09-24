@@ -43,6 +43,7 @@ from socialchimp.platform import (
     CanCheckSignature,
     CanEditBusinessInfo,
     CanManageVerification,
+    CanReadProfile,
     CanReadPushedUpdates,
     CanReadUpdates,
     CanReplyToUpdates,
@@ -286,6 +287,15 @@ class TestWhatItSaysItCanDo:
         assert isinstance(checks_signature, CanCheckSignature)
         assert isinstance(reads_pushed, CanReadPushedUpdates)
         assert platform.name == "google_business"
+
+    def test_it_does_not_claim_to_read_the_profile_back(
+        self, platform: GoogleBusinessPlatform
+    ) -> None:
+        # Nothing in the Business Profile APIs gives a picture for an
+        # account or a location that would fit AccountProfile, so there is
+        # no read_profile here rather than one that always answers None.
+        assert not isinstance(platform, CanReadProfile)
+        assert not hasattr(platform, "read_profile")
 
     def test_it_lists_only_what_it_really_does(
         self, platform: GoogleBusinessPlatform
@@ -601,6 +611,9 @@ class TestChoosingALocation:
         assert connection.account_name == "Ada's Bakery"
         assert connection.extra["location_name"] == LOCATION
         assert connection.token.access_token == "access-one"
+        # The Business Profile APIs have no documented picture field that
+        # fits here, so this is never guessed at.
+        assert connection.avatar_url is None
 
     async def test_a_location_nobody_offered_is_refused(
         self, platform: GoogleBusinessPlatform

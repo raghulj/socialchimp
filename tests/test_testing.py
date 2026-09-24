@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from socialchimp import (
+    AccountProfile,
     AppCredentials,
     Connection,
     Feature,
@@ -49,6 +50,7 @@ from socialchimp.platform import (
     CanMessage,
     CanReadLikes,
     CanReadPost,
+    CanReadProfile,
     CanReadPushedUpdates,
     CanReadThread,
     CanReadUpdatesAfter,
@@ -1296,6 +1298,46 @@ class TestNamingAFakeConnection:
         given = FakePlatform().connection(connection_id="mine")
 
         assert given.id == "mine"
+
+    def test_a_connection_has_no_picture_by_default(self) -> None:
+        assert FakePlatform().connection().avatar_url is None
+
+    def test_a_connection_carries_the_picture_it_was_given(self) -> None:
+        platform = FakePlatform(avatar_url="https://fake.example/me.jpg")
+
+        assert platform.connection().avatar_url == "https://fake.example/me.jpg"
+
+
+class TestReadingTheFakesProfile:
+    async def test_it_hands_back_the_connections_name_and_the_given_picture(
+        self,
+    ) -> None:
+        platform = FakePlatform(avatar_url="https://fake.example/me.jpg")
+        connection = platform.connection()
+
+        profile = await platform.read_profile(connection)
+
+        assert isinstance(platform, CanReadProfile)
+        assert profile == AccountProfile(
+            name=connection.account_name,
+            avatar_url="https://fake.example/me.jpg",
+        )
+
+    async def test_with_no_picture_given_the_profile_has_none_either(self) -> None:
+        platform = FakePlatform()
+
+        profile = await platform.read_profile(platform.connection())
+
+        assert profile.avatar_url is None
+
+    async def test_a_finished_login_carries_the_picture_along(self) -> None:
+        platform = FakePlatform(avatar_url="https://fake.example/me.jpg")
+        request = LoginRequest(redirect_uri="https://app.example/back")
+
+        step = await platform.finish_login(request, {"code": "abc"})
+
+        assert isinstance(step, Finished)
+        assert step.connection.avatar_url == "https://fake.example/me.jpg"
 
 
 class TestAFakeSetupCheck:

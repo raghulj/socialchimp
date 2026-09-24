@@ -165,6 +165,7 @@ from socialchimp.features import (
 )
 from socialchimp.http import HttpClient, error_from_response, read_body
 from socialchimp.models import (
+    AccountProfile,
     Connection,
     Media,
     Post,
@@ -172,6 +173,7 @@ from socialchimp.models import (
     PostState,
     RawData,
     Token,
+    picture_url,
 )
 from socialchimp.platform import (
     AccountChoice,
@@ -1239,7 +1241,10 @@ class YouTubePlatform:
             )
 
         channels = {
-            _text(item, "id", "list this person's channels"): _channel_name(item)
+            _text(item, "id", "list this person's channels"): {
+                "name": _channel_name(item),
+                "avatar_url": _channel_picture(item),
+            }
             for item in _items_in(mine)
         }
         if not channels:
@@ -1257,8 +1262,8 @@ class YouTubePlatform:
 
         return ChooseAccount(
             options=tuple(
-                AccountChoice(id=channel_id, name=name, kind="channel")
-                for channel_id, name in channels.items()
+                AccountChoice(id=channel_id, name=str(info["name"]), kind="channel")
+                for channel_id, info in channels.items()
             ),
             resume_token=_pack(
                 {
@@ -1315,6 +1320,17 @@ class YouTubePlatform:
 
         scopes = kept.get("scopes")
         expires_at = _moment(str(kept.get("expires_at", "")))
+        chosen = offered[account_id]
+        if isinstance(chosen, dict):
+            # The shape finish_login packs today: a name alongside whatever
+            # picture the channel had, or None.
+            name = str(chosen.get("name", account_id))
+            avatar_url = picture_url(chosen.get("avatar_url"))
+        else:
+            # A resume_token made by socialchimp before avatar_url existed
+            # packed the name on its own. It still has to work.
+            name = str(chosen)
+            avatar_url = None
 
         return Finished(
             connection=Connection(
@@ -1322,7 +1338,7 @@ class YouTubePlatform:
                 platform=PLATFORM_NAME,
                 host=None,
                 account_id=account_id,
-                account_name=str(offered[account_id]),
+                account_name=name,
                 token=Token(
                     access_token=str(kept.get("access_token", "")),
                     refresh_token=str(kept.get("refresh_token", "")),
@@ -1335,6 +1351,7 @@ class YouTubePlatform:
                     "channel_id": account_id,
                     "channel_url": f"https://www.youtube.com/channel/{account_id}",
                 },
+                avatar_url=avatar_url,
             )
         )
 
@@ -1663,6 +1680,36 @@ class YouTubePlatform:
             raw=video,
         )
 
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask YouTube for this channel's current name and picture.
+
+        Makes exactly one request, so a name and picture that has gone stale
+        - or was never saved at all - can always be read fresh.
+
+        Args:
+            connection: The channel to ask about.
+
+        Returns:
+            The name and picture YouTube has on file right now. Falls back
+            to the channel id for the name, and to `None` for the picture,
+            the same way a login does when YouTube leaves either one out.
+
+        Raises:
+            SocialChimpError: If YouTube refuses the question.
+        """
+        channel_id = _channel_of(connection)
+        async with self._client(API_URL, connection.token.access_token) as http:
+            reply = await http.json(
+                "GET", "/channels", params={"part": "snippet", "id": channel_id}
+            )
+
+        found = _items_in(reply)
+        item = found[0] if found else {"id": channel_id}
+        return AccountProfile(
+            name=_channel_name(item),
+            avatar_url=_channel_picture(item),
+        )
+
     # YouTube can push as well, through WebSub, but only to say that a
     # channel has a new video. There is no push for comments, likes or
     # anything else, and comments are what apps ask for - so this is what
@@ -1746,6 +1793,32 @@ def _channel_name(item: RawData) -> str:
         if isinstance(title, str) and title:
             return title
     return str(item.get("id", ""))
+
+
+def _channel_picture(item: RawData) -> str | None:
+    """Read a channel's picture out of what YouTube said about it.
+
+    Args:
+        item: One channel from `channels.list`.
+
+    Returns:
+        The address of its picture - `snippet.thumbnails.default.url`,
+        falling back to `medium` and then `high` when a size is missing -
+        or `None` when there is nothing usable there at all.
+    """
+    snippet = item.get("snippet")
+    if not isinstance(snippet, dict):
+        return None
+    thumbnails = snippet.get("thumbnails")
+    if not isinstance(thumbnails, dict):
+        return None
+    for size in ("default", "medium", "high"):
+        thumbnail = thumbnails.get(size)
+        if isinstance(thumbnail, dict):
+            found = picture_url(thumbnail.get("url"))
+            if found is not None:
+                return found
+    return None
 
 
 def _channel_of(connection: Connection) -> str:

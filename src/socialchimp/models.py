@@ -27,6 +27,7 @@ from typing import Any, Generic, TypeVar
 from socialchimp.errors import ConfigError, InvalidPostError
 
 __all__ = [
+    "AccountProfile",
     "AppCredentials",
     "Attachment",
     "BusinessLocation",
@@ -53,6 +54,7 @@ __all__ = [
     "Verification",
     "VerificationOption",
     "Visibility",
+    "picture_url",
     "require_timezone",
 ]
 
@@ -95,6 +97,36 @@ def require_timezone(value: datetime | None, name: str) -> None:
             f"Use datetime.now(UTC) or add tzinfo=UTC to the value."
         )
         raise ConfigError(message)
+
+
+# What a picture address has to start with to be worth keeping.
+_PICTURE_SCHEMES = ("https://", "http://")
+
+
+def picture_url(value: object) -> str | None:
+    """Turn whatever a network sent back into a clean web address, or nothing.
+
+    Networks hand back a picture address in all sorts of shapes - missing
+    entirely, blank, or something that is not a string at all once a reply
+    has been parsed as JSON. This is the one place that decides what counts
+    as a real address, so every platform file agrees on the answer.
+
+    Args:
+        value: Whatever the network put where a picture address should be.
+
+    Returns:
+        `value.strip()` when `value` is a string whose stripped form starts
+        with `"https://"` or `"http://"` and has something after the scheme.
+        `None` for everything else - not a string, empty, blank, or a scheme
+        with nothing following it.
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    for scheme in _PICTURE_SCHEMES:
+        if stripped.startswith(scheme) and len(stripped) > len(scheme):
+            return stripped
+    return None
 
 
 class MediaKind(Enum):
@@ -270,6 +302,10 @@ class Connection:
         scopes: What this token is allowed to do.
         extra: Anything else one network needs, such as a Facebook page id
             or a YouTube channel id.
+        avatar_url: The account's picture, when the network gave one when it
+            was connected. Some networks put a short-lived address here,
+            which is why `CanReadProfile.read_profile` exists - to ask the
+            network for a fresh one when this one has gone stale.
     """
 
     id: str
@@ -280,6 +316,7 @@ class Connection:
     token: Token
     scopes: tuple[str, ...] = ()
     extra: RawData = field(default_factory=dict)
+    avatar_url: str | None = None
 
     def with_token(self, token: Token) -> Connection:
         """Return a copy of this connection carrying a new token.
@@ -301,7 +338,26 @@ class Connection:
             token=token,
             scopes=self.scopes,
             extra=self.extra,
+            avatar_url=self.avatar_url,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AccountProfile:
+    """The name and picture a network shows for a connected account.
+
+    Read with `Account.profile`, which asks the network directly rather than
+    reading anything saved - the point of it is to get a picture address that
+    has not gone stale.
+
+    Attributes:
+        name: Something a person would recognise, shown in your UI.
+        avatar_url: The account's picture, or `None` where the network has
+            none set.
+    """
+
+    name: str
+    avatar_url: str | None
 
 
 @dataclass(frozen=True, slots=True)

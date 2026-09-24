@@ -72,6 +72,37 @@ class TestConnections:
         assert found is not None
         assert found.token.access_token == "new"
 
+    async def test_a_connection_with_a_picture_round_trips(
+        self, storage: InMemoryStorage
+    ) -> None:
+        with_picture = Connection(
+            id="conn-1",
+            platform="mastodon",
+            host="mastodon.social",
+            account_id="42",
+            account_name="@someone@mastodon.social",
+            token=Token(access_token="abc"),
+            avatar_url="https://example.com/me.jpg",
+        )
+        await storage.save_connection(with_picture)
+
+        found = await storage.get_connection("conn-1")
+
+        assert found == with_picture
+        assert found is not None
+        assert found.avatar_url == "https://example.com/me.jpg"
+
+    async def test_a_connection_with_no_picture_round_trips(
+        self, storage: InMemoryStorage
+    ) -> None:
+        await storage.save_connection(a_connection())
+
+        found = await storage.get_connection("conn-1")
+
+        assert found == a_connection()
+        assert found is not None
+        assert found.avatar_url is None
+
     async def test_a_deleted_connection_is_gone(self, storage: InMemoryStorage) -> None:
         await storage.save_connection(a_connection())
 
