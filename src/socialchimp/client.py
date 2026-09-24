@@ -63,6 +63,7 @@ from socialchimp.platform import (
     CanModerateComments,
     CanReadLikes,
     CanReadPost,
+    CanReadProfile,
     CanReadPushedUpdates,
     CanReadReplies,
     CanReadStats,
@@ -89,6 +90,7 @@ if TYPE_CHECKING:
     from socialchimp.events import Update, UpdateBatch
     from socialchimp.features import Limits
     from socialchimp.models import (
+        AccountProfile,
         AppCredentials,
         BusinessLocation,
         Connection,
@@ -508,6 +510,29 @@ class Account:
             TokenExpiredError: If the token needed renewing and could not be.
         """
         return await self._client.fresh_connection(self.id)
+
+    async def profile(self) -> AccountProfile:
+        """Ask the network for this account's current name and picture.
+
+        Nothing is saved to storage here - this is for showing a fresh name
+        and picture, or for renewing one that has gone stale, not for
+        keeping a copy yourself.
+
+        Returns:
+            The name and picture the network has on file right now.
+
+        Raises:
+            NotSupportedError: If this network cannot be asked for its own
+                name and picture this way.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        if not isinstance(platform, CanReadProfile):
+            raise NotSupportedError(
+                platform=platform.name,
+                what="reading the account's name and picture",
+            )
+        return await platform.read_profile(connection)
 
     async def limits(self) -> Limits:
         """Look up what this network is allowing this account right now.

@@ -74,6 +74,7 @@ from socialchimp.events import (
 from socialchimp.features import Feature, Limits, TextCount, check_post, measure_text
 from socialchimp.http import HttpClient
 from socialchimp.models import (
+    AccountProfile,
     AppCredentials,
     Attachment,
     Connection,
@@ -806,7 +807,9 @@ class FakePlatform:
     `publish_fails_with` and every post raises that; `login_fails_with` and
     signing in raises that instead of finishing. Give it
     `token_lifetime=None` and its tokens never expire, the way Mastodon's do
-    not.
+    not. Give it `avatar_url` and every connection it builds - including the
+    one a finished sign-in hands back - carries that as its picture, and
+    `read_profile` hands the same one back, the way `Account.profile` reads.
 
     Give it a transport and `publish` really sends a request through
     `HttpClient`, so retries, rate limits and error handling all run. Leave
@@ -872,6 +875,9 @@ class FakePlatform:
             which is what most networks do.
         token_lifetime: How long a fresh token lasts. `None` for a token
             that never expires.
+        avatar_url: The picture every connection this fake builds carries,
+            and what `read_profile` hands back. `None` means no picture, the
+            same as a network that has none set.
         publish_fails_with: An error every `publish` raises instead of
             working.
         login_fails_with: An error raised instead of finishing a sign-in, by
@@ -917,6 +923,7 @@ class FakePlatform:
         updates: Sequence[Update] = (),
         states: Sequence[PostState] = (),
         token_lifetime: timedelta | None = timedelta(hours=1),
+        avatar_url: str | None = None,
         publish_fails_with: SocialChimpError | None = None,
         login_fails_with: SocialChimpError | None = None,
         answers_setup_checks: bool = True,
@@ -940,6 +947,9 @@ class FakePlatform:
                 leaves this fake without a `check_state`.
             token_lifetime: How long a fresh token lasts, or `None` for one
                 that never expires.
+            avatar_url: The picture every connection this fake builds
+                carries, and what `read_profile` hands back. Left out, no
+                picture, the same as a network with none set.
             publish_fails_with: An error every `publish` raises.
             login_fails_with: An error `finish_login` and `resume_login`
                 raise instead of finishing.
@@ -959,6 +969,7 @@ class FakePlatform:
         self.updates = tuple(updates)
         self.states = tuple(states)
         self.token_lifetime = token_lifetime
+        self.avatar_url = avatar_url
         self.publish_fails_with = publish_fails_with
         self.login_fails_with = login_fails_with
         self.published: list[tuple[str, Post]] = []
@@ -1587,7 +1598,8 @@ class FakePlatform:
             account_id: The id the network would use.
 
         Returns:
-            A connection with a working token.
+            A connection with a working token, carrying `self.avatar_url` as
+            its picture.
         """
         return Connection(
             id=(
@@ -1604,7 +1616,19 @@ class FakePlatform:
                 refresh_token=_FAKE_REFRESH,
                 expires_at=self._expiry(),
             ),
+            avatar_url=self.avatar_url,
         )
+
+    async def read_profile(self, connection: Connection) -> AccountProfile:
+        """Ask this fake for the account's current name and picture.
+
+        Args:
+            connection: The account to ask about.
+
+        Returns:
+            The connection's own name, together with `self.avatar_url`.
+        """
+        return AccountProfile(name=connection.account_name, avatar_url=self.avatar_url)
 
     def sign(self, body: bytes, *, secret: str | None = None) -> dict[str, str]:
         """Return the headers this fake wants alongside a pushed body.

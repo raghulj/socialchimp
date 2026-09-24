@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from socialchimp import (
+    AccountProfile,
     AppCredentials,
     Attachment,
     ConfigError,
@@ -32,6 +33,7 @@ from socialchimp import (
     Token,
     Unavailable,
     Visibility,
+    picture_url,
 )
 
 
@@ -227,6 +229,49 @@ class TestConnection:
 
         assert "super-secret" not in repr(connection)
 
+    def test_avatar_url_defaults_to_none(self) -> None:
+        # A connection built the way every one of them was before this field
+        # existed - by position or by keyword, without avatar_url - still
+        # works, and simply has no picture.
+        connection = Connection(
+            id="conn-1",
+            platform="mastodon",
+            host=None,
+            account_id="42",
+            account_name="someone",
+            token=Token(access_token="abc"),
+        )
+
+        assert connection.avatar_url is None
+
+    def test_avatar_url_can_be_set(self) -> None:
+        connection = Connection(
+            id="conn-1",
+            platform="mastodon",
+            host=None,
+            account_id="42",
+            account_name="someone",
+            token=Token(access_token="abc"),
+            avatar_url="https://example.com/me.jpg",
+        )
+
+        assert connection.avatar_url == "https://example.com/me.jpg"
+
+    def test_a_new_token_keeps_the_avatar_url(self) -> None:
+        original = Connection(
+            id="conn-1",
+            platform="mastodon",
+            host=None,
+            account_id="42",
+            account_name="someone",
+            token=Token(access_token="old"),
+            avatar_url="https://example.com/me.jpg",
+        )
+
+        updated = original.with_token(Token(access_token="new"))
+
+        assert updated.avatar_url == "https://example.com/me.jpg"
+
 
 class TestAppCredentials:
     def test_credentials_are_keyed_by_platform_and_host(self) -> None:
@@ -250,6 +295,53 @@ class TestAppCredentials:
         )
 
         assert "super-secret" not in repr(credentials)
+
+
+class TestAccountProfile:
+    def test_it_carries_a_name_and_a_picture(self) -> None:
+        profile = AccountProfile(name="Ada", avatar_url="https://example.com/ada.jpg")
+
+        assert profile.name == "Ada"
+        assert profile.avatar_url == "https://example.com/ada.jpg"
+
+    def test_the_picture_can_be_missing(self) -> None:
+        profile = AccountProfile(name="Ada", avatar_url=None)
+
+        assert profile.avatar_url is None
+
+
+class TestPictureUrl:
+    def test_a_clean_https_address_is_kept(self) -> None:
+        assert picture_url("https://example.com/a.jpg") == "https://example.com/a.jpg"
+
+    def test_a_clean_http_address_is_kept(self) -> None:
+        assert picture_url("http://example.com/a.jpg") == "http://example.com/a.jpg"
+
+    def test_surrounding_whitespace_is_stripped(self) -> None:
+        assert picture_url("  https://example.com/a.jpg  ") == (
+            "https://example.com/a.jpg"
+        )
+
+    def test_none_is_not_a_picture(self) -> None:
+        assert picture_url(None) is None
+
+    def test_an_empty_string_is_not_a_picture(self) -> None:
+        assert picture_url("") is None
+
+    def test_only_whitespace_is_not_a_picture(self) -> None:
+        assert picture_url("   ") is None
+
+    def test_something_that_is_not_a_string_is_not_a_picture(self) -> None:
+        assert picture_url({"url": "https://example.com/a.jpg"}) is None
+        assert picture_url(123) is None
+        assert picture_url(["https://example.com/a.jpg"]) is None
+
+    def test_text_with_no_scheme_is_not_a_picture(self) -> None:
+        assert picture_url("not a url") is None
+
+    def test_a_bare_scheme_with_nothing_after_it_is_not_a_picture(self) -> None:
+        assert picture_url("https://") is None
+        assert picture_url("http://") is None
 
 
 class TestPostResult:
