@@ -2094,11 +2094,15 @@ class MastodonPlatform:
         the reply itself - a server's limits are looked up at most once, one
         request goes out per file attached, and one more sends the post.
 
-        The reply keeps the parent's visibility wherever that is narrower
-        than the one it would otherwise get - a reply to a `direct` status
-        stays `direct`, whatever `options` asks for - and it names the
-        parent's author and anyone else it mentions, the way Mastodon's own
-        web app does, skipping the connected account itself and anyone
+        A visibility passed in `options` is narrowed to the parent's - a
+        reply to a `direct` status stays `direct`, whatever `options` asks
+        for. Ask for nothing, and this sends no visibility at all, so the
+        account's own default applies - except when the parent is `private`
+        or `direct`, where a reply that carried no visibility of its own
+        would otherwise go out wider than the post it replies to; there, the
+        parent's own visibility is sent instead. Either way, this also names
+        the parent's author and anyone else it mentions, the way Mastodon's
+        own web app does, skipping the connected account itself and anyone
         already named in `text`.
 
         Args:
@@ -2122,13 +2126,24 @@ class MastodonPlatform:
             parent = await http.json("GET", f"/api/v1/statuses/{post_id}")
 
         requested = (options or {}).get("visibility")
-        default_visibility = requested if isinstance(requested, str) else "public"
-        final_visibility = _narrower_visibility(
-            parent.get("visibility"), default_visibility
-        )
+        parent_visibility = parent.get("visibility")
 
         final_options = dict(options) if options else {}
-        final_options["visibility"] = final_visibility
+        if isinstance(requested, str):
+            # A visibility was asked for - keep it, unless the parent is
+            # narrower.
+            final_options["visibility"] = _narrower_visibility(
+                parent_visibility, requested
+            )
+        elif parent_visibility in ("private", "direct"):
+            # Nothing was asked for, but sending no visibility here would
+            # let the server's default widen the reply past a parent it was
+            # never meant to be seen beyond.
+            final_options["visibility"] = parent_visibility
+        else:
+            # Nothing was asked for and the parent is public or unlisted -
+            # send no visibility, so the account's own default applies.
+            final_options.pop("visibility", None)
 
         return await self.publish(
             connection,

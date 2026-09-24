@@ -1814,9 +1814,81 @@ class TestReplying:
 
         sent = form_of(route.calls.last.request)
         assert sent["status"] == ["@mabel_finds@other.example Still there!"]
-        assert sent["visibility"] == ["public"]
+        # No visibility was asked for, and a public parent asks for nothing
+        # narrower - so nothing is sent, and the account's own default
+        # applies.
+        assert "visibility" not in sent
         assert sent["in_reply_to_id"] == [parent["id"]]
         assert result.id == A_STATUS["id"]
+
+    async def test_a_private_parent_with_no_requested_visibility_keeps_private(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        parent = {**fixture("status_own_post.json"), "visibility": "private"}
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            stub_instance(network, host=SOCIAL_HOST)
+            network.get(f"/api/v1/statuses/{parent['id']}").mock(
+                return_value=httpx.Response(200, json=parent)
+            )
+            route = network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=A_STATUS)
+            )
+
+            await platform.reply(fridgedoor, parent["id"], "Still there!")
+
+        # A direct or private parent is the one exception: with nothing
+        # requested, the reply keeps the parent's own visibility rather
+        # than sending none.
+        assert form_of(route.calls.last.request)["visibility"] == ["private"]
+
+    async def test_an_unlisted_parent_with_no_requested_visibility_sends_nothing(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        parent = {**fixture("status_own_post.json"), "visibility": "unlisted"}
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            stub_instance(network, host=SOCIAL_HOST)
+            network.get(f"/api/v1/statuses/{parent['id']}").mock(
+                return_value=httpx.Response(200, json=parent)
+            )
+            route = network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=A_STATUS)
+            )
+
+            await platform.reply(fridgedoor, parent["id"], "Still there!")
+
+        # unlisted is not direct or private, so nothing beats sending no
+        # visibility at all and letting the account default apply.
+        assert "visibility" not in form_of(route.calls.last.request)
+
+    async def test_a_requested_visibility_narrower_than_the_parent_wins(
+        self,
+        platform: MastodonPlatform,
+        fridgedoor: Connection,
+    ) -> None:
+        # status_own_post.json's parent is public - narrower than that,
+        # requesting "private" should be honoured rather than overridden.
+        parent = fixture("status_own_post.json")
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            stub_instance(network, host=SOCIAL_HOST)
+            network.get(f"/api/v1/statuses/{parent['id']}").mock(
+                return_value=httpx.Response(200, json=parent)
+            )
+            route = network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=A_STATUS)
+            )
+
+            await platform.reply(
+                fridgedoor,
+                parent["id"],
+                "Still there!",
+                options={"visibility": "private"},
+            )
+
+        assert form_of(route.calls.last.request)["visibility"] == ["private"]
 
     async def test_it_mentions_the_parents_author_but_not_the_replying_account(
         self,
