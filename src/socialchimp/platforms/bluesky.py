@@ -110,12 +110,15 @@ import httpx
 
 from socialchimp.errors import (
     AuthError,
+    BlockedError,
     InvalidPostError,
+    MissingPermissionError,
     NotFoundError,
     PlatformError,
+    PostGoneError,
     TokenExpiredError,
 )
-from socialchimp.events import Update
+from socialchimp.events import Update, UpdateBatch
 from socialchimp.features import (
     Feature,
     Limits,
@@ -126,13 +129,25 @@ from socialchimp.features import (
 )
 from socialchimp.http import HttpClient, error_from_response, read_body
 from socialchimp.models import (
+    Attachment,
     Connection,
+    Conversation,
+    Like,
+    LikeResult,
+    LinkKind,
     Media,
+    Message,
+    Page,
+    Person,
     Post,
+    PostDetails,
     PostResult,
     PostState,
     RawData,
+    TextLink,
+    Thread,
     Token,
+    Unavailable,
 )
 from socialchimp.platform import AskForDetails, Finished, LoginField, LoginRequest
 
@@ -220,17 +235,57 @@ IMAGES_EMBED: Final = "app.bsky.embed.images"
 # Bluesky's word for something, and ours. A word missing from here is passed
 # through as it is and lands as `UpdateKind.UNKNOWN` with Bluesky's own word
 # kept on the update, so a kind we have never seen still reaches your app.
+#
+# Reposts and follows used to share `reaction_added` and `unknown` with
+# everything else; from 0.8.0 each has a kind of its own, which is a
+# documented change in behaviour rather than a bug fix. A quote is someone
+# posting about one of the connected account's own posts rather than us, so
+# it is folded into `mention` - the same "somebody is talking about you"
+# shape mentions already have - rather than inventing a kind of its own for
+# one word Bluesky uses and nothing else does yet.
 _OUR_WORD_FOR: Final = {
     "like": "reaction_added",
-    "repost": "reaction_added",
+    "repost": "repost_added",
     "reply": "comment_created",
     "mention": "mention",
+    "quote": "mention",
+    "follow": "followed",
 }
+
+# Reasons whose `reasonSubject` names one of the connected account's own
+# posts directly - the post that was liked or reposted.
+_SUBJECT_REASONS: Final = frozenset({"like", "repost"})
+
+# Reasons that are themselves a post, whose own `record.reply` (when there is
+# one) says what it concerns. A plain mention rarely has one; a reply always
+# does; a quote never does, because quoting is not replying.
+_ABOUT_POST_REASONS: Final = frozenset({"reply", "mention", "quote"})
 
 # Names Bluesky gives a 400 when the trouble is really the sign-in. It
 # answers 400 rather than 401 for a token that has run out, which sends
 # people hunting in the wrong place, so we name them here.
 _SIGN_IN_PROBLEMS: Final = ("ExpiredToken", "InvalidToken", "AuthenticationRequired")
+
+# What Bluesky calls a block, whichever direction it runs.
+_BLOCK_PROBLEMS: Final = ("BlockedActor", "BlockedByActor")
+
+# What a direct-message app password that cannot send direct messages says.
+# Any other InvalidToken - a malformed or expired token - is a sign-in
+# problem instead, handled above; only this exact message, and only on a
+# chat.bsky.* call, means the permission itself is missing.
+_DM_PERMISSION_MESSAGE: Final = "Bad token method"
+
+# Every chat.bsky.convo.* address lives under this, which is also how we
+# tell a chat call apart from an ordinary one when reading an error - see
+# `_is_chat_call`.
+_CHAT_PATH_MARKER: Final = "/chat.bsky."
+
+# Every call under chat.bsky.convo needs this so the person's own server
+# knows to hand it on to Bluesky's chat service rather than answer it
+# itself - the chat service is a separate thing from the PDS, reached
+# through it.
+_CHAT_PROXY_HEADER: Final = "atproto-proxy"
+_CHAT_PROXY_TARGET: Final = "did:web:api.bsky.chat#bsky_chat"
 
 # Every address we send to. Bluesky puts them all under /xrpc and names them
 # after the definition each one follows.
@@ -240,8 +295,68 @@ _CREATE_RECORD: Final = "/com.atproto.repo.createRecord"
 _DELETE_RECORD: Final = "/com.atproto.repo.deleteRecord"
 _UPLOAD_BLOB: Final = "/com.atproto.repo.uploadBlob"
 _GET_POSTS: Final = "/app.bsky.feed.getPosts"
+_GET_POST_THREAD: Final = "/app.bsky.feed.getPostThread"
+_GET_LIKES: Final = "/app.bsky.feed.getLikes"
 _RESOLVE_HANDLE: Final = "/com.atproto.identity.resolveHandle"
 _LIST_NOTIFICATIONS: Final = "/app.bsky.notification.listNotifications"
+_UPDATE_SEEN: Final = "/app.bsky.notification.updateSeen"
+_LIST_CONVOS: Final = "/chat.bsky.convo.listConvos"
+_GET_MESSAGES: Final = "/chat.bsky.convo.getMessages"
+_SEND_MESSAGE: Final = "/chat.bsky.convo.sendMessage"
+_UPDATE_READ: Final = "/chat.bsky.convo.updateRead"
+_GET_CONVO_FOR_MEMBERS: Final = "/chat.bsky.convo.getConvoForMembers"
+
+LIKE_COLLECTION: Final = "app.bsky.feed.like"
+"""What Bluesky calls the pile of records an account's likes live in."""
+
+_DEFAULT_THREAD_DEPTH: Final = 6
+"""How many reply levels `getPostThread` fetches when nobody asks for a
+particular depth - Bluesky's own default."""
+
+_MAX_THREAD_DEPTH: Final = 1000
+"""The most reply levels Bluesky will ever fetch in one call, however deep
+somebody asks for."""
+
+_MAX_LIKES_PAGE: Final = 100
+"""The most likes `getLikes` will hand back in one page."""
+
+_MAX_MARKER_PAGES: Final = 5
+"""How many pages `fetch_updates_after` will read looking for a marker
+before giving up and saying there is more waiting.
+
+Bluesky's notifications only page backwards, so catching up after a long
+gap between checks means reading page after page until the last marker
+turns up. Reading without end would turn one slow check into an unbounded
+one, so a page is asked for, then another, up to this many - and if the
+marker still has not turned up, `UpdateBatch.more` comes back `True` so the
+caller reads the rest with another call straight away, rather than us
+holding one request open for however long that takes.
+"""
+
+# The kinds of node `getPostThread` can put where a reply belongs, besides
+# an ordinary post that hydrated fine.
+_NOT_FOUND_POST: Final = "app.bsky.feed.defs#notFoundPost"
+_BLOCKED_POST: Final = "app.bsky.feed.defs#blockedPost"
+
+# What a note inside a post's own text is marking, read back rather than
+# written - see `LINK_FEATURE` and `MENTION_FEATURE` above for the write
+# side of the same three.
+_TAG_FEATURE: Final = "app.bsky.richtext.facet#tag"
+
+# The kinds of embed a post's view side can carry, read back into
+# `Attachment`s.
+_IMAGES_VIEW: Final = "app.bsky.embed.images#view"
+_VIDEO_VIEW: Final = "app.bsky.embed.video#view"
+_EXTERNAL_VIEW: Final = "app.bsky.embed.external#view"
+_RECORD_WITH_MEDIA_VIEW: Final = "app.bsky.embed.recordWithMedia#view"
+
+# What kind of message view a chat message arrived as - a real one, or a
+# placeholder for one that was deleted since.
+_DELETED_MESSAGE_VIEW: Final = "chat.bsky.convo.defs#deletedMessageView"
+
+# Joins the two halves of a marker together. `at://` uris and ISO-8601
+# timestamps never contain this, so splitting on it is unambiguous.
+_MARKER_SEPARATOR: Final = "::"
 
 # A token is three pieces joined by dots.
 _JWT_PIECES: Final = 3
@@ -488,17 +603,43 @@ def _handles_in(text: str) -> list[tuple[int, int, str]]:
     ]
 
 
+def _is_chat_call(response: httpx.Response) -> bool:
+    """Say whether a reply came from one of the `chat.bsky.convo.*` calls.
+
+    Every one of those needs an app password made with direct-message
+    access, and Bluesky's answer when that permission is missing (400
+    `InvalidToken`, "Bad token method") uses the same name as a plain
+    malformed token. The only way to tell them apart is which address the
+    request went to, so `bluesky_errors` asks this before deciding.
+
+    Args:
+        response: The reply to look at.
+
+    Returns:
+        True if the request this answers was a chat call.
+    """
+    return _CHAT_PATH_MARKER in response.request.url.path
+
+
 def bluesky_errors(response: httpx.Response) -> SocialChimpError:
     """Turn an unhappy reply from Bluesky into a socialchimp error.
 
     Bluesky puts a short name in every refusal, and only its 400s need us to
-    read it. Two of those names are worth naming here:
+    read it. A few of those names are worth naming here:
 
     - A token that has run out comes back as **400 ExpiredToken**, not 401.
       Anyone who maps by status alone reads that as a bad post and never
       renews, so it becomes an `AuthError` here.
     - `InvalidRequest` is what a post that breaks a rule looks like, so it
       becomes an `InvalidPostError` with whatever Bluesky said kept on it.
+    - `NotFound` is what `getPostThread` says when the post asked for is
+      gone, so it becomes a `PostGoneError`.
+    - `BlockedActor` and `BlockedByActor` mean a block runs between the two
+      accounts, in either direction, so both become a `BlockedError`.
+    - `InvalidToken` saying "Bad token method" on a `chat.bsky.convo.*` call
+      means this app password was made without direct-message access, so it
+      becomes a `MissingPermissionError` naming the fix - a new app password
+      cannot have the box ticked after the fact.
 
     Everything else is the shared mapping: 401 is an `AuthError`, 403 a
     `NotAllowedError`, 404 a `NotFoundError`, 429 a `RateLimitError`.
@@ -517,6 +658,23 @@ def bluesky_errors(response: httpx.Response) -> SocialChimpError:
     said = body.get("message")
     detail = f" It said: {said}" if isinstance(said, str) and said else ""
 
+    is_dm_permission_problem = (
+        named == "InvalidToken"
+        and said == _DM_PERMISSION_MESSAGE
+        and _is_chat_call(response)
+    )
+    if is_dm_permission_problem:
+        return MissingPermissionError(
+            needs="direct messages",
+            suggestion=(
+                'Make a new app password with "Allow access to your direct '
+                'messages" ticked, then reconnect the account - the box '
+                "cannot be ticked on an app password that already exists."
+            ),
+            platform=PLATFORM_NAME,
+            raw=body,
+        )
+
     if named in _SIGN_IN_PROBLEMS:
         message = (
             f"Bluesky would not accept our sign-in ({named}), which it "
@@ -525,6 +683,17 @@ def bluesky_errors(response: httpx.Response) -> SocialChimpError:
             f"their account again, is what fixes it.{detail}"
         )
         return AuthError(message, platform=PLATFORM_NAME, raw=body)
+
+    if named == "NotFound":
+        message = f"Bluesky has no such post any more (400 {named}).{detail}"
+        return PostGoneError(message, platform=PLATFORM_NAME, raw=body)
+
+    if named in _BLOCK_PROBLEMS:
+        message = (
+            f"Bluesky refused this because of a block between the two "
+            f"accounts (400 {named}).{detail}"
+        )
+        return BlockedError(message, platform=PLATFORM_NAME, raw=body)
 
     if named == "BlobTooLarge":
         message = (
@@ -736,6 +905,799 @@ async def _upload(http: HttpClient, item: Media) -> RawData:
     return receipt
 
 
+# ---------------------------------------------------------------------------
+# Reading a post back - shared by read_post and read_thread.
+# ---------------------------------------------------------------------------
+
+
+def _text_or_none(value: object) -> str | None:
+    """Read a string Bluesky may have left out or sent empty.
+
+    Args:
+        value: Whatever was under the key.
+
+    Returns:
+        The string, or `None` if it was missing, empty, or not a string.
+    """
+    return value if isinstance(value, str) and value else None
+
+
+def _int_or_none(value: object) -> int | None:
+    """Read a count Bluesky may have left out.
+
+    Args:
+        value: Whatever sat under a count field.
+
+    Returns:
+        The count, or `None` if it was missing - never `0` in its place. A
+        network that says nothing about a count is not the same as one that
+        counted zero.
+    """
+    return value if isinstance(value, int) else None
+
+
+def _person_from(raw: RawData) -> Person:
+    """Build a `Person` out of an actor Bluesky sent us.
+
+    Only ever called where the caller has already checked `did` is there -
+    every post's author, every like's actor, every notification's author and
+    every chat member carries one. A `blockedPost`'s author, which carries
+    only `did` and a block flag, never reaches here: it becomes a
+    placeholder with `author=None` instead.
+
+    Args:
+        raw: The actor.
+
+    Returns:
+        The person, with anything Bluesky left out as `None`.
+    """
+    handle = _text_or_none(raw.get("handle"))
+    return Person(
+        id=str(raw.get("did", "")),
+        handle=handle,
+        display_name=_text_or_none(raw.get("displayName")),
+        avatar_url=_text_or_none(raw.get("avatar")),
+        url=f"https://bsky.app/profile/{handle}" if handle else None,
+        raw=raw,
+    )
+
+
+def _char_offset(text_bytes: bytes, byte_offset: int) -> int:
+    """Turn a facet's byte offset into a Python string index.
+
+    Bluesky counts a facet's position in bytes; `PostDetails.text` is a
+    plain Python string, indexed in characters the way every other Python
+    string is. The two agree until the text holds an accent or an emoji,
+    and quietly disagree for everything after it.
+
+    Args:
+        text_bytes: The post's text, encoded once by the caller rather than
+            re-encoded for every facet.
+        byte_offset: Where the facet starts or ends, in bytes.
+
+    Returns:
+        The same position, as a character index.
+    """
+    return len(text_bytes[:byte_offset].decode())
+
+
+def _link_kind_and_target(feature: RawData) -> tuple[LinkKind, str] | None:
+    """Read what one facet feature marks, and what it points at.
+
+    Args:
+        feature: One entry from a facet's `features` list.
+
+    Returns:
+        The kind of link and its target, or `None` for a feature this is
+        not one of the three socialchimp models, or one missing the field
+        it needs.
+    """
+    kind_name = feature.get("$type")
+    if kind_name == MENTION_FEATURE:
+        return (
+            (LinkKind.MENTION, did)
+            if (did := _text_or_none(feature.get("did")))
+            else None
+        )
+    if kind_name == LINK_FEATURE:
+        return (
+            (LinkKind.LINK, uri) if (uri := _text_or_none(feature.get("uri"))) else None
+        )
+    if kind_name == _TAG_FEATURE:
+        return (
+            (LinkKind.TAG, tag) if (tag := _text_or_none(feature.get("tag"))) else None
+        )
+    return None
+
+
+def _links_from(text: str, facets: object) -> tuple[TextLink, ...]:
+    """Turn a record's facets into `TextLink`s, in character offsets.
+
+    Args:
+        text: The post's own text, so byte offsets can be turned into
+            character ones.
+        facets: Whatever `record.facets` held - a list when the post has
+            any, anything else when it has none.
+
+    Returns:
+        One `TextLink` per feature socialchimp models, in the order the
+        facets arrived in.
+    """
+    if not isinstance(facets, list):
+        return ()
+
+    written = text.encode()
+    found: list[TextLink] = []
+    for facet in facets:
+        if not isinstance(facet, dict):
+            continue
+        index = facet.get("index")
+        features = facet.get("features")
+        if not isinstance(index, dict) or not isinstance(features, list):
+            continue
+        byte_start = index.get("byteStart")
+        byte_end = index.get("byteEnd")
+        if not isinstance(byte_start, int) or not isinstance(byte_end, int):
+            continue
+
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            matched = _link_kind_and_target(feature)
+            if matched is None:
+                continue
+            kind, target = matched
+            found.append(
+                TextLink(
+                    start=_char_offset(written, byte_start),
+                    end=_char_offset(written, byte_end),
+                    kind=kind,
+                    target=target,
+                    url=target if kind is LinkKind.LINK else None,
+                )
+            )
+    return tuple(found)
+
+
+def _aspect_ratio(embed_item: RawData) -> tuple[int | None, int | None]:
+    """Read a picture or video's width and height, when Bluesky sent one.
+
+    Args:
+        embed_item: One image, or a video embed, from the view side.
+
+    Returns:
+        Width and height, or `(None, None)` when there is no aspect ratio.
+    """
+    ratio = embed_item.get("aspectRatio")
+    if not isinstance(ratio, dict):
+        return None, None
+    width = ratio.get("width")
+    height = ratio.get("height")
+    return _int_or_none(width), _int_or_none(height)
+
+
+def _image_attachments(embed: RawData) -> tuple[Attachment, ...]:
+    """Turn `app.bsky.embed.images#view` into `Attachment`s.
+
+    Args:
+        embed: The images embed, from the view side.
+
+    Returns:
+        One attachment per picture.
+    """
+    images = embed.get("images")
+    if not isinstance(images, list):
+        return ()
+
+    found: list[Attachment] = []
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        width, height = _aspect_ratio(image)
+        found.append(
+            Attachment(
+                kind="image",
+                url=_text_or_none(image.get("fullsize")),
+                preview_url=_text_or_none(image.get("thumb")),
+                alt_text=_text_or_none(image.get("alt")),
+                width=width,
+                height=height,
+                raw=image,
+            )
+        )
+    return tuple(found)
+
+
+def _video_attachments(embed: RawData) -> tuple[Attachment, ...]:
+    """Turn `app.bsky.embed.video#view` into an `Attachment`.
+
+    Args:
+        embed: The video embed, from the view side.
+
+    Returns:
+        One attachment, holding the playable video.
+    """
+    width, height = _aspect_ratio(embed)
+    return (
+        Attachment(
+            kind="video",
+            url=_text_or_none(embed.get("playlist")),
+            preview_url=_text_or_none(embed.get("thumbnail")),
+            alt_text=_text_or_none(embed.get("alt")),
+            width=width,
+            height=height,
+            raw=embed,
+        ),
+    )
+
+
+def _external_attachments(embed: RawData) -> tuple[Attachment, ...]:
+    """Turn `app.bsky.embed.external#view` into an `Attachment`.
+
+    Bluesky calls this a link card: a web address with a title, a
+    description and sometimes a picture. socialchimp files it as a
+    `"link"` attachment rather than an `"image"`, since the address is the
+    point of it and there is no `alt_text` field of its own to read.
+
+    Args:
+        embed: The external embed, from the view side.
+
+    Returns:
+        One attachment pointing at the linked address, or none at all if
+        Bluesky left out the `external` object itself.
+    """
+    external = embed.get("external")
+    if not isinstance(external, dict):
+        return ()
+    return (
+        Attachment(
+            kind="link",
+            url=_text_or_none(external.get("uri")),
+            preview_url=_text_or_none(external.get("thumb")),
+            alt_text=None,
+            width=None,
+            height=None,
+            raw=embed,
+        ),
+    )
+
+
+def _attachments_from(embed: object) -> tuple[Attachment, ...]:
+    """Turn a post's view-side embed into `Attachment`s.
+
+    A quoted post (`app.bsky.embed.record#view`) carries no file of its
+    own, so it is left out - there is nothing here for `Attachment` to
+    describe, and quoting shows up on `Update` instead when it is someone
+    else's quote of this account's own post.
+
+    Args:
+        embed: Whatever `post.embed` held.
+
+    Returns:
+        The attachments found, empty for a post with none socialchimp
+        models.
+    """
+    if not isinstance(embed, dict):
+        return ()
+
+    kind = embed.get("$type")
+    if kind == _IMAGES_VIEW:
+        return _image_attachments(embed)
+    if kind == _VIDEO_VIEW:
+        return _video_attachments(embed)
+    if kind == _EXTERNAL_VIEW:
+        return _external_attachments(embed)
+    if kind == _RECORD_WITH_MEDIA_VIEW:
+        return _attachments_from(embed.get("media"))
+    return ()
+
+
+def _strong_ref_uri(value: object) -> str | None:
+    """Read the address out of a `com.atproto.repo.strongRef`.
+
+    Args:
+        value: Whatever sat under `reply.parent` or `reply.root`.
+
+    Returns:
+        The address, or `None` if this was not a proper reference.
+    """
+    if not isinstance(value, dict):
+        return None
+    return _text_or_none(value.get("uri"))
+
+
+def _post_reply_refs(record: object) -> tuple[str | None, str | None]:
+    """Read what a post's own `record.reply` says it answers.
+
+    Shared by every post view and every reply/mention/quote notification,
+    since both carry the same `record` shape.
+
+    Args:
+        record: Whatever `record` held.
+
+    Returns:
+        The parent's address and the thread root's address. Either or both
+        are `None` when this is not a reply, or does not say.
+    """
+    if not isinstance(record, dict):
+        return None, None
+    reply = record.get("reply")
+    if not isinstance(reply, dict):
+        return None, None
+    return _strong_ref_uri(reply.get("parent")), _strong_ref_uri(reply.get("root"))
+
+
+def _viewer_like(view: RawData) -> tuple[bool | None, str | None]:
+    """Read whether the connected account has already liked this post.
+
+    Args:
+        view: A post, from the view side.
+
+    Returns:
+        Whether it is liked, and the like's own address when it is. Both
+        `None` when Bluesky sent no viewer state at all - which means we do
+        not know, not that the answer is no.
+    """
+    viewer = view.get("viewer")
+    if not isinstance(viewer, dict):
+        return None, None
+    return "like" in viewer, _text_or_none(viewer.get("like"))
+
+
+def _post_details_from(view: RawData, *, connection: Connection) -> PostDetails:
+    """Build a `PostDetails` out of one post the view side hydrated.
+
+    Used for `read_post`, for the anchor and every real reply `read_thread`
+    finds, and by `reply` once it has published, to fill everything
+    `publish` alone cannot.
+
+    Args:
+        view: The post, exactly as `getPosts` or `getPostThread` sent it -
+            a `postView`.
+        connection: The account reading it, so `is_mine` can be worked out.
+
+    Returns:
+        The post, in full.
+    """
+    uri = _text_or_none(view.get("uri")) or ""
+
+    author_raw = view.get("author")
+    author = (
+        _person_from(author_raw)
+        if isinstance(author_raw, dict) and isinstance(author_raw.get("did"), str)
+        else None
+    )
+
+    record = view.get("record")
+    text = ""
+    links: tuple[TextLink, ...] = ()
+    created_at: datetime | None = None
+    if isinstance(record, dict):
+        text = _text_or_none(record.get("text")) or ""
+        links = _links_from(text, record.get("facets"))
+        created_raw = record.get("createdAt")
+        if isinstance(created_raw, str):
+            created_at = _moment(created_raw)
+
+    parent_id, root_id = _post_reply_refs(record)
+    if root_id is None:
+        root_id = uri
+
+    liked_by_me, my_like_id = _viewer_like(view)
+
+    handle = author.handle if author is not None else None
+    url = f"https://bsky.app/profile/{handle}/post/{_rkey_of(uri)}" if handle else None
+
+    return PostDetails(
+        id=uri,
+        cid=_text_or_none(view.get("cid")),
+        url=url,
+        author=author,
+        text=text,
+        html=None,
+        links=links,
+        attachments=_attachments_from(view.get("embed")),
+        created_at=created_at,
+        visibility=None,
+        parent_id=parent_id,
+        root_id=root_id,
+        reply_count=_int_or_none(view.get("replyCount")),
+        like_count=_int_or_none(view.get("likeCount")),
+        repost_count=_int_or_none(view.get("repostCount")),
+        quote_count=_int_or_none(view.get("quoteCount")),
+        liked_by_me=liked_by_me,
+        my_like_id=my_like_id,
+        is_mine=author is not None and author.id == connection.account_id,
+        unavailable=None,
+        raw=view,
+    )
+
+
+def _placeholder_post(
+    node: RawData, *, parent_id: str, root_id: str, unavailable: Unavailable
+) -> PostDetails:
+    """Stand in for a reply `getPostThread` could not hydrate.
+
+    Args:
+        node: The `notFoundPost` or `blockedPost` node.
+        parent_id: The post it sits directly under, from where it was found
+            in the tree - there is no `record` here to read this from.
+        root_id: The top of the thread it sits in.
+        unavailable: Why it could not be read.
+
+    Returns:
+        A `PostDetails` with everything socialchimp was not sent left
+        empty, and `unavailable` set so the app can say why.
+    """
+    return PostDetails(
+        id=_text_or_none(node.get("uri")) or "",
+        cid=None,
+        url=None,
+        author=None,
+        text="",
+        html=None,
+        links=(),
+        attachments=(),
+        created_at=None,
+        visibility=None,
+        parent_id=parent_id,
+        root_id=root_id,
+        reply_count=None,
+        like_count=None,
+        repost_count=None,
+        quote_count=None,
+        liked_by_me=None,
+        my_like_id=None,
+        is_mine=False,
+        unavailable=unavailable,
+        raw=node,
+    )
+
+
+_UNTIMED: Final = datetime.max.replace(tzinfo=UTC)
+"""Sorts after everything else.
+
+A placeholder has no time of its own, and this is safer than guessing one:
+it can only ever push a reply we know nothing about to the end of the flat
+list, never in front of one we do know the time of.
+"""
+
+
+def _reply_moment(view: RawData) -> datetime | None:
+    """Read when a reply was made, for putting a thread's replies in order.
+
+    Args:
+        view: The reply, from the view side.
+
+    Returns:
+        Its own `createdAt`, falling back to when the network indexed it,
+        or `None` if neither can be read.
+    """
+    record = view.get("record")
+    if isinstance(record, dict):
+        created_raw = record.get("createdAt")
+        if isinstance(created_raw, str):
+            when = _moment(created_raw)
+            if when is not None:
+                return when
+    indexed_raw = view.get("indexedAt")
+    return _moment(indexed_raw) if isinstance(indexed_raw, str) else None
+
+
+def _walk_replies(
+    node: RawData, *, parent_id: str, root_id: str, connection: Connection
+) -> tuple[list[tuple[datetime, PostDetails]], bool]:
+    """Collect one reply and everything nested under it.
+
+    Args:
+        node: A `threadViewPost`, `notFoundPost` or `blockedPost`, from a
+            thread's `replies`.
+        parent_id: The post this one sits directly under.
+        root_id: The top of the whole thread, handed down for placeholders
+            that carry no `record` of their own to read it from.
+        connection: The account reading the thread.
+
+    Returns:
+        Every reply found at or below this node, each paired with a sort
+        key, and whether a depth cut was hit somewhere in this branch - a
+        node with no `replies` of its own but a `replyCount` above zero,
+        meaning Bluesky stopped nesting before it ran out of real replies.
+    """
+    node_type = node.get("$type")
+    if node_type == _NOT_FOUND_POST:
+        placeholder = _placeholder_post(
+            node, parent_id=parent_id, root_id=root_id, unavailable=Unavailable.DELETED
+        )
+        return [(_UNTIMED, placeholder)], False
+    if node_type == _BLOCKED_POST:
+        placeholder = _placeholder_post(
+            node, parent_id=parent_id, root_id=root_id, unavailable=Unavailable.BLOCKED
+        )
+        return [(_UNTIMED, placeholder)], False
+
+    post_view = node.get("post")
+    if not isinstance(post_view, dict):
+        return [], False
+
+    detail = _post_details_from(post_view, connection=connection)
+    when = _reply_moment(post_view)
+    collected: list[tuple[datetime, PostDetails]] = [(when or _UNTIMED, detail)]
+
+    hit_cut = False
+    replies = node.get("replies")
+    if isinstance(replies, list):
+        for child in replies:
+            if isinstance(child, dict):
+                child_collected, child_cut = _walk_replies(
+                    child, parent_id=detail.id, root_id=root_id, connection=connection
+                )
+                collected.extend(child_collected)
+                hit_cut = hit_cut or child_cut
+    else:
+        reply_count = post_view.get("replyCount")
+        if isinstance(reply_count, int) and reply_count > 0:
+            hit_cut = True
+
+    return collected, hit_cut
+
+
+# ---------------------------------------------------------------------------
+# Updates - shared by fetch_updates and fetch_updates_after.
+# ---------------------------------------------------------------------------
+
+
+def _update_from(raw: RawData, *, connection: Connection) -> Update | None:
+    """Turn one notification into an `Update`, socialchimp's own shape.
+
+    Shared by `fetch_updates` and `fetch_updates_after`, so a like, a
+    repost, a reply, a mention, a quote and a follow are read the same way
+    however they were asked for.
+
+    Args:
+        raw: One notification, exactly as `listNotifications` sent it.
+        connection: The account this notification concerns.
+
+    Returns:
+        The update, or `None` if `indexedAt` cannot be read - there is no
+        sensible time to give it, and dropping one unreadable notification
+        beats failing the whole page.
+    """
+    when = _moment(str(raw.get("indexedAt", "")))
+    if when is None:
+        return None
+
+    reason = str(raw.get("reason", ""))
+    uri = _text_or_none(raw.get("uri")) or ""
+
+    author_raw = raw.get("author")
+    actor = (
+        _person_from(author_raw)
+        if isinstance(author_raw, dict) and isinstance(author_raw.get("did"), str)
+        else None
+    )
+
+    post_id: str | None = None
+    about_post_id: str | None = None
+    thread_root_id: str | None = None
+
+    if reason in _SUBJECT_REASONS:
+        about_post_id = _text_or_none(raw.get("reasonSubject"))
+    elif reason in _ABOUT_POST_REASONS:
+        post_id = uri or None
+        about_post_id, thread_root_id = _post_reply_refs(raw.get("record"))
+
+    return Update.from_network(
+        update_id=uri,
+        kind_name=_OUR_WORD_FOR.get(reason, reason),
+        platform=PLATFORM_NAME,
+        connection_id=connection.id,
+        created_at=when,
+        raw=raw,
+        actor=actor,
+        post_id=post_id,
+        about_post_id=about_post_id,
+        thread_root_id=thread_root_id,
+    )
+
+
+def _marker_for(raw: RawData) -> str | None:
+    """Build a marker out of one notification.
+
+    Args:
+        raw: The notification to remember as the newest one seen.
+
+    Returns:
+        `indexedAt` and `uri` joined together, or `None` if either is
+        missing - a marker built from half a notification would resume from
+        somewhere that never happened.
+    """
+    when = _text_or_none(raw.get("indexedAt"))
+    uri = _text_or_none(raw.get("uri"))
+    return f"{when}{_MARKER_SEPARATOR}{uri}" if when and uri else None
+
+
+def _parse_marker(marker: str) -> tuple[str, str] | None:
+    """Split a marker back into the moment and the address it names.
+
+    Args:
+        marker: A marker this platform built earlier.
+
+    Returns:
+        The moment and the address, or `None` if this is not a marker this
+        platform recognises - treated the same as no marker at all, since
+        there is nothing safe to resume from.
+    """
+    when, separator, uri = marker.partition(_MARKER_SEPARATOR)
+    if not separator or not when or not uri:
+        return None
+    return when, uri
+
+
+# ---------------------------------------------------------------------------
+# Direct messages.
+# ---------------------------------------------------------------------------
+
+
+def _profile_lookup(
+    did: str, profiles: Sequence[RawData], *, connection: Connection
+) -> Person:
+    """Find who a chat message's sender was.
+
+    `getMessages` names a sender by `did` alone and sends the rest of what
+    it knows about the people in the conversation separately, under
+    `relatedProfiles`; `listConvos` and `getConvoForMembers` put the same
+    kind of information on each conversation's own `members` instead.
+    Either one is passed in here as `profiles`.
+
+    Args:
+        did: Whoever sent the message.
+        profiles: Profiles Bluesky sent alongside the message, in whichever
+            of the two shapes above.
+        connection: The account reading the conversation, so a message it
+            sent itself can still be named even when it is missing from
+            `profiles`.
+
+    Returns:
+        The sender, with whatever socialchimp could find out about them -
+        just their id, when nothing else is known.
+    """
+    for profile in profiles:
+        if profile.get("did") == did:
+            return _person_from(profile)
+
+    if did == connection.account_id:
+        handle = _text_or_none(connection.extra.get("handle"))
+        return Person(
+            id=did,
+            handle=handle,
+            display_name=None,
+            avatar_url=None,
+            url=f"https://bsky.app/profile/{handle}" if handle else None,
+            raw={},
+        )
+
+    return Person(
+        id=did, handle=None, display_name=None, avatar_url=None, url=None, raw={}
+    )
+
+
+def _message_moment(raw: RawData, when: str) -> datetime:
+    """Read a message's `sentAt`, which Bluesky always sends.
+
+    Args:
+        raw: The message, from either side of a chat call.
+        when: What we had asked it to do, for the message if it is missing.
+
+    Returns:
+        The moment it was sent.
+
+    Raises:
+        PlatformError: If `sentAt` is missing or cannot be read.
+    """
+    sent = raw.get("sentAt")
+    parsed = _moment(sent) if isinstance(sent, str) else None
+    if parsed is None:
+        message = (
+            f"Bluesky sent a message with no readable sentAt when we asked "
+            f"it to {when}. The whole reply is on this error."
+        )
+        raise PlatformError(message, platform=PLATFORM_NAME, raw=raw)
+    return parsed
+
+
+def _message_from(
+    raw: RawData,
+    *,
+    conversation_id: str,
+    profiles: Sequence[RawData],
+    connection: Connection,
+) -> Message:
+    """Build a `Message` out of one chat message view.
+
+    Args:
+        raw: A `messageView` or `deletedMessageView`.
+        conversation_id: Which conversation this belongs to - a chat
+            message does not carry this itself.
+        profiles: Everything Bluesky told us about the people in this
+            conversation, for naming the sender.
+        connection: The account reading the conversation.
+
+    Returns:
+        The message.
+    """
+    deleted = raw.get("$type") == _DELETED_MESSAGE_VIEW
+    sender_raw = raw.get("sender")
+    sender_did = (
+        _text_or_none(sender_raw.get("did")) if isinstance(sender_raw, dict) else None
+    )
+    sender = _profile_lookup(sender_did or "", profiles, connection=connection)
+
+    return Message(
+        id=_text_or_none(raw.get("id")) or "",
+        conversation_id=conversation_id,
+        sender=sender,
+        text="" if deleted else (_text_or_none(raw.get("text")) or ""),
+        sent_at=_message_moment(raw, "read a message"),
+        is_mine=sender_did == connection.account_id,
+        deleted=deleted,
+        attachments=(),
+        raw=raw,
+    )
+
+
+def _conversation_from(raw: RawData, *, connection: Connection) -> Conversation:
+    """Build a `Conversation` out of one convo Bluesky sent us.
+
+    Args:
+        raw: A `convoView`.
+        connection: The account reading its conversations.
+
+    Returns:
+        The conversation. `updated_at` comes from its `lastMessage`, when
+        there is one - Bluesky's alternative, decoding a time out of the
+        convo's own `rev`, is not implemented: the exact algorithm is not
+        given anywhere the approved contract points at, and no conversation
+        Bluesky sends back is ever without a `lastMessage` in practice, so
+        there is nothing here to verify it against.
+    """
+    members_raw = raw.get("members")
+    members = (
+        [member for member in members_raw if isinstance(member, dict)]
+        if isinstance(members_raw, list)
+        else []
+    )
+    people = tuple(
+        _person_from(member)
+        for member in members
+        if member.get("did") != connection.account_id
+    )
+
+    conversation_id = _text_or_none(raw.get("id")) or ""
+
+    last_raw = raw.get("lastMessage")
+    last_message = (
+        _message_from(
+            last_raw,
+            conversation_id=conversation_id,
+            profiles=members,
+            connection=connection,
+        )
+        if isinstance(last_raw, dict)
+        else None
+    )
+
+    return Conversation(
+        id=conversation_id,
+        people=people,
+        last_message=last_message,
+        unread_count=_int_or_none(raw.get("unreadCount")),
+        updated_at=last_message.sent_at if last_message is not None else None,
+        can_reply_until=None,
+        full_history=True,
+        raw=raw,
+    )
+
+
 class BlueskyPlatform:
     """Everything socialchimp does with Bluesky.
 
@@ -756,6 +1718,9 @@ class BlueskyPlatform:
             `CREATE_APP` and `SCHEDULE` are missing - `start_login` works
             with nothing saved. Video is missing too - Bluesky takes it,
             through a separate service we have not written yet.
+            `SUBSCRIBE_UPDATES` is missing on purpose: Bluesky has no
+            webhooks at all, and that flag is reserved for the release that
+            adds push delivery elsewhere.
     """
 
     name: str = PLATFORM_NAME
@@ -767,6 +1732,14 @@ class BlueskyPlatform:
         | Feature.REPLY
         | Feature.DELETE_POST
         | Feature.READ_POSTS
+        | Feature.READ_POST
+        | Feature.READ_THREAD
+        | Feature.REPLY_TO_COMMENTS
+        | Feature.LIKE
+        | Feature.READ_LIKES
+        | Feature.READ_UPDATES_AFTER
+        | Feature.MESSAGES
+        | Feature.START_CONVERSATIONS
     )
 
     def __init__(
@@ -809,6 +1782,33 @@ class BlueskyPlatform:
             _address_of(host),
             platform=PLATFORM_NAME,
             headers=headers,
+            timeout=self._timeout,
+            transport=self._transport,
+            retries=self._retries,
+            errors=bluesky_errors,
+        )
+
+    def _chat_client(self, host: str, token: str) -> HttpClient:
+        """Make a client for the `chat.bsky.convo.*` calls.
+
+        The same as `_client`, plus the one header every direct-message
+        call needs so the person's own server hands it on to Bluesky's chat
+        service instead of trying to answer it itself.
+
+        Args:
+            host: The server to talk to.
+            token: The access token to sign requests with.
+
+        Returns:
+            A client. Use it in an `async with` block so it closes itself.
+        """
+        return HttpClient(
+            _address_of(host),
+            platform=PLATFORM_NAME,
+            headers={
+                "Authorization": f"Bearer {token}",
+                _CHAT_PROXY_HEADER: _CHAT_PROXY_TARGET,
+            },
             timeout=self._timeout,
             transport=self._transport,
             retries=self._retries,
@@ -1096,6 +2096,7 @@ class BlueskyPlatform:
                 f"https://bsky.app/profile/{connection.account_id}/post/{_rkey_of(uri)}"
             ),
             state=PostState.DONE,
+            cid=_text_or_none(reply.get("cid")),
             raw=reply,
         )
 
@@ -1170,24 +2171,713 @@ class BlueskyPlatform:
 
         updates: list[Update] = []
         for raw in items:
-            when = _moment(str(raw.get("indexedAt", "")))
-            if when is None or (since is not None and when <= since):
+            update = _update_from(raw, connection=connection)
+            if update is None or (since is not None and update.created_at <= since):
                 continue
-            word = str(raw.get("reason", ""))
-            updates.append(
-                Update.from_network(
-                    update_id=str(raw.get("uri", "")),
-                    kind_name=_OUR_WORD_FOR.get(word, word),
-                    platform=PLATFORM_NAME,
-                    connection_id=connection.id,
-                    created_at=when,
-                    raw=raw,
-                )
-            )
+            updates.append(update)
 
         # Bluesky hands back the newest first; socialchimp wants the oldest.
         updates.reverse()
         return updates
+
+    async def read_post(self, connection: Connection, post_id: str) -> PostDetails:
+        """Read one post back in full.
+
+        One request: `app.bsky.feed.getPosts`.
+
+        Args:
+            connection: The account to read it as.
+            post_id: The post's address, or its short id on its own.
+
+        Returns:
+            The post, in full.
+
+        Raises:
+            PostGoneError: If there is no such post any more.
+        """
+        async with self._client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            reply = await http.json("GET", _GET_POSTS, params={"uris": post_id})
+
+        posts = reply.get("posts")
+        found = posts[0] if isinstance(posts, list) and posts else None
+        if not isinstance(found, dict):
+            message = (
+                f"Bluesky has no post at {post_id!r} any more. It may have "
+                f"been deleted, or the id may be from another network."
+            )
+            raise PostGoneError(message, platform=PLATFORM_NAME, raw=reply)
+
+        return _post_details_from(found, connection=connection)
+
+    async def read_thread(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        depth: int | None = None,
+        limit: int | None = None,
+    ) -> Thread:
+        """Read a post together with the replies underneath it.
+
+        One request: `app.bsky.feed.getPostThread`. Replies come back flat
+        and oldest first, by their own `createdAt` - not in the order
+        Bluesky nested them, which is not guaranteed to be chronological.
+
+        A reply Bluesky could not hydrate becomes a placeholder with
+        `unavailable` set: `#notFoundPost` as `Unavailable.DELETED`,
+        `#blockedPost` as `Unavailable.BLOCKED`. If the post asked for
+        itself is gone, `getPostThread` answers with a 400 `NotFound`
+        rather than a placeholder, which `bluesky_errors` turns into a
+        `PostGoneError` before this method sees a reply at all.
+
+        Args:
+            connection: The account to read it as.
+            post_id: The post's address, or its short id on its own.
+            depth: How many reply levels to fetch. `None` uses Bluesky's own
+                default of six; passing more than 1,000 is capped at 1,000,
+                which is as many as Bluesky will ever fetch in one call.
+            limit: A cap on how many replies come back, applied here rather
+                than by Bluesky, which has no such setting of its own.
+
+        Returns:
+            The post and its replies. `complete` is `False` if `limit` cut
+            the replies short, or if Bluesky stopped nesting before a
+            branch ran out of real replies - `depth` was not enough to
+            reach the end of it.
+
+        Raises:
+            PostGoneError: If the post asked for is gone.
+        """
+        depth_param = min(
+            depth if depth is not None else _DEFAULT_THREAD_DEPTH, _MAX_THREAD_DEPTH
+        )
+
+        async with self._client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            reply = await http.json(
+                "GET",
+                _GET_POST_THREAD,
+                params={"uri": post_id, "depth": depth_param, "parentHeight": 0},
+            )
+
+        thread = reply.get("thread")
+        if not isinstance(thread, dict):
+            message = (
+                "Bluesky answered getPostThread without a thread in it. The "
+                "whole reply is on this error."
+            )
+            raise PlatformError(message, platform=PLATFORM_NAME, raw=reply)
+
+        anchor_view = thread.get("post")
+        if not isinstance(anchor_view, dict):
+            message = (
+                "Bluesky answered getPostThread without the post itself in "
+                "it. The whole reply is on this error."
+            )
+            raise PlatformError(message, platform=PLATFORM_NAME, raw=reply)
+
+        anchor = _post_details_from(anchor_view, connection=connection)
+
+        collected: list[tuple[datetime, PostDetails]] = []
+        hit_cut = False
+        replies_raw = thread.get("replies")
+        if isinstance(replies_raw, list):
+            for child in replies_raw:
+                if isinstance(child, dict):
+                    child_collected, child_cut = _walk_replies(
+                        child,
+                        parent_id=anchor.id,
+                        root_id=anchor.root_id or anchor.id,
+                        connection=connection,
+                    )
+                    collected.extend(child_collected)
+                    hit_cut = hit_cut or child_cut
+        else:
+            anchor_reply_count = anchor_view.get("replyCount")
+            if isinstance(anchor_reply_count, int) and anchor_reply_count > 0:
+                hit_cut = True
+
+        collected.sort(key=lambda item: item[0])
+        replies = [detail for _, detail in collected]
+
+        complete = not hit_cut
+        if limit is not None and len(replies) > limit:
+            replies = replies[:limit]
+            complete = False
+
+        return Thread(post=anchor, replies=tuple(replies), complete=complete, raw=reply)
+
+    async def reply(
+        self,
+        connection: Connection,
+        post_id: str,
+        text: str,
+        *,
+        media: tuple[Media, ...] = (),
+        options: RawData | None = None,
+    ) -> PostResult:
+        """Reply to a post or comment, at any depth.
+
+        The same as `publish(Post(reply_to=post_id, ...))` - `reply_to`
+        already builds the root and parent references a reply needs. This
+        is the recommended way to reply; `publish` keeps working for
+        anyone already using it.
+
+        Args:
+            connection: The account to reply as.
+            post_id: The post or comment being replied to, at any depth.
+            text: The reply's words.
+            media: Pictures to attach to the reply. Bluesky has no video
+                here yet - see `Feature.POST_VIDEO`.
+            options: The same settings `publish` takes, such as `langs`.
+
+        Returns:
+            What Bluesky said about the new reply, including its `cid`.
+
+        Raises:
+            InvalidPostError: If the post being replied to is gone, or the
+                reply itself breaks one of Bluesky's rules.
+        """
+        return await self.publish(
+            connection,
+            Post(
+                text=text,
+                media=media,
+                reply_to=post_id,
+                options=dict(options) if options is not None else {},
+            ),
+        )
+
+    async def like(self, connection: Connection, post_id: str) -> LikeResult:
+        """Like a post or a comment.
+
+        `createRecord` is not deduplicated by Bluesky the way Mastodon's
+        favourite is, so liking something already liked would otherwise
+        make a second, pointless like record. This reads `viewer.like`
+        first and hands back the existing like instead.
+
+        Two requests the first time a post is liked: `getPosts`, then
+        `createRecord`. One request when it is already liked: `getPosts`
+        alone.
+
+        Args:
+            connection: The account doing the liking.
+            post_id: The post or comment to like.
+
+        Returns:
+            What Bluesky said about the like.
+
+        Raises:
+            PostGoneError: If there is no such post any more.
+        """
+        async with self._client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            lookup = await http.json("GET", _GET_POSTS, params={"uris": post_id})
+            posts = lookup.get("posts")
+            found = posts[0] if isinstance(posts, list) and posts else None
+            if not isinstance(found, dict):
+                message = (
+                    f"Bluesky has no post at {post_id!r} any more, so there "
+                    f"is nothing to like."
+                )
+                raise PostGoneError(message, platform=PLATFORM_NAME, raw=lookup)
+
+            already_liked, existing_like = _viewer_like(found)
+            if already_liked and existing_like:
+                return LikeResult(post_id=post_id, like_id=existing_like, raw=found)
+
+            subject = {
+                "uri": _text(found, "uri", "like a post"),
+                "cid": _text(found, "cid", "like a post"),
+            }
+            created = await http.json(
+                "POST",
+                _CREATE_RECORD,
+                json={
+                    "repo": connection.account_id,
+                    "collection": LIKE_COLLECTION,
+                    "record": {
+                        "$type": LIKE_COLLECTION,
+                        "subject": subject,
+                        "createdAt": _now().isoformat(),
+                    },
+                },
+            )
+
+        return LikeResult(
+            post_id=post_id,
+            like_id=_text(created, "uri", "like a post"),
+            raw=created,
+        )
+
+    async def unlike(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        like_id: str | None = None,
+    ) -> None:
+        """Take back a like.
+
+        Passing `like_id` - kept from `LikeResult.like_id` or
+        `PostDetails.my_like_id` - costs nothing: one `deleteRecord` and
+        that is all. Left out, this looks the like up first: one
+        `getPosts`, then one `deleteRecord` if a like was actually found.
+        A post that was never liked, or a like already gone, both succeed
+        and do nothing.
+
+        Args:
+            connection: The account taking the like back.
+            post_id: The post or comment to unlike.
+            like_id: The like's own address, when it is already known.
+        """
+        async with self._client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            rkey: str | None = None
+            if like_id is not None:
+                rkey = _rkey_of(like_id)
+            else:
+                lookup = await http.json("GET", _GET_POSTS, params={"uris": post_id})
+                posts = lookup.get("posts")
+                found = posts[0] if isinstance(posts, list) and posts else None
+                if isinstance(found, dict):
+                    _, existing_like = _viewer_like(found)
+                    if existing_like is not None:
+                        rkey = _rkey_of(existing_like)
+
+            if rkey is None:
+                return
+
+            await http.json(
+                "POST",
+                _DELETE_RECORD,
+                json={
+                    "repo": connection.account_id,
+                    "collection": LIKE_COLLECTION,
+                    "rkey": rkey,
+                },
+            )
+
+    async def read_likes(
+        self,
+        connection: Connection,
+        post_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Like]:
+        """List who liked a post.
+
+        One request: `app.bsky.feed.getLikes`.
+
+        Args:
+            connection: The account to ask as.
+            post_id: The post or comment to list likes for.
+            after: A `Page.next` from a previous call.
+            limit: A cap on how many come back. `None` uses Bluesky's own
+                default; more than 100 is capped at 100.
+
+        Returns:
+            One page of likes, each with when it happened.
+        """
+        params: dict[str, Any] = {"uri": post_id}
+        if after is not None:
+            params["cursor"] = after
+        if limit is not None:
+            params["limit"] = min(limit, _MAX_LIKES_PAGE)
+
+        async with self._client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            reply = await http.json("GET", _GET_LIKES, params=params)
+
+        likes_raw = reply.get("likes")
+        items: list[Like] = []
+        if isinstance(likes_raw, list):
+            for raw in likes_raw:
+                if not isinstance(raw, dict):
+                    continue
+                actor = raw.get("actor")
+                if not isinstance(actor, dict) or not isinstance(actor.get("did"), str):
+                    continue
+                created_raw = raw.get("createdAt")
+                liked_at = (
+                    _moment(created_raw) if isinstance(created_raw, str) else None
+                )
+                items.append(
+                    Like(person=_person_from(actor), liked_at=liked_at, raw=raw)
+                )
+
+        return Page(items=tuple(items), next=_text_or_none(reply.get("cursor")))
+
+    async def fetch_updates_after(
+        self,
+        connection: Connection,
+        marker: str | None,
+        *,
+        limit: int | None = None,
+    ) -> UpdateBatch:
+        """Read what is new since a marker.
+
+        Bluesky's notifications only page backwards from the newest, so the
+        marker is not a cursor Bluesky gave us - it is the newest
+        `indexedAt` and `uri` this platform has already handed back,
+        joined together. Finding everything newer than that means reading a
+        page, checking whether the marker is on it, and reading another
+        page back if it is not.
+
+        One request when `marker` is `None`: the latest page becomes the
+        starting point. Otherwise, one request per page read looking for
+        the marker, up to `_MAX_MARKER_PAGES` - if it still has not turned
+        up by then, `more` comes back `True` so the caller reads on with
+        another call straight away rather than this one holding a request
+        open indefinitely.
+
+        Args:
+            connection: The account to ask about.
+            marker: The marker from the last call's `UpdateBatch.marker`.
+                `None` on the first call. A marker this platform did not
+                write itself is treated the same as `None`.
+            limit: A cap on how many notifications come back per page.
+                `None` uses this platform's own default; more than 100 is
+                capped at 100.
+
+        Returns:
+            The new updates, oldest first, and a marker to store for next
+            time.
+        """
+        page_limit = (
+            min(limit, _MAX_LIKES_PAGE)
+            if limit is not None
+            else (self._updates_per_check)
+        )
+        parsed_marker = _parse_marker(marker) if marker is not None else None
+
+        collected: list[RawData] = []
+        cursor: str | None = None
+        more = False
+
+        async with self._client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            for _page in range(_MAX_MARKER_PAGES):
+                params: dict[str, Any] = {"limit": page_limit}
+                if cursor is not None:
+                    params["cursor"] = cursor
+
+                reply = await http.json("GET", _LIST_NOTIFICATIONS, params=params)
+                found = reply.get("notifications")
+                items = (
+                    [raw for raw in found if isinstance(raw, dict)]
+                    if isinstance(found, list)
+                    else []
+                )
+
+                if parsed_marker is None:
+                    collected = items
+                    break
+
+                marker_when, marker_uri = parsed_marker
+                reached_marker = False
+                for raw in items:
+                    when = str(raw.get("indexedAt", ""))
+                    uri = str(raw.get("uri", ""))
+                    if when < marker_when or (
+                        when == marker_when and uri == marker_uri
+                    ):
+                        reached_marker = True
+                        break
+                    collected.append(raw)
+
+                if reached_marker:
+                    break
+
+                next_cursor = reply.get("cursor")
+                if (
+                    not isinstance(next_cursor, str)
+                    or not next_cursor
+                    or next_cursor == cursor
+                ):
+                    # Bluesky ran out of pages before the marker turned up -
+                    # nothing more to read, whatever the marker once named.
+                    break
+                cursor = next_cursor
+            else:
+                more = True
+
+        updates = tuple(
+            update
+            for raw in reversed(collected)
+            if (update := _update_from(raw, connection=connection)) is not None
+        )
+        new_marker = _marker_for(collected[0]) if collected else marker
+
+        return UpdateBatch(updates=updates, marker=new_marker, more=more)
+
+    async def mark_seen(self, connection: Connection, marker: str) -> None:
+        """Tell Bluesky a marker has been seen.
+
+        One request: `app.bsky.notification.updateSeen`.
+
+        Args:
+            connection: The account to mark it for.
+            marker: The marker that has been handled. Its `indexedAt` half
+                is what is sent as `seenAt`; a marker this platform did not
+                write itself is sent to Bluesky exactly as given.
+        """
+        parsed = _parse_marker(marker)
+        seen_at = parsed[0] if parsed is not None else marker
+
+        async with self._client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            await http.json("POST", _UPDATE_SEEN, json={"seenAt": seen_at})
+
+    async def read_conversations(
+        self,
+        connection: Connection,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Conversation]:
+        """List this account's direct message conversations.
+
+        One request: `chat.bsky.convo.listConvos`.
+
+        Args:
+            connection: The account to ask as.
+            after: A `Page.next` from a previous call.
+            limit: A cap on how many come back.
+
+        Returns:
+            One page of conversations.
+
+        Raises:
+            MissingPermissionError: If this app password has no direct
+                message access.
+        """
+        params: dict[str, Any] = {}
+        if after is not None:
+            params["cursor"] = after
+        if limit is not None:
+            params["limit"] = limit
+
+        async with self._chat_client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            reply = await http.json("GET", _LIST_CONVOS, params=params)
+
+        convos_raw = reply.get("convos")
+        items = (
+            [
+                _conversation_from(raw, connection=connection)
+                for raw in convos_raw
+                if isinstance(raw, dict)
+            ]
+            if isinstance(convos_raw, list)
+            else []
+        )
+
+        return Page(items=tuple(items), next=_text_or_none(reply.get("cursor")))
+
+    async def read_messages(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Message]:
+        """Read the messages in one conversation, newest first.
+
+        One request: `chat.bsky.convo.getMessages`. Bluesky sends the
+        people in the conversation separately, under `relatedProfiles`,
+        rather than on each message - that is where a message's sender is
+        looked up.
+
+        Args:
+            connection: The account to ask as.
+            conversation_id: Which conversation to read.
+            after: A `Page.next` from a previous call. Passing it goes
+                further back in time.
+            limit: A cap on how many come back.
+
+        Returns:
+            One page of messages, newest first.
+
+        Raises:
+            MissingPermissionError: If this app password has no direct
+                message access.
+        """
+        params: dict[str, Any] = {"convoId": conversation_id}
+        if after is not None:
+            params["cursor"] = after
+        if limit is not None:
+            params["limit"] = limit
+
+        async with self._chat_client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            reply = await http.json("GET", _GET_MESSAGES, params=params)
+
+        profiles_raw = reply.get("relatedProfiles")
+        profiles = (
+            [profile for profile in profiles_raw if isinstance(profile, dict)]
+            if isinstance(profiles_raw, list)
+            else []
+        )
+
+        messages_raw = reply.get("messages")
+        items = (
+            [
+                _message_from(
+                    raw,
+                    conversation_id=conversation_id,
+                    profiles=profiles,
+                    connection=connection,
+                )
+                for raw in messages_raw
+                if isinstance(raw, dict)
+            ]
+            if isinstance(messages_raw, list)
+            else []
+        )
+
+        return Page(items=tuple(items), next=_text_or_none(reply.get("cursor")))
+
+    async def send_message(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send a message into an existing conversation.
+
+        One request: `chat.bsky.convo.sendMessage`. A web address in `text`
+        is marked up as a link the same way `publish` marks one up in a
+        post; an `@handle` is left as plain words, since marking one up
+        would mean a `resolveHandle` lookup on every message sent, which is
+        a cost `publish` only ever pays for a post, not a reply to one.
+
+        Args:
+            connection: The account to send as.
+            conversation_id: Which conversation to send into.
+            text: The message's words.
+            options: Not used - Bluesky's chat messages take no settings of
+                their own yet. Passing any raises.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            InvalidPostError: If `options` names a setting.
+            MissingPermissionError: If this app password has no direct
+                message access.
+        """
+        if options:
+            check_option_names(options, platform=PLATFORM_NAME, allowed=())
+
+        message: dict[str, Any] = {"text": text}
+        facets = facets_for(text)
+        if facets:
+            message["facets"] = facets
+
+        async with self._chat_client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            reply = await http.json(
+                "POST",
+                _SEND_MESSAGE,
+                json={"convoId": conversation_id, "message": message},
+            )
+
+        return _message_from(
+            reply, conversation_id=conversation_id, profiles=(), connection=connection
+        )
+
+    async def mark_read(self, connection: Connection, conversation_id: str) -> None:
+        """Mark a conversation as read.
+
+        One request: `chat.bsky.convo.updateRead`.
+
+        Args:
+            connection: The account to mark it for.
+            conversation_id: Which conversation to mark.
+
+        Raises:
+            MissingPermissionError: If this app password has no direct
+                message access.
+        """
+        async with self._chat_client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            await http.json("POST", _UPDATE_READ, json={"convoId": conversation_id})
+
+    async def start_conversation(
+        self,
+        connection: Connection,
+        person_ids: Sequence[str],
+        text: str,
+    ) -> Message:
+        """Start a conversation with one or more people.
+
+        Two requests: `chat.bsky.convo.getConvoForMembers` to find or
+        create the conversation, then `chat.bsky.convo.sendMessage` into
+        it.
+
+        Args:
+            connection: The account to send as.
+            person_ids: Who to start it with, by their DIDs.
+            text: The first message's words.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            MissingPermissionError: If this app password has no direct
+                message access.
+            PlatformError: If Bluesky answered without a conversation to
+                send into.
+        """
+        async with self._chat_client(
+            _clean_host(connection.host), connection.token.access_token
+        ) as http:
+            reply = await http.json(
+                "GET",
+                _GET_CONVO_FOR_MEMBERS,
+                params={"members": list(person_ids)},
+            )
+            convo = reply.get("convo")
+            convo_id = convo.get("id") if isinstance(convo, dict) else None
+            if not isinstance(convo_id, str) or not convo_id:
+                message_text = (
+                    "Bluesky answered getConvoForMembers without a "
+                    "conversation to send into. The whole reply is on this "
+                    "error."
+                )
+                raise PlatformError(message_text, platform=PLATFORM_NAME, raw=reply)
+
+            message: dict[str, Any] = {"text": text}
+            facets = facets_for(text)
+            if facets:
+                message["facets"] = facets
+
+            sent = await http.json(
+                "POST",
+                _SEND_MESSAGE,
+                json={"convoId": convo_id, "message": message},
+            )
+
+        return _message_from(
+            sent, conversation_id=convo_id, profiles=(), connection=connection
+        )
 
 
 def _answer_to(callback: Mapping[str, str], field: LoginField) -> str:
