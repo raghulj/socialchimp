@@ -107,6 +107,7 @@ __all__ = [
     "STATE_BYTES",
     "Change",
     "Graph",
+    "Messaging",
     "MetaPage",
     "Usage",
     "app_must_be_made_by_hand",
@@ -117,6 +118,7 @@ __all__ = [
     "credentials_or_refuse",
     "first_update",
     "long_lived_token",
+    "messaging_in",
     "meta_errors",
     "meta_picture_url",
     "page_by_id",
@@ -1382,22 +1384,19 @@ def _when_in(entry: RawData) -> datetime:
     return _now()
 
 
-def changes_in(body: bytes, *, platform: str) -> list[Change]:
-    """Unpack a message Meta pushed to us.
+def _entries_in(body: bytes, *, platform: str) -> list[RawData]:
+    """Read the list of entries out of a message Meta pushed to us.
 
-    One message can carry changes for several accounts at once, and several
-    changes for each of them, so this always hands back a list. Meta batches
-    when it is busy, which is exactly when you least want to drop the rest.
+    Every Meta webhook wraps its news the same way - `{"object": ...,
+    "entry": [...]}` - whatever is inside each entry. See
+    https://developers.facebook.com/docs/graph-api/webhooks/getting-started#event-notifications
 
     Args:
-        body: The request body, exactly as it arrived. Check its signature
-            with `check_meta_signature` first.
+        body: The request body, exactly as it arrived.
         platform: Which of Meta's networks sent it, for the message.
 
     Returns:
-        Every change in the message, in the order Meta listed them. Empty
-        when the message carried none, which is not an error - Meta sends
-        shapes we have no interest in.
+        Every entry that is an object. Empty when there are none.
 
     Raises:
         PlatformError: If the body is not a Meta message at all.
@@ -1423,11 +1422,31 @@ def changes_in(body: bytes, *, platform: str) -> list[Change]:
     entries = parsed.get("entry")
     if not isinstance(entries, list):
         return []
+    return [entry for entry in entries if isinstance(entry, dict)]
 
+
+def changes_in(body: bytes, *, platform: str) -> list[Change]:
+    """Unpack a message Meta pushed to us.
+
+    One message can carry changes for several accounts at once, and several
+    changes for each of them, so this always hands back a list. Meta batches
+    when it is busy, which is exactly when you least want to drop the rest.
+
+    Args:
+        body: The request body, exactly as it arrived. Check its signature
+            with `check_meta_signature` first.
+        platform: Which of Meta's networks sent it, for the message.
+
+    Returns:
+        Every change in the message, in the order Meta listed them. Empty
+        when the message carried none, which is not an error - Meta sends
+        shapes we have no interest in.
+
+    Raises:
+        PlatformError: If the body is not a Meta message at all.
+    """
     found: list[Change] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
+    for entry in _entries_in(body, platform=platform):
         changes = entry.get("changes")
         if not isinstance(changes, list):
             continue
@@ -1443,6 +1462,98 @@ def changes_in(body: bytes, *, platform: str) -> list[Change]:
                     when=when,
                     topic=str(change.get("field", "")),
                     value=value if isinstance(value, dict) else {},
+                    envelope=entry,
+                )
+            )
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class Messaging:
+    """One direct message event, out of a message Meta pushed to us.
+
+    Direct messages do not arrive as `changes[]` the way comments do. Each
+    entry carries a `messaging[]` list instead, and each item in it is one
+    event - a new message, an echo of one the account sent, a reaction, a
+    read, a tap on a button - told apart by which key it carries. See
+    https://developers.facebook.com/docs/instagram-platform/webhooks and, for
+    the field-by-field shapes,
+    https://developers.facebook.com/docs/messenger-platform/reference/webhook-events
+
+    Attributes:
+        account_id: Which account it happened on: the entry's `id`.
+        when: The event's own `timestamp`, else the entry's `time`, else the
+            moment it arrived. Always has a timezone.
+        event: The one event, untouched: `sender`, `recipient`, `timestamp`
+            and one of `message`, `reaction`, `read`, `postback` and so on.
+        envelope: The whole untouched entry this came in.
+    """
+
+    account_id: str
+    when: datetime
+    event: RawData
+    envelope: RawData = field(default_factory=dict, repr=False)
+
+
+# Anything bigger than this is a time in milliseconds rather than seconds.
+# In seconds it would be the year 5138; in milliseconds it is 1973.
+_SURELY_MILLISECONDS: Final = 100_000_000_000
+
+
+def _moment(value: object) -> datetime | None:
+    """Read a Meta webhook time, in seconds or in milliseconds.
+
+    Messaging events stamp themselves in milliseconds; `changes[]` entries
+    use seconds. Meta's own examples show both, so the size decides.
+
+    Args:
+        value: The number Meta sent, or anything else.
+
+    Returns:
+        The moment, with a timezone, or `None` when there is no number.
+    """
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return None
+    seconds = float(value)
+    if seconds > _SURELY_MILLISECONDS:
+        seconds /= 1000
+    return datetime.fromtimestamp(seconds, UTC)
+
+
+def messaging_in(body: bytes, *, platform: str) -> list[Messaging]:
+    """Unpack the direct message events in a message Meta pushed to us.
+
+    The other half of `changes_in`: the same body can be handed to both, and
+    each takes only its own part.
+
+    Args:
+        body: The request body, exactly as it arrived. Check its signature
+            with `check_meta_signature` first.
+        platform: Which of Meta's networks sent it, for the message.
+
+    Returns:
+        Every event under `entry[].messaging[]`, in the order Meta listed
+        them. Empty when there are none.
+
+    Raises:
+        PlatformError: If the body is not a Meta message at all.
+    """
+    found: list[Messaging] = []
+    for entry in _entries_in(body, platform=platform):
+        events = entry.get("messaging")
+        if not isinstance(events, list):
+            continue
+        account_id = str(entry.get("id", ""))
+        entry_time = _moment(entry.get("time"))
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            when = _moment(event.get("timestamp")) or entry_time or _now()
+            found.append(
+                Messaging(
+                    account_id=account_id,
+                    when=when,
+                    event=event,
                     envelope=entry,
                 )
             )

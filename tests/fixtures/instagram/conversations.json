@@ -1,0 +1,381 @@
+{
+  "_notes": "GET /v21.0/me/conversations?platform=instagram&fields=id,updated_time,participants,messages.limit(20){id,created_time,from,to,message,attachments,shares,story,is_unsupported,reactions}. messages.limit(20){...} field expansion on the list is standard Graph syntax; Meta's Instagram docs do not show it on the list.",
+  "data": [
+    {
+      "id": "aWdfZAG06MTpJR1RocmVhZAzoxNzg0HzERNO_h-Y1angSbQtfHPD-dglq-MxnhbiHPpl-jaLf0uvkB0bn8wRqdPHFP2lJEVamHWuzs",
+      "updated_time": "2026-09-28T14:11:00+0000",
+      "participants": {
+        "data": [
+          {
+            "username": "ada.bakes",
+            "id": "1234567890123456"
+          },
+          {
+            "username": "fridgedoor",
+            "id": "17841400000000000"
+          }
+        ]
+      },
+      "messages": {
+        "data": [
+          {
+            "id": "aWdfZAG1OaaKOMwjcVO5MSkAQ31HeTPORIT7dXqO2T0od6xFQL0MvFTLeBkip0KaTA-uvkVE941zkN2RPLoY6ZSYWd0B_IlyrwVOj-mp8Cy1OjBqw030P-wrUR9sl-GS874tsmpgaKAfSBtyji2t3m1pNrGQWnsXlhzi73EM5XBQSq0H",
+            "created_time": "2026-09-28T14:11:00+0000",
+            "from": {
+              "username": "fridgedoor",
+              "id": "17841400000000000"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "ada.bakes",
+                  "id": "1234567890123456"
+                }
+              ]
+            },
+            "message": "Yes, holding one for you until 5pm.",
+            "reactions": {
+              "data": [
+                {
+                  "reaction": "love",
+                  "users": [
+                    {
+                      "id": "1234567890123456",
+                      "username": "ada.bakes"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "aWdfZAG1K_KCnw0YgRSoCDm0QEvqFL8VHNHfsKiDxahGB5ATZ8W57dcJIAK2FJDEvBh37tqVytm1zoI7uGyLNKcqh19lCNZOyp8ZNq24dStRAW7LZpigMz0oS0JJEkDVF-OQHGNosYPrcvhduzYXuf3nZbhlOKdUTsprM6oINDAJ13Lh",
+            "created_time": "2026-09-28T14:10:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "",
+            "is_unsupported": true
+          },
+          {
+            "id": "aWdfZAG1jdKQZ_jjQOm_LarCkYv24iAWM1p0Cjx7h-T8YTccI-Qin4rq7rF180ky9vUuGtmkqAeZZYa1skB61dfomJCTHyOol6oXkZuPvks4hbjDOORC4zvZC1WRcahs6CkQMXd2he5QwgP2PlK3QEL0ReCYKbVpPZlc0H5bBAd3QvrD",
+            "created_time": "2026-09-28T14:09:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "Love this one, is it still available?",
+            "story": {
+              "reply_to": {
+                "link": "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=1018449638284774825&signature=AbxQe22428ccf96cda9674a939c2",
+                "id": "18087654321098765"
+              }
+            }
+          },
+          {
+            "id": "aWdfZAG1J_4UbyJY4-RTIy9DYU5B5d0kF14ZlzZZ4CcGGMnAP20-IFPI91MAbCPMSXpU82aprggdKo6K0Pkfmlozn-QkbgNvfnT654EhrVD7P4XHrc5VDE7ItDjzxdHEjzxFWKFmAg59E0Wfh5oBz-HUZUNeguPvLjb13oGxAz-kWlta",
+            "created_time": "2026-09-28T14:08:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "",
+            "story": {
+              "mention": {
+                "link": "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=1069493633408030712&signature=AbxQed79acb0cd3d7f8320c53c77",
+                "id": "18098765432109876"
+              }
+            }
+          },
+          {
+            "id": "aWdfZAG1XJevTZuMkN-Zvjl6OwDDvUq-iLZUyNux1wNK6k-PBZuHPRJyd6l8tkOXPoXhm3Y144DjNRBUBJpaP6MyTpHyniPHI0SgCluHB9X9eDn96PPrI3qvx8qSM6I2opKmEZYNnZRTyXyuKC_LFsTvtuSmvVdFI10AU91EJS8YqaK2",
+            "created_time": "2026-09-28T14:07:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "",
+            "shares": {
+              "data": [
+                {
+                  "id": "18012345678901234",
+                  "link": "https://www.instagram.com/p/DAbCdEfGhIj/",
+                  "name": "fridgedoor on Instagram",
+                  "description": "Fresh walnut loaf, out of the oven at 7am."
+                }
+              ]
+            }
+          },
+          {
+            "id": "aWdfZAG11P1qO62_g-v06rShO6dVn-S3nxaOXf2wwErTaaiLxaD_mXsK6kXKUWJuHllaBSe-Wog8QvnIL7kAvLw6w5Bu0Xaygtzqkm1N9HxauOq0MTRUmupCJh_YvFcBWbHIZPm1tnZ8gQr7ZEln7GOSJrqO1Bpzuc8DbLlUpgCBQI76",
+            "created_time": "2026-09-28T14:06:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "",
+            "attachments": {
+              "data": [
+                {
+                  "id": "1790011122233377",
+                  "mime_type": "application/pdf",
+                  "name": "order-list.pdf",
+                  "size": 52113,
+                  "file_url": "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=632717892522374292&signature=AbxQ8c7dd922ad47494fc02c388e"
+                }
+              ]
+            }
+          },
+          {
+            "id": "aWdfZAG1v8c16aPgiapsfyoFje8Z6rUF0xEmIvr-ikHsuxcTd1jU9QCxSX1IDBGVmqdDloM953lXAdg3Sfql31DUFRK8OsNBwFftG7k5KDYSchJ_1oREKkVu_rkHmkRgoVw-HLACPTCuXlL1cZOjfrksv37XddP2MjJ0gdVCkpgz_rdx",
+            "created_time": "2026-09-28T14:05:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "",
+            "attachments": {
+              "data": [
+                {
+                  "id": "1790011122233366",
+                  "mime_type": "audio/mp4",
+                  "name": "audioclip-1790011122233366.mp4",
+                  "size": 90213,
+                  "file_url": "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=725663662438371391&signature=AbxQa1213419a0c503fc2767891f"
+                }
+              ]
+            }
+          },
+          {
+            "id": "aWdfZAG1yT8DLyHRr-jSDdbZsgkrEVFK-quuH0mJICllqWiPf0Hu6QSYa23O5dEw88OiyfLPbnWeJXKV4yyGT2p7tM7tuamwE9fQy1ptOTs2mc_c4bjRcwqNipQu7CcG71PXqjgzCR49I8dXt2sWXyhlY6JdeV5o-asCkLiq3DayXTE9",
+            "created_time": "2026-09-28T14:04:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "",
+            "attachments": {
+              "data": [
+                {
+                  "id": "1790011122233355",
+                  "mime_type": "video/mp4",
+                  "name": "video-ada.bakes-1790011122233355.mp4",
+                  "size": 2483921,
+                  "video_data": {
+                    "width": 720,
+                    "height": 1280,
+                    "length": 12,
+                    "video_type": 2,
+                    "url": "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=794561619451689356&signature=AbxQb06d9954793b98cc08c5ed99",
+                    "preview_url": "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=363391716415722972&signature=AbxQ50b06d73b4755dc766373c02"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "aWdfZAG142izjYdjoykTxr3yZ2RKDH_VZPSiEBOy3Tpkwu_pm69qeufURHHzLyVYnZLXm9EQstDZzHPLAuL9yZcWvVuNSkCMkj8s5ArJrMq9ZyFYx5qDZLKYE2R_QTsUgfuUvDn1UqBeBctBq44kB2wMt1AMdim9kyONLQdIC1rG_8Wf",
+            "created_time": "2026-09-28T14:03:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "",
+            "attachments": {
+              "data": [
+                {
+                  "id": "1790011122233344",
+                  "mime_type": "image/jpeg",
+                  "name": "image-ada.bakes-IMG_4021.jpg",
+                  "size": 184322,
+                  "image_data": {
+                    "width": 1080,
+                    "height": 1350,
+                    "max_width": 1080,
+                    "max_height": 1350,
+                    "url": "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=826844557094884120&signature=AbxQb798abe6e1b1318ee36b0dcb",
+                    "preview_url": "https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=330103676849491069&signature=AbxQ494c38b8daa0c7dde6822acc",
+                    "render_as_sticker": false
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "aWdfZAG1uYI22Mr9ODsXvsscXs_bIxYq17dFVfzqwFI4dmH3_AC4c0-vcm135q8K6UrYeh-FL2U40-lXpeDuDQZ_yPHua_JIglJP77-1gAdxYGBAPqe6Qq7Gm0hWhSdJ3BwV98EvGWWg7XHPkFRKhKq8FSXwcboYC_a2pJ5I7i1HsICD",
+            "created_time": "2026-09-28T14:02:00+0000",
+            "from": {
+              "username": "fridgedoor",
+              "id": "17841400000000000"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "ada.bakes",
+                  "id": "1234567890123456"
+                }
+              ]
+            },
+            "message": "Hi Ada, yes, a few left. Want me to hold one?"
+          },
+          {
+            "id": "aWdfZAG1Ez5XIVW052e3M2bTt71_vYp7Bh2gelqzUmc_8we7Eei7heRR4JKzGu2yUNGIOm3Y9_jeHjAvpxZ6t_kESw-AQKgnQBSkxnj0oqI10obPyhLBBb7GIj6zGKiHaqxPLhaD7_OcyyIEoz_zRctBik7UXrFaa9JMkNCdfze2j26V",
+            "created_time": "2026-09-28T14:01:00+0000",
+            "from": {
+              "username": "ada.bakes",
+              "id": "1234567890123456"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "Hi! Do you still have the walnut loaf today?"
+          }
+        ],
+        "paging": {
+          "cursors": {
+            "before": "tKeDlLV28zZjjcFP4mgNpQzj33F8ChBujn97gP8LsUZnHU-e3k5R",
+            "after": "_jThBv4W8yv-4wRz2TNxXpRnAh-IfvltLCLL906-eFLonlKgWS2i"
+          },
+          "next": "https://graph.instagram.com/v21.0/aWdfZAG06MTpJR1RocmVhZAzoxNzg0HzERNO_h-Y1angSbQtfHPD-dglq-MxnhbiHPpl-jaLf0uvkB0bn8wRqdPHFP2lJEVamHWuzs?fields=messages&limit=20&after=_jThBv4W8yv-4wRz2TNxXpRnAh-IfvltLCLL906-eFLonlKgWS2i"
+        }
+      }
+    },
+    {
+      "id": "aWdfZAG06MTpJR1RocmVhZAzoxNzg0_H_pwS10pCRsE_kgC1IJ6o5MlsBwLBsTqX7JzfRnohSp9oFXR8Gy-UZud4wsDJXAdY9JXtfR",
+      "updated_time": "2026-09-27T13:00:00+0000",
+      "participants": {
+        "data": [
+          {
+            "username": "sourdough.sam",
+            "id": "2234567890123457"
+          },
+          {
+            "username": "fridgedoor",
+            "id": "17841400000000000"
+          }
+        ]
+      },
+      "messages": {
+        "data": [
+          {
+            "id": "aWdfZAG1M4QsAgRfWyfexpO2gj1vLHeC-aKxkMLa-4vhGDdKldMTxGPGiiO8YzY3thPmPgAl4tSYz1Lvdod65u00dfSrpur76jCrJp-DviFxtek_c2IilveAZ0zr2u6KI_lIBoudmtwaJ-rJIgFV5VYtvm34B0dGUiiP5ZPrNAniy7bG",
+            "created_time": "2026-09-27T13:00:00+0000",
+            "from": {
+              "username": "fridgedoor",
+              "id": "17841400000000000"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "sourdough.sam",
+                  "id": "2234567890123457"
+                }
+              ]
+            },
+            "message": "Thanks for stopping by, Sam!"
+          },
+          {
+            "id": "aWdfZAG1lqYQruNzWtZm16QKDwMEmLa4sm6jJApzCHI7Yad5Sof-NyKTrG_Idn0kgnjpzqy7U6pX3o07MO8ggTkzk10TMl5KRQE2WQS5SDjdJL6KU5kdFgOllKY-Fk_A6rNh0yW1OQV6gjuSVFmNqGnYyvwUltb3GXuhpgFqY390evoe",
+            "created_time": "2026-09-27T12:50:00+0000",
+            "from": {
+              "username": "sourdough.sam",
+              "id": "2234567890123457"
+            },
+            "to": {
+              "data": [
+                {
+                  "username": "fridgedoor",
+                  "id": "17841400000000000"
+                }
+              ]
+            },
+            "message": "Picked up my order, it was great."
+          }
+        ],
+        "paging": {
+          "cursors": {
+            "before": "03l_YXIFZE6K8tPbeNHDL-yjI8YstiTkyYYQz_T4KpLiB8Vpoui1",
+            "after": "Yutlf5ORQ9E_l1nCn99HmHSobPLpSTfU5Utre1uq5NzUOgJvS9Zl"
+          }
+        }
+      }
+    }
+  ],
+  "paging": {
+    "cursors": {
+      "before": "mJWnvQ1BC18tacfhWovN1YJi33Cs7KjGtWtZqdMdJkHErTDTBmMF",
+      "after": "w39JJ_YA0C2fPJtUGYrvBCIk-ufaLl3yF711T119-gQHLQFFP6Fw"
+    },
+    "next": "https://graph.instagram.com/v21.0/17841400000000000/conversations?platform=instagram&fields=id,updated_time,participants&limit=2&after=w39JJ_YA0C2fPJtUGYrvBCIk-ufaLl3yF711T119-gQHLQFFP6Fw"
+  }
+}
