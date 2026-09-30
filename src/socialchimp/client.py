@@ -64,6 +64,7 @@ from socialchimp.platform import (
     CanReadLikes,
     CanReadPost,
     CanReadProfile,
+    CanReadPushedMessages,
     CanReadPushedUpdates,
     CanReadReplies,
     CanReadStats,
@@ -87,7 +88,7 @@ if TYPE_CHECKING:
 
     import httpx
 
-    from socialchimp.events import Update, UpdateBatch
+    from socialchimp.events import MessageEvent, Update, UpdateBatch
     from socialchimp.features import Limits
     from socialchimp.models import (
         AccountProfile,
@@ -2035,6 +2036,42 @@ class SocialChimp:
                 ),
             )
         return reader.read_updates(body)
+
+    def read_message_events(self, platform: str, body: bytes) -> list[MessageEvent]:
+        """Turn a checked request into every direct message event it carries.
+
+        Call this after `check_signature` has passed, never before. The same
+        request can go to `read_updates` too: comments and mentions come out
+        of that, and this hands back only the direct message side - new
+        messages, the account's own sent messages, unsent messages,
+        reactions, reads and taps on buttons.
+
+        Args:
+            platform: Which network, for example `"instagram"`.
+            body: The request body, untouched.
+
+        Returns:
+            What happened, in the order the network listed it. Empty when
+            the request carried no direct message events, which is not an
+            error. Each event names the connection it concerns.
+
+        Raises:
+            NotSupportedError: If this network never pushes direct messages
+                to us.
+            PlatformError: If the body is not one of that network's
+                messages.
+        """
+        reader = self.platform_for(platform)
+        if not isinstance(reader, CanReadPushedMessages):
+            raise NotSupportedError(
+                platform=reader.name,
+                what="pushing direct messages to a URL of yours",
+                suggestion=(
+                    "Where it has direct messages at all, read them with "
+                    "Account.read_conversations and Account.read_messages."
+                ),
+            )
+        return reader.read_message_events(body)
 
     async def aclose(self) -> None:
         """Close the HTTP clients this made.

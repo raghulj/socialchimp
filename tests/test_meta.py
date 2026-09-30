@@ -42,6 +42,7 @@ from socialchimp.platforms._meta import (
     code_from,
     first_update,
     long_lived_token,
+    messaging_in,
     meta_errors,
     meta_picture_url,
     page_by_id,
@@ -1090,6 +1091,95 @@ class TestReadingWhatMetaPushed:
 
         assert found.value == {"item": "comment"}
         assert found.envelope == entry
+
+
+class TestReadingPushedMessages:
+    """Direct messages sit under `entry[].messaging[]`, not `changes[]`."""
+
+    def a_body(
+        self, *events: dict[str, Any], time: object = 1_790_604_060_123
+    ) -> bytes:
+        entry: dict[str, Any] = {"id": PAGE_ID, "messaging": list(events)}
+        if time is not None:
+            entry["time"] = time
+        return json.dumps({"object": "instagram", "entry": [entry]}).encode()
+
+    def test_it_pulls_out_each_event_and_the_account_it_came_to(self) -> None:
+        event = {
+            "sender": {"id": "person-1"},
+            "recipient": {"id": PAGE_ID},
+            "timestamp": 1_790_604_060_000,
+            "message": {"mid": "m1", "text": "Hi"},
+        }
+
+        found = messaging_in(self.a_body(event), platform=PLATFORM)
+
+        assert len(found) == 1
+        assert found[0].account_id == PAGE_ID
+        assert found[0].event == event
+        assert found[0].envelope["id"] == PAGE_ID
+
+    def test_its_time_is_read_in_milliseconds(self) -> None:
+        # Messaging events stamp themselves in milliseconds, unlike changes.
+        event = {"timestamp": 1_790_604_060_500, "read": {"mid": "m1"}}
+
+        found = messaging_in(self.a_body(event), platform=PLATFORM)
+
+        assert found[0].when == datetime.fromtimestamp(1_790_604_060.5, UTC)
+
+    def test_a_time_in_seconds_is_read_as_seconds(self) -> None:
+        event = {"timestamp": 1_790_604_060, "read": {"mid": "m1"}}
+
+        found = messaging_in(self.a_body(event), platform=PLATFORM)
+
+        assert found[0].when == datetime.fromtimestamp(1_790_604_060, UTC)
+
+    def test_an_event_with_no_time_takes_the_entrys(self) -> None:
+        found = messaging_in(self.a_body({"read": {}}), platform=PLATFORM)
+
+        assert found[0].when == datetime.fromtimestamp(1_790_604_060.123, UTC)
+
+    def test_an_event_and_entry_with_no_time_are_stamped_as_they_arrive(
+        self,
+        clock: datetime,
+    ) -> None:
+        body = self.a_body({"read": {}}, time=None)
+
+        assert messaging_in(body, platform=PLATFORM)[0].when == NOW
+
+    def test_changes_in_the_same_body_are_left_to_changes_in(self) -> None:
+        body = json.dumps(
+            {
+                "entry": [
+                    {
+                        "id": PAGE_ID,
+                        "time": 1_790_000_000,
+                        "changes": [{"field": "comments", "value": {}}],
+                    }
+                ]
+            }
+        ).encode()
+
+        assert messaging_in(body, platform=PLATFORM) == []
+        assert len(changes_in(body, platform=PLATFORM)) == 1
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"entry": []}',
+            b"{}",
+            b'{"entry": [{"id": "1", "messaging": "not a list"}]}',
+            b'{"entry": [{"id": "1", "messaging": ["not an object"]}]}',
+            b'{"entry": ["not an object"]}',
+        ],
+    )
+    def test_a_message_with_nothing_in_it_is_no_events(self, body: bytes) -> None:
+        assert messaging_in(body, platform=PLATFORM) == []
+
+    @pytest.mark.parametrize("body", [b"not json", b"[1, 2, 3]"])
+    def test_a_body_that_is_not_a_meta_message_says_so(self, body: bytes) -> None:
+        with pytest.raises(PlatformError, match="could not be read"):
+            messaging_in(body, platform=PLATFORM)
 
 
 # ---------------------------------------------------------------------------

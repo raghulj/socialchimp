@@ -844,7 +844,9 @@ class Attachment:
 
     Attributes:
         kind: What sort of file this is - `"image"`, `"video"`, `"gifv"`,
-            `"audio"`, `"link"` or `"unknown"`.
+            `"audio"`, `"link"` or `"unknown"`. Instagram's direct messages
+            add `"file"`, `"share"`, `"reel"`, `"story_mention"` and
+            `"story_reply"`, and keep Instagram's own word for any other.
         url: Where to fetch the file, when the network gives one.
         preview_url: A smaller version to show before the full file loads,
             when the network gives one.

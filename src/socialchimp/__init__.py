@@ -37,6 +37,8 @@ from socialchimp.errors import (
 from socialchimp.events import (
     Dispatcher,
     InMemorySeenUpdates,
+    MessageEvent,
+    MessageEventKind,
     Poller,
     SeenUpdates,
     Update,
@@ -99,7 +101,7 @@ from socialchimp.storage import (
 )
 from socialchimp.tokens import TokenManager
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 __all__ = [
     "Account",
@@ -124,6 +126,8 @@ __all__ = [
     "Media",
     "MediaKind",
     "Message",
+    "MessageEvent",
+    "MessageEventKind",
     "MissingPermissionError",
     "NetworkError",
     "NotAllowedError",

@@ -35,6 +35,8 @@ before calling it.
 
 ::: socialchimp.platform.CanReadPushedUpdates
 
+::: socialchimp.platform.CanReadPushedMessages
+
 ## The social inbox
 
 Added in 0.8.0. See the [use case](../use-cases/social-inbox.md) for how an
