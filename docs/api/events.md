@@ -12,6 +12,10 @@ need to.
 
 ::: socialchimp.events.UpdateKind
 
+::: socialchimp.events.MessageEvent
+
+::: socialchimp.events.MessageEventKind
+
 ## Receiving pushed updates (webhooks)
 
 ::: socialchimp.events.verify_hmac_sha256
