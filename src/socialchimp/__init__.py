@@ -37,6 +37,8 @@ from socialchimp.errors import (
 from socialchimp.events import (
     Dispatcher,
     InMemorySeenUpdates,
+    MessageEvent,
+    MessageEventKind,
     Poller,
     SeenUpdates,
     Update,
@@ -124,6 +126,8 @@ __all__ = [
     "Media",
     "MediaKind",
     "Message",
+    "MessageEvent",
+    "MessageEventKind",
     "MissingPermissionError",
     "NetworkError",
     "NotAllowedError",

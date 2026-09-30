@@ -9,10 +9,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from socialchimp.errors import SocialChimpError
+from socialchimp.errors import ConfigError, SocialChimpError
 from socialchimp.events import (
     Dispatcher,
     InMemorySeenUpdates,
+    MessageEvent,
+    MessageEventKind,
     Poller,
     SeenUpdates,
     SignatureError,
@@ -25,7 +27,7 @@ from socialchimp.events import (
     verify_hmac_sha256,
     verify_shared_secret,
 )
-from socialchimp.models import Person
+from socialchimp.models import Message, Person
 
 SECRET = "shhh"
 BODY = b'{"entry": [{"id": "42"}]}'
@@ -210,6 +212,80 @@ class TestNewUpdateKinds:
 
     def test_a_follow_has_its_own_kind(self) -> None:
         assert UpdateKind.from_name("followed") is UpdateKind.FOLLOWED
+
+
+class TestMessageEvent:
+    """One thing that happened in a direct message conversation, pushed to us."""
+
+    def person(self) -> Person:
+        return Person(
+            id="igsid-1", handle="ada", display_name=None, avatar_url=None, url=None
+        )
+
+    def test_a_reaction_carries_what_it_reacts_to_and_with_what(self) -> None:
+        event = MessageEvent(
+            kind=MessageEventKind.REACTED,
+            platform="instagram",
+            connection_id="instagram:1",
+            conversation_id="igsid-1",
+            person=self.person(),
+            happened_at=MONDAY,
+            message_id="mid-1",
+            reaction="\u2764",
+        )
+
+        assert event.message_id == "mid-1"
+        assert event.reaction == "\u2764"
+        assert event.message is None
+        assert event.conversation is None
+        assert event.payload is None
+        assert event.raw == {}
+
+    def test_a_new_message_carries_the_message_itself(self) -> None:
+        message = Message(
+            id="mid-1",
+            conversation_id="igsid-1",
+            sender=self.person(),
+            text="Hello",
+            sent_at=MONDAY,
+            is_mine=False,
+            deleted=False,
+            attachments=(),
+        )
+        event = MessageEvent(
+            kind=MessageEventKind.RECEIVED,
+            platform="instagram",
+            connection_id="instagram:1",
+            conversation_id="igsid-1",
+            person=self.person(),
+            happened_at=MONDAY,
+            message_id="mid-1",
+            message=message,
+        )
+
+        assert event.message is message
+
+    def test_a_time_with_no_timezone_is_refused(self) -> None:
+        with pytest.raises(ConfigError):
+            MessageEvent(
+                kind=MessageEventKind.READ,
+                platform="instagram",
+                connection_id="instagram:1",
+                conversation_id="igsid-1",
+                person=self.person(),
+                happened_at=datetime(2026, 1, 5, 12, 0),  # noqa: DTZ001
+            )
+
+    def test_every_kind_has_a_plain_word(self) -> None:
+        assert {kind.value for kind in MessageEventKind} == {
+            "received",
+            "sent",
+            "deleted",
+            "reacted",
+            "unreacted",
+            "read",
+            "button_tapped",
+        }
 
 
 class TestUpdateBatch:
