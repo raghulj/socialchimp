@@ -121,6 +121,26 @@ and fetches the file itself.
 - **No deleting.** There is no call for it.
 - **No app registration.** `create_app` says so, and names where the
   Instagram App ID and Secret actually live.
+- **No starting a conversation.** Meta only lets a business answer: the
+  person has to write first.
+
+## Direct messages
+
+`read_conversations`, `read_messages`, `send_message` and `mark_read` work
+on the account's Instagram messages, and `read_message_events` reads the
+ones Meta pushes to you. The Meta-shaped details - which page documents
+what, and why a conversation's id is the other person's id - are at the top
+of `_instagram_messages.py`. In short:
+
+- A conversation's id is the other person's Instagram-scoped id (IGSID).
+- Only the 20 newest messages in a conversation can be read back.
+- A reply has to go out within 24 hours of the person's last message
+  (`Conversation.can_reply_until`); after that `send_message` raises
+  `ReplyWindowClosedError`. An app Meta has approved for the `HUMAN_AGENT`
+  tag gets 7 days - build the platform with `human_agent=True`.
+- For pushes, subscribe the app to the `messages`, `message_echoes`,
+  `message_reactions`, `messaging_seen` and `messaging_postbacks` webhook
+  fields in the dashboard.
 """
 
 from __future__ import annotations
@@ -137,13 +157,14 @@ from socialchimp.errors import (
     AuthError,
     ConfigError,
     InvalidPostError,
+    NotFoundError,
     NotSupportedError,
     PlatformError,
     RateLimitError,
     SocialChimpError,
     TokenExpiredError,
 )
-from socialchimp.events import Update
+from socialchimp.events import MessageEvent, Update
 from socialchimp.events import answer_setup_check as echo_the_challenge
 from socialchimp.features import (
     Feature,
@@ -156,7 +177,10 @@ from socialchimp.http import HttpClient, read_body
 from socialchimp.models import (
     AccountProfile,
     Connection,
+    Conversation,
     MediaKind,
+    Message,
+    Page,
     Post,
     PostResult,
     PostState,
@@ -165,6 +189,19 @@ from socialchimp.models import (
     picture_url,
 )
 from socialchimp.platform import Finished, LoginRequest, SendToNetwork
+from socialchimp.platforms._instagram_messages import (
+    HUMAN_AGENT,
+    HUMAN_AGENT_WINDOW,
+    MESSAGE_FIELDS,
+    STANDARD_WINDOW,
+    graph_conversation,
+    graph_messages,
+    me,
+    message_error,
+    message_events,
+    received_updates,
+    while_messaging,
+)
 from socialchimp.platforms._meta import (
     DEVELOPER_PORTAL,
     Graph,
@@ -174,6 +211,7 @@ from socialchimp.platforms._meta import (
     check_state,
     code_from,
     first_update,
+    messaging_in,
     meta_errors,
     quota_left,
     required_text,
@@ -263,9 +301,9 @@ DEFAULT_SCOPES: Final = (
 - `instagram_business_content_publish` - make and publish a post.
 - `instagram_business_manage_comments` - read the comments Instagram pushes
   to you, and answer them.
-- `instagram_business_manage_messages` - Instagram's own name for reading
-  and answering the account's messages. Not wired up here yet; asked for
-  because Meta will not offer it later if it was left out at sign-in.
+- `instagram_business_manage_messages` - read and answer the account's
+  direct messages: `read_conversations`, `read_messages`, `send_message`,
+  `mark_read`, and the messages Meta pushes to you.
 
 There is no `pages_show_list` and no `business_management` here. Both exist
 to find an Instagram account through a Facebook Page, and there is no Page
@@ -357,6 +395,37 @@ NOT_READY_RETRY_AFTER: Final = 30.0
 Meta's own error reference calls this error transient and says to try again
 within thirty seconds to two minutes. We have already spent about ten seconds
 on it by the time this is raised.
+"""
+
+MOST_MESSAGES_WITH_DETAILS: Final = 20
+"""How many of a conversation's newest messages Instagram will give details of.
+
+"You can only get details about the 20 most recent messages in the
+conversation." -
+https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/conversations-api
+"""
+
+MESSAGES_PER_CONVERSATION: Final = 10
+"""How many messages `read_conversations` asks for with each conversation.
+
+Enough to find the person's last message - which is what the reply window
+runs from - without asking for 20 messages for every one of 25
+conversations in one request.
+"""
+
+MOST_MESSAGE_BYTES: Final = 1_000
+"""The most a text message may hold, in bytes of UTF-8 - not characters.
+
+"Text messages must be UTF-8 and be 1000 bytes or less" -
+https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
+"""
+
+MESSAGE_OPTIONS: Final = ("tag",)
+"""The settings `send_message(options=...)` accepts here.
+
+Only a message tag, such as `{"tag": "HUMAN_AGENT"}`, or `{"tag": None}` to
+send without the tag a `human_agent=True` platform adds. See
+https://developers.facebook.com/docs/messenger-platform/send-messages/message-tags
 """
 
 TOKEN_LIFE_SECONDS: Final = 60 * 24 * 60 * 60
@@ -502,6 +571,12 @@ def _instagram_error(body: RawData) -> SocialChimpError | None:
     error = body.get("error")
     if not isinstance(error, dict):
         return None
+
+    # Refusals only a messaging call can get, each by a subcode nothing
+    # else uses.
+    about_a_message = message_error(body)
+    if about_a_message is not None:
+        return about_a_message
 
     codes = _numbers_in(error)
     raw = {"error": error}
@@ -741,6 +816,66 @@ class _Attachment:
     url: str
     kind: MediaKind
     alt_text: str | None = None
+
+
+def _dicts_in(value: object) -> list[RawData]:
+    """Keep the objects in a list Meta sent, and nothing else.
+
+    Args:
+        value: Anything.
+
+    Returns:
+        The objects in it, or nothing when it is not a list.
+    """
+    return (
+        [item for item in value if isinstance(item, dict)]
+        if isinstance(value, list)
+        else []
+    )
+
+
+def _next_cursor(reply: RawData) -> str | None:
+    """Read the cursor for the next page off a Graph list.
+
+    Meta always sends `paging.cursors.after`, even on the last page; only a
+    `paging.next` address says there really is another page.
+
+    Args:
+        reply: A Graph list, as Meta sent it.
+
+    Returns:
+        The cursor, or `None` when there are no more.
+    """
+    paging = reply.get("paging")
+    if not isinstance(paging, dict) or not paging.get("next"):
+        return None
+    cursors = paging.get("cursors")
+    after = cursors.get("after") if isinstance(cursors, dict) else None
+    return after if isinstance(after, str) and after else None
+
+
+def _check_message_text(text: str) -> None:
+    """Refuse a message Instagram would refuse, before sending it.
+
+    Args:
+        text: The words about to be sent.
+
+    Raises:
+        InvalidPostError: If there are none, or more than 1000 bytes.
+    """
+    if not text.strip():
+        message = (
+            "This message is empty. Instagram will not send a message with no words."
+        )
+        raise InvalidPostError(message)
+    size = len(text.encode())
+    if size > MOST_MESSAGE_BYTES:
+        message = (
+            f"This message is {size} bytes and Instagram takes at most "
+            f"{MOST_MESSAGE_BYTES} - bytes of UTF-8, not characters, so an "
+            f"emoji counts as four. Split it into two messages."
+        )
+        raise InvalidPostError(message)
 
 
 def _instagram_account_of(connection: Connection) -> str:
@@ -1095,12 +1230,18 @@ class InstagramPlatform:
             Instagram, no scheduling in its API and no way to delete, so
             `POST_TEXT`, `SCHEDULE` and `DELETE_POST` are all missing - and
             there is no app to register anywhere in Meta, so `CREATE_APP` is
-            too.
+            too. `MESSAGES` is there; `START_CONVERSATIONS` is not, because
+            Meta only lets a business answer.
     """
 
     name: str = PLATFORM_NAME
 
-    features: Feature = Feature.POST_IMAGE | Feature.POST_VIDEO | Feature.PUSH_UPDATES
+    features: Feature = (
+        Feature.POST_IMAGE
+        | Feature.POST_VIDEO
+        | Feature.PUSH_UPDATES
+        | Feature.MESSAGES
+    )
 
     def __init__(
         self,
@@ -1110,6 +1251,7 @@ class InstagramPlatform:
         transport: httpx.AsyncBaseTransport | None = None,
         check_every_seconds: float = HOW_OFTEN_TO_CHECK,
         wait_up_to_seconds: float = HOW_LONG_TO_WAIT,
+        human_agent: bool = False,
     ) -> None:
         """Set Instagram up for one app.
 
@@ -1127,12 +1269,23 @@ class InstagramPlatform:
             wait_up_to_seconds: How long to keep asking before giving up.
                 Raise it if you post long video, and read `_stopped_waiting`
                 first - giving up here does not mean the post failed.
+            human_agent: Say that Meta has approved this app for the
+                `HUMAN_AGENT` message tag, and that every direct message sent
+                through it is written by a person. Then every message is
+                sent with that tag, and the reply window
+                (`Conversation.can_reply_until`) is 7 days rather than 24
+                hours. Leave it off unless both are true - Meta refuses the
+                tag without the approval, and using it for automatic
+                messages is against its rules. See
+                https://developers.facebook.com/docs/messenger-platform/send-messages/message-tags
         """
         self._timeout = timeout
         self._retries = retries
         self._transport = transport
         self._check_every = check_every_seconds
         self._wait_up_to = wait_up_to_seconds
+        self._human_agent = human_agent
+        self._window = HUMAN_AGENT_WINDOW if human_agent else STANDARD_WINDOW
         self._usage: Usage | None = None
 
     @property
@@ -1909,6 +2062,281 @@ class InstagramPlatform:
             raw=reply,
         )
 
+    async def _about_messages(
+        self,
+        connection: Connection,
+        method: str,
+        path: str,
+        **kwargs: object,
+    ) -> RawData:
+        """Send one direct message request, naming its refusals exactly.
+
+        Args:
+            connection: The account we are acting as.
+            method: `"GET"` or `"POST"`.
+            path: Joined onto Instagram's address.
+            **kwargs: Anything `HttpClient.request` takes.
+
+        Returns:
+            The reply, parsed.
+
+        Raises:
+            SocialChimpError: If Instagram refused. A plain "no permission"
+                comes out as `MissingPermissionError` naming the messaging
+                permission.
+        """
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                return await _ask(graph, method, path, **kwargs)
+            except SocialChimpError as refused:
+                better = while_messaging(refused)
+                if better is refused:
+                    raise
+                raise better from refused
+            finally:
+                self._note(graph)
+
+    async def read_conversations(
+        self,
+        connection: Connection,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Conversation]:
+        """List this account's Instagram conversations, newest first.
+
+        One request: `GET /me/conversations?platform=instagram`, with the
+        people in each and its newest messages, so `last_message` and
+        `can_reply_until` need nothing more. See
+        https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/conversations-api
+
+        A conversation's id is the other person's Instagram-scoped id - see
+        `_instagram_messages.py`. Meta's own id is on `raw["id"]`.
+        `unread_count` is always `None`: Instagram does not say.
+        Conversations in the Requests folder that have sat for 30 days are
+        not listed by Instagram at all.
+
+        Args:
+            connection: The account to ask as.
+            after: A `Page.next` from a previous call - Meta's cursor.
+            limit: A cap on how many come back. Left out, Meta's own default.
+
+        Returns:
+            One page of conversations.
+
+        Raises:
+            MissingPermissionError: If the connection cannot read messages.
+            SocialChimpError: If Instagram refuses.
+        """
+        params = {
+            "platform": "instagram",
+            "fields": (
+                f"id,updated_time,participants,"
+                f"messages.limit({MESSAGES_PER_CONVERSATION}){{{MESSAGE_FIELDS}}}"
+            ),
+        }
+        if after is not None:
+            params["after"] = after
+        if limit is not None:
+            params["limit"] = str(limit)
+
+        reply = await self._about_messages(
+            connection, "GET", "/me/conversations", params=params
+        )
+        found = (
+            graph_conversation(item, connection, window=self._window)
+            for item in _dicts_in(reply.get("data"))
+        )
+        return Page(
+            items=tuple(item for item in found if item is not None),
+            next=_next_cursor(reply),
+        )
+
+    async def read_messages(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> Page[Message]:
+        """Read the newest messages in one conversation, newest first.
+
+        One request: the conversation is looked up by the person,
+        `GET /me/conversations?platform=instagram&user_id=...`, with its
+        messages alongside. Instagram gives details of only the 20 newest
+        messages in a conversation, so that is all there is to read and
+        there is never a next page. See
+        https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/conversations-api
+
+        A message Instagram cannot show through its API (a voice call, say)
+        still comes back, with no words and `raw["is_unsupported"]` set.
+        An unsent message is left out by Instagram; only a pushed
+        `MessageEvent` says one was unsent.
+
+        Args:
+            connection: The account to ask as.
+            conversation_id: The other person's Instagram-scoped id, as
+                `Conversation.id` and `MessageEvent.conversation_id` give it.
+            after: Never given out here, so passing one is refused.
+            limit: A cap on how many come back, at most 20.
+
+        Returns:
+            One page of messages, newest first, with no `next`.
+
+        Raises:
+            ConfigError: If `after` is given.
+            NotFoundError: If this account has no conversation with them.
+            MissingPermissionError: If the connection cannot read messages.
+            SocialChimpError: If Instagram refuses.
+        """
+        if after is not None:
+            message = (
+                f"Instagram gives details of only the {MOST_MESSAGES_WITH_DETAILS} "
+                f"newest messages in a conversation, so read_messages never "
+                f"hands out a next page, and {after!r} is not one socialchimp "
+                f"made. Leave after out."
+            )
+            raise ConfigError(message)
+
+        wanted = min(limit or MOST_MESSAGES_WITH_DETAILS, MOST_MESSAGES_WITH_DETAILS)
+        reply = await self._about_messages(
+            connection,
+            "GET",
+            "/me/conversations",
+            params={
+                "platform": "instagram",
+                "user_id": conversation_id,
+                "fields": f"id,messages.limit({wanted}){{{MESSAGE_FIELDS}}}",
+            },
+        )
+        found = _dicts_in(reply.get("data"))
+        if not found:
+            message = (
+                f"This Instagram account has no conversation with "
+                f"{conversation_id!r}. An Instagram conversation id is the "
+                f"other person's Instagram-scoped id, as read_conversations "
+                f"and read_message_events give it."
+            )
+            raise NotFoundError(message, platform=PLATFORM_NAME, raw=reply)
+        return Page(
+            items=graph_messages(found[0], connection, conversation_id=conversation_id)
+        )
+
+    async def send_message(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send a text message to the person in one conversation.
+
+        One request: `POST /me/messages` with the person's id as the
+        recipient. See
+        https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
+
+        Args:
+            connection: The account to send as.
+            conversation_id: The other person's Instagram-scoped id.
+            text: The words - at most 1000 bytes of UTF-8.
+            options: `{"tag": "HUMAN_AGENT"}` to send with that tag, or
+                `{"tag": None}` for no tag on a `human_agent=True` platform.
+                Nothing else.
+
+        Returns:
+            The message that was sent. Its `sent_at` is when this call
+            finished; Instagram does not say.
+
+        Raises:
+            InvalidPostError: If there are no words, too many bytes, or an
+                option we do not know - all before anything is sent.
+            ReplyWindowClosedError: If the 24 hours to reply have passed.
+            BlockedError: If the person cannot be messaged.
+            RateLimitError: If Instagram is asking us to slow down.
+            MissingPermissionError: If the connection cannot send messages.
+            SocialChimpError: If Instagram refuses for another reason.
+        """
+        tag = self._tag_from(options or {})
+        _check_message_text(text)
+
+        body: RawData = {
+            "recipient": {"id": conversation_id},
+            "message": {"text": text},
+        }
+        if tag is not None:
+            body["messaging_type"] = "MESSAGE_TAG"
+            body["tag"] = tag
+
+        reply = await self._about_messages(
+            connection, "POST", "/me/messages", json=body
+        )
+        return Message(
+            id=required_text(
+                reply, "message_id", platform=PLATFORM_NAME, when="send a message"
+            ),
+            conversation_id=conversation_id,
+            sender=me(connection),
+            text=text,
+            sent_at=_now(),
+            is_mine=True,
+            deleted=False,
+            attachments=(),
+            raw=reply,
+        )
+
+    def _tag_from(self, options: RawData) -> str | None:
+        """Work out which message tag, if any, to send with.
+
+        Args:
+            options: What was passed to `send_message`.
+
+        Returns:
+            The tag, or `None` for none.
+
+        Raises:
+            InvalidPostError: If an option is unknown, or the tag is not a
+                word.
+        """
+        check_option_names(options, platform=PLATFORM_NAME, allowed=MESSAGE_OPTIONS)
+        if "tag" not in options:
+            return HUMAN_AGENT if self._human_agent else None
+        tag = options["tag"]
+        if tag is None:
+            return None
+        if not isinstance(tag, str) or not tag:
+            message = (
+                f"tag is {tag!r}, but it has to be one of Meta's message tag "
+                f"names, such as {HUMAN_AGENT!r}, or None for no tag."
+            )
+            raise InvalidPostError(message)
+        return tag
+
+    async def mark_read(self, connection: Connection, conversation_id: str) -> None:
+        """Mark a conversation as seen by the account.
+
+        One request: `POST /me/messages` with `sender_action: mark_seen`,
+        which is what shows the person their message was seen. Instagram's
+        own page lists only the `react` and `unreact` sender actions; this
+        one is from the Messenger Platform, which the Instagram API shares.
+        See https://developers.facebook.com/docs/messenger-platform/send-messages/sender-actions
+
+        Args:
+            connection: The account to mark it for.
+            conversation_id: The other person's Instagram-scoped id.
+
+        Raises:
+            MissingPermissionError: If the connection cannot send messages.
+            SocialChimpError: If Instagram refuses.
+        """
+        await self._about_messages(
+            connection,
+            "POST",
+            "/me/messages",
+            json={"recipient": {"id": conversation_id}, "sender_action": "mark_seen"},
+        )
+
     def check_signature(
         self,
         body: bytes,
@@ -1951,7 +2379,10 @@ class InstagramPlatform:
         could not be verified, without saying why.
 
         The topics worth subscribing to for Instagram are `comments`,
-        `mentions`, `live_comments` and `story_insights`.
+        `mentions`, `live_comments` and `story_insights`, and for direct
+        messages `messages`, `message_echoes`, `message_reactions`,
+        `messaging_seen` and `messaging_postbacks`. See
+        https://developers.facebook.com/docs/instagram-platform/webhooks
 
         Args:
             params: The query values from that GET, such as Django's
@@ -1974,6 +2405,12 @@ class InstagramPlatform:
         Instagram batches when it is busy, which is exactly when you least
         want to drop the rest, so this hands back all of them.
 
+        A new direct message comes out of this as a `MESSAGE_RECEIVED`
+        update, with `conversation_id` and `actor` set. Everything else about
+        messages - the account's own, unsent ones, reactions, reads - comes
+        only from `read_message_events`, which also carries the message
+        itself.
+
         Args:
             body: The request body, untouched. Check its signature first.
 
@@ -1995,7 +2432,38 @@ class InstagramPlatform:
                     envelope=change.envelope,
                 )
             )
+        found.extend(received_updates(self.read_message_events(body)))
         return found
+
+    def read_message_events(self, body: bytes) -> list[MessageEvent]:
+        """Turn a checked request into every direct message event it carries.
+
+        Reads `entry[].messaging[]`: new messages (`RECEIVED`), the
+        account's own sent from anywhere (`SENT`, Meta's "echo"), unsent
+        ones (`DELETED`), reactions, reads and taps on buttons. Each carries
+        the same `Message` and `Conversation` shapes that reading back
+        gives, and the same conversation id - the other person's
+        Instagram-scoped id. See
+        https://developers.facebook.com/docs/instagram-platform/webhooks
+
+        A pushed person has only an id: Meta sends no username with a
+        message. `read_conversations` fills the rest in.
+
+        Only call this after `check_signature` has passed.
+
+        Args:
+            body: The request body, untouched.
+
+        Returns:
+            What happened, in the order Instagram listed it. Empty when the
+            request held no direct message events.
+
+        Raises:
+            PlatformError: If the body is not one of Meta's messages.
+        """
+        return message_events(
+            messaging_in(body, platform=PLATFORM_NAME), window=self._window
+        )
 
     def read_update(
         self,
