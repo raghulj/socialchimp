@@ -4,6 +4,44 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.10.0 - unreleased
+
+### Added: Instagram direct messages
+
+Everything here is new; nothing that worked in 0.9.0 changes meaning.
+
+- **Instagram now has `Feature.MESSAGES`**: `read_conversations`,
+  `read_messages`, `send_message` and `mark_read` on the account, following
+  the same contract as Mastodon and Bluesky. It does not have
+  `Feature.START_CONVERSATIONS` - Meta only lets a business answer.
+- **A conversation's id on Instagram is the other person's
+  Instagram-scoped id**, so messages read back and messages pushed to you
+  share one id. Meta's own conversation id is on `Conversation.raw["id"]`.
+- **`Conversation.can_reply_until`** is filled in: 24 hours from the
+  person's last message, or 7 days with `InstagramPlatform(human_agent=True)`
+  for an app Meta has approved for the `HUMAN_AGENT` tag.
+- **Typed refusals when sending**: `ReplyWindowClosedError` once the window
+  has closed, `BlockedError` for someone who cannot be messaged,
+  `RateLimitError` for slowing down, `MissingPermissionError` for a missing
+  or turned-off messaging permission, `NotFoundError` for nobody by that id.
+- **`MessageEvent` and `MessageEventKind`** (in `socialchimp.events`, and at
+  the top level): one thing that happened in a conversation - received,
+  sent, deleted, reacted, unreacted, read, button tapped - carrying the same
+  `Message` and `Conversation` shapes that reading back gives.
+- **`SocialChimp.read_message_events(platform, body)`** reads them out of a
+  checked webhook, through the new `CanReadPushedMessages` protocol.
+  Instagram implements it for `entry[].messaging[]`.
+- **`read_updates` on Instagram** now also returns a `MESSAGE_RECEIVED`
+  update for each new direct message in the body. Before, a body with only
+  `messaging[]` in it came back as an empty list.
+- **`_meta.messaging_in`**, beside `changes_in`, for anyone writing another
+  Meta network's messaging.
+- Instagram attachments come through as `Attachment.kind` `image`, `video`,
+  `audio`, `file`, `share`, `reel`, `story_mention` and `story_reply`.
+
+See [the Instagram section](docs/platforms.md#direct-messages) for the
+dashboard webhook fields to subscribe to, and what Instagram cannot do.
+
 ## 0.9.0 - 2026-09-25
 
 ### Added: the connected account's picture

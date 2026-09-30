@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from datetime import datetime
 
-    from socialchimp.events import Update, UpdateBatch
+    from socialchimp.events import MessageEvent, Update, UpdateBatch
     from socialchimp.features import Feature, Limits
     from socialchimp.models import (
         AccountProfile,
@@ -62,6 +62,7 @@ __all__ = [
     "CanReadLikes",
     "CanReadPost",
     "CanReadProfile",
+    "CanReadPushedMessages",
     "CanReadPushedUpdates",
     "CanReadReplies",
     "CanReadStats",
@@ -720,6 +721,39 @@ class CanReadPushedUpdates(Protocol):
             What happened, in the order the network listed it. Empty when
             the message carried nothing we can act on, which is not an
             error - networks send shapes we have no interest in.
+        """
+        ...
+
+
+@runtime_checkable
+class CanReadPushedMessages(Protocol):
+    """Extra for reading the direct message events one pushed request carries.
+
+    Meta pushes direct messages to the same URL as comments, but in a
+    different part of the body (`entry[].messaging[]` rather than
+    `entry[].changes[]`), and they carry far more than an `Update` holds: the
+    message itself, its attachments, reactions, reads and taps on buttons.
+    This hands those back as `MessageEvent`s built from the same `Message`
+    and `Conversation` that reading the conversation back gives.
+
+    `SocialChimp.read_message_events` is what your app calls, after
+    `SocialChimp.check_signature` has passed. The same request can be given
+    to `read_updates` as well - a new message comes out of that as a
+    `MESSAGE_RECEIVED` update - so an app that only wants to be told
+    "something arrived" never has to call this.
+    """
+
+    def read_message_events(self, body: bytes) -> list[MessageEvent]:
+        """Turn a checked request into every message event it carries.
+
+        Args:
+            body: The request body, exactly as it arrived. Check its
+                signature first.
+
+        Returns:
+            What happened, in the order the network listed it. Empty when
+            the request carried no direct message events, which is not an
+            error - the same URL also gets comments and mentions.
         """
         ...
 

@@ -25,6 +25,8 @@ from socialchimp import (
     LikeResult,
     Limits,
     Message,
+    MessageEvent,
+    MessageEventKind,
     NotSupportedError,
     Page,
     Person,
@@ -773,6 +775,25 @@ class PushingPlatform(FakePlatform):
 
     def read_updates(self, body: bytes) -> list[Update]:
         return [an_update("conn-1"), an_update("conn-2")]
+
+    def read_message_events(self, body: bytes) -> list[MessageEvent]:
+        return [
+            MessageEvent(
+                kind=MessageEventKind.READ,
+                platform="pusher",
+                connection_id="conn-1",
+                conversation_id="person-1",
+                person=Person(
+                    id="person-1",
+                    handle=None,
+                    display_name=None,
+                    avatar_url=None,
+                    url=None,
+                ),
+                happened_at=datetime(2026, 1, 5, tzinfo=UTC),
+                message_id="m1",
+            )
+        ]
 
     def answer_setup_check(
         self,
@@ -2089,6 +2110,23 @@ class TestRequestsANetworkSendsUs:
             sc.read_updates("fake", b"{}")
 
         assert "fake" in str(refused.value)
+
+    def test_every_message_event_in_one_request_comes_back(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        found = sc.read_message_events("pusher", b"{}")
+
+        assert [event.kind for event in found] == [MessageEventKind.READ]
+        assert found[0].message_id == "m1"
+
+    def test_a_network_that_pushes_no_messages_says_so(self) -> None:
+        sc = SocialChimp(InMemoryStorage())
+
+        with pytest.raises(NotSupportedError) as refused:
+            sc.read_message_events("fake", b"{}")
+
+        assert "fake" in str(refused.value)
+        assert "read_messages" in str(refused.value)
 
 
 class TestGoingDirect:

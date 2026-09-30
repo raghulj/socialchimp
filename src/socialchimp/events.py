@@ -12,6 +12,9 @@ Your code should never need to know which of those actually happened.
 The pieces:
 
 - `Update` and `UpdateKind` - what happened, in one shape.
+- `MessageEvent` and `MessageEventKind` - what happened in a direct message
+  conversation, pushed to us, carrying the same `Message` and `Conversation`
+  that reading the conversation back would give.
 - `verify_hmac_sha256`, `verify_shared_secret`, `check_not_too_old` and
   `answer_setup_check` - proving a request really came from the network.
 - `SeenUpdates` and `InMemorySeenUpdates` - not handling the same update
@@ -34,7 +37,13 @@ from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from socialchimp.errors import SignatureError
-from socialchimp.models import Person, RawData, require_timezone
+from socialchimp.models import (
+    Conversation,
+    Message,
+    Person,
+    RawData,
+    require_timezone,
+)
 
 __all__ = [
     "DeliverUpdate",
@@ -42,6 +51,8 @@ __all__ = [
     "FetchUpdates",
     "Handler",
     "InMemorySeenUpdates",
+    "MessageEvent",
+    "MessageEventKind",
     "Poller",
     "SaveMarker",
     "SeenUpdates",
@@ -318,6 +329,94 @@ class UpdateBatch:
     updates: tuple[Update, ...]
     marker: str | None
     more: bool
+
+
+class MessageEventKind(Enum):
+    """What happened in a direct message conversation.
+
+    The values are socialchimp's own words, the same on every network.
+    """
+
+    RECEIVED = "received"
+    """The other person sent a message."""
+
+    SENT = "sent"
+    """The connected account sent a message. It may have come from this
+    app, another app, or the network's own app - Meta sends it back to you
+    either way (an "echo")."""
+
+    DELETED = "deleted"
+    """The other person took a message back ("unsent" it). The message is
+    still handed over, with `deleted` set and no words, so an inbox can show
+    that something was there rather than quietly losing it."""
+
+    REACTED = "reacted"
+    """Someone reacted to a message, such as with a heart."""
+
+    UNREACTED = "unreacted"
+    """Someone took a reaction back."""
+
+    READ = "read"
+    """The other person has read the conversation, up to `message_id`."""
+
+    BUTTON_TAPPED = "button_tapped"
+    """The other person tapped a button the account sent them. The button's
+    words are on `message`, and the value it was sent with on `payload`."""
+
+
+@dataclass(frozen=True, slots=True)
+class MessageEvent:
+    """One thing that happened in a direct message conversation.
+
+    Built from a request the network pushed to us, and carrying the same
+    `Message` and `Conversation` that `Account.read_messages` and
+    `Account.read_conversations` hand back - so an app can take messages in
+    from a push and from reading, and store them the same way.
+
+    Attributes:
+        kind: What happened.
+        platform: Which network it happened on.
+        connection_id: Which of your connections it concerns.
+        conversation_id: Which conversation, in the same form
+            `read_conversations` uses for `Conversation.id`.
+        person: The other person in the conversation - not the connected
+            account, even on `SENT`.
+        happened_at: When the network says it happened.
+        message_id: The message this is about. On `READ`, the newest message
+            that has been read. `None` when the network did not say.
+        message: The message itself, on `RECEIVED`, `SENT`, `DELETED` and
+            `BUTTON_TAPPED`.
+        conversation: What is known about the conversation from this event
+            alone, such as when the reply window now closes. Only on
+            `RECEIVED` and `BUTTON_TAPPED`, where the other person has just
+            written.
+        reaction: The reaction, on `REACTED` and `UNREACTED` - an emoji
+            where the network sends one, otherwise the network's own word
+            for it, such as `"love"`.
+        payload: The value a tapped button, or a quick reply, was sent with.
+        raw: The network's untouched event, for anything we did not model.
+    """
+
+    kind: MessageEventKind
+    platform: str
+    connection_id: str
+    conversation_id: str
+    person: Person
+    happened_at: datetime
+    message_id: str | None = None
+    message: Message | None = None
+    conversation: Conversation | None = None
+    reaction: str | None = None
+    payload: str | None = None
+    raw: RawData = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """Check the time has a timezone.
+
+        Raises:
+            ConfigError: If `happened_at` has no timezone.
+        """
+        require_timezone(self.happened_at, "happened_at")
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:

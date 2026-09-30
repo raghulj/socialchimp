@@ -266,13 +266,80 @@ involved anywhere, and signing in never asks which account.
   and puts the answer in `limits().posts_left_today`.
 - **Captions**: 2,200 characters, up to 30 hashtags.
 - **No scheduling, and no deleting** — neither exists in the API.
-- **Webhooks work**: comments, mentions, live comments, story insights.
+- **Webhooks work**: comments, mentions, live comments, story insights, and
+  direct messages (see below).
 - **Refresh is real, unlike the Facebook-linked flow.** One request, no app
   secret, and the token is good for another sixty days. Meta's own
   documentation names no minimum token age before it allows this - unlike
   Threads' documented 24 hours - so socialchimp uses a rule of its own rather
   than guess: it only asks once 30 days or less remain, and hands back the
   same token unchanged if you call `refresh` earlier than that.
+
+### Direct messages
+
+Added in 0.10.0. Needs `instagram_business_manage_messages`, which has been in
+`DEFAULT_SCOPES` since the start, so existing connections do not need to sign
+in again. Meta's own pages for each part are linked at the top of
+`socialchimp/platforms/_instagram_messages.py`.
+
+- **`account.read_conversations()`** lists conversations with their newest
+  messages
+  ([Conversations API](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/conversations-api)).
+  **`account.read_messages(conversation_id)`** reads one conversation, newest
+  first. **`account.send_message(conversation_id, text)`** answers
+  ([Messaging API](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api)).
+  **`account.mark_read(conversation_id)`** sends Messenger's `mark_seen`.
+- **A conversation's id is the other person's Instagram-scoped id** (IGSID),
+  the same as `Person.id`. A pushed message only names the people in it, never
+  Meta's conversation id, so this is the id that lets messages you read back
+  and messages pushed to you land in the same conversation. Meta's own
+  conversation id is on `Conversation.raw["id"]`.
+- **Only the 20 newest messages can be read back.** Meta gives no details of
+  older ones, so `read_messages` never returns a next page, and
+  `full_history` is `False`.
+- **The business cannot write first.** There is no `start_conversation`, and
+  `Feature.START_CONVERSATIONS` is off.
+- **The reply window is 24 hours from the person's last message.**
+  `Conversation.can_reply_until` says when it closes, and sending after that
+  raises `ReplyWindowClosedError` (error 10, subcode 2534022 or 2018278). An
+  app Meta has approved for the `HUMAN_AGENT` tag, for replies written by a
+  person, gets 7 days: build the platform with
+  `InstagramPlatform(human_agent=True)` and every message goes out tagged, or
+  pass `options={"tag": "HUMAN_AGENT"}` on one message.
+- **Other refusals are typed:** someone who cannot be messaged (551, or 10 /
+  2018108) is a `BlockedError`; slowing down (4, 17, 32, 613) is a
+  `RateLimitError`; no messaging permission, or the owner turning off the
+  app's access to their messages (200 / 2534041), is a
+  `MissingPermissionError`.
+- **Text only, 1000 bytes at most** (bytes of UTF-8, not characters). Sending
+  attachments is not supported yet; reading them is.
+- **Attachments are typed** by `Attachment.kind`: `image`, `video`, `audio`,
+  `file`, `share`, `reel`, `story_mention` and `story_reply`. Instagram
+  signs its file addresses and they stop working after a while, so copy
+  anything you need to keep.
+- **Pushed messages.** `sc.read_message_events("instagram", body)` turns a
+  checked webhook into `MessageEvent`s: `RECEIVED`, `SENT` (the account's own
+  message, from any app - Meta's "echo"), `DELETED` (unsent, still handed
+  over with `deleted=True`), `REACTED`, `UNREACTED`, `READ` and
+  `BUTTON_TAPPED`. Each carries the same `Message` and, for a new message,
+  a `Conversation` with its reply window. `sc.read_updates` also turns each
+  new message into a `MESSAGE_RECEIVED` update. In the Meta dashboard,
+  subscribe to the `messages`, `message_echoes`, `message_reactions`,
+  `messaging_seen` and `messaging_postbacks` fields
+  ([webhooks](https://developers.facebook.com/docs/instagram-platform/webhooks)).
+  A pushed person has only an id; `read_conversations` gives their username.
+- **`send_message` sends once, and never tries again** after a timeout or a
+  5xx: Meta may have delivered it already, and nothing stops a second copy.
+  Look at the conversation before sending again.
+- **`can_reply_until` can be late on a busy conversation.**
+  `read_conversations` reads each conversation's 10 newest messages. If none
+  of those are the person's, their last message is older still, and the
+  window given is the latest it could close. `send_message` still raises
+  `ReplyWindowClosedError` if it has in fact closed.
+- **Checked against Meta's documentation, not yet a live account:** the
+  message fields beyond `id,created_time,from,to,message` (`attachments`,
+  `shares`, `story`, `is_unsupported`, `reactions`) and `mark_seen` come from
+  the Messenger Platform side, which Instagram's own pages do not list.
 
 ## TikTok
 

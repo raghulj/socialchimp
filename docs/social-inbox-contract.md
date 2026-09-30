@@ -3,6 +3,9 @@
 v1.1 change: `account.features` is an async method, not a property (see section 8).
 v1.2 clarifications, found in review (the surface is unchanged): Mastodon reply visibility, direct messages checked
 first when classifying updates, and the `status:` conversation id fallback.
+v1.4 (0.10.0, Instagram): an Instagram conversation id is the other person's IGSID (webhooks never carry
+Meta's conversation id); pushed messages come through the new `CanReadPushedMessages.read_message_events` as
+`MessageEvent`s rather than the reserved `CanReadPushedUpdatesFor`, which stays reserved.
 v1.3 (from review): `PostResult.cid` comes after `raw`; an unknown marker raises `ConfigError`; a Bluesky quote's
 `about_post_id` is the quoted post (from `reasonSubject`); a repeat delivery is possible, a lost update is not.
 
