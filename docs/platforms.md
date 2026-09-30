@@ -328,6 +328,18 @@ in again. Meta's own pages for each part are linked at the top of
   `messaging_seen` and `messaging_postbacks` fields
   ([webhooks](https://developers.facebook.com/docs/instagram-platform/webhooks)).
   A pushed person has only an id; `read_conversations` gives their username.
+- **`send_message` sends once, and never tries again** after a timeout or a
+  5xx: Meta may have delivered it already, and nothing stops a second copy.
+  Look at the conversation before sending again.
+- **`can_reply_until` can be late on a busy conversation.**
+  `read_conversations` reads each conversation's 10 newest messages. If none
+  of those are the person's, their last message is older still, and the
+  window given is the latest it could close. `send_message` still raises
+  `ReplyWindowClosedError` if it has in fact closed.
+- **Checked against Meta's documentation, not yet a live account:** the
+  message fields beyond `id,created_time,from,to,message` (`attachments`,
+  `shares`, `story`, `is_unsupported`, `reactions`) and `mark_seen` come from
+  the Messenger Platform side, which Instagram's own pages do not list.
 
 ## TikTok
 

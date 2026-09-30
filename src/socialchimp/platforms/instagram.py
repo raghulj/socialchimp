@@ -173,7 +173,7 @@ from socialchimp.features import (
     check_option_names,
     check_post,
 )
-from socialchimp.http import HttpClient, read_body
+from socialchimp.http import HttpClient, Retries, read_body
 from socialchimp.models import (
     AccountProfile,
     Connection,
@@ -224,7 +224,6 @@ from socialchimp.platforms._meta import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from socialchimp.http import Retries
     from socialchimp.models import AppCredentials
 
 __all__ = ["InstagramPlatform", "instagram_errors"]
@@ -1299,7 +1298,13 @@ class InstagramPlatform:
         """
         return self._usage
 
-    def _graph(self, token: str | None = None, *, at: str = IG_GRAPH_API) -> Graph:
+    def _graph(
+        self,
+        token: str | None = None,
+        *,
+        at: str = IG_GRAPH_API,
+        once: bool = False,
+    ) -> Graph:
         """Start a conversation with Instagram.
 
         Args:
@@ -1308,6 +1313,10 @@ class InstagramPlatform:
             at: Which host to talk to. The versioned one for ordinary
                 requests; `IG_GRAPH_HOST` for the two addresses that make a
                 token last and renew it, which carry no version.
+            once: Send each request once, and never again after a timeout
+                or a 5xx. For sending a direct message, which Meta may have
+                delivered before it failed to answer, and which nothing
+                stops it delivering twice.
 
         Returns:
             A conversation. Use it in an `async with` block so it closes
@@ -1321,7 +1330,7 @@ class InstagramPlatform:
                 headers=headers,
                 timeout=self._timeout,
                 transport=self._transport,
-                retries=self._retries,
+                retries=Retries(attempts=1) if once else self._retries,
                 errors=instagram_errors,
             ),
             platform=PLATFORM_NAME,
@@ -2067,6 +2076,8 @@ class InstagramPlatform:
         connection: Connection,
         method: str,
         path: str,
+        *,
+        once: bool = False,
         **kwargs: object,
     ) -> RawData:
         """Send one direct message request, naming its refusals exactly.
@@ -2075,6 +2086,7 @@ class InstagramPlatform:
             connection: The account we are acting as.
             method: `"GET"` or `"POST"`.
             path: Joined onto Instagram's address.
+            once: Never try again - see `_graph`.
             **kwargs: Anything `HttpClient.request` takes.
 
         Returns:
@@ -2085,7 +2097,7 @@ class InstagramPlatform:
                 comes out as `MissingPermissionError` naming the messaging
                 permission.
         """
-        async with self._graph(connection.token.access_token) as graph:
+        async with self._graph(connection.token.access_token, once=once) as graph:
             try:
                 return await _ask(graph, method, path, **kwargs)
             except SocialChimpError as refused:
@@ -2199,7 +2211,8 @@ class InstagramPlatform:
             )
             raise ConfigError(message)
 
-        wanted = min(limit or MOST_MESSAGES_WITH_DETAILS, MOST_MESSAGES_WITH_DETAILS)
+        wanted = MOST_MESSAGES_WITH_DETAILS if limit is None else limit
+        wanted = max(1, min(wanted, MOST_MESSAGES_WITH_DETAILS))
         reply = await self._about_messages(
             connection,
             "GET",
@@ -2240,7 +2253,10 @@ class InstagramPlatform:
         Args:
             connection: The account to send as.
             conversation_id: The other person's Instagram-scoped id.
-            text: The words - at most 1000 bytes of UTF-8.
+            text: The words - at most 1000 bytes of UTF-8. Sent once, never
+                again after a timeout or a 5xx: Meta may already have
+                delivered it, so check the conversation before sending
+                again.
             options: `{"tag": "HUMAN_AGENT"}` to send with that tag, or
                 `{"tag": None}` for no tag on a `human_agent=True` platform.
                 Nothing else.
@@ -2269,8 +2285,10 @@ class InstagramPlatform:
             body["messaging_type"] = "MESSAGE_TAG"
             body["tag"] = tag
 
+        # Sent once only: a message Meta delivered before a timeout or a 5xx
+        # would go out twice if we asked again.
         reply = await self._about_messages(
-            connection, "POST", "/me/messages", json=body
+            connection, "POST", "/me/messages", once=True, json=body
         )
         return Message(
             id=required_text(

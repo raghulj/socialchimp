@@ -24,6 +24,7 @@ from socialchimp import (
     NotFoundError,
     RateLimitError,
     ReplyWindowClosedError,
+    SocialChimpError,
     Token,
     UpdateKind,
 )
@@ -720,6 +721,50 @@ class TestSendingAMessage:
         with pytest.raises(InvalidPostError, match="1000"):
             await platform.send_message(account, ADA, "\N{BREAD}" * 251)
 
+    async def test_a_message_is_never_sent_twice_by_trying_again(
+        self, account: Connection, network: respx.Router
+    ) -> None:
+        # Meta may have delivered it before the 503, and there is no way to
+        # ask it not to deliver the same message twice.
+        platform = InstagramPlatform(retries=Retries(attempts=3))
+        route = network.post("/me/messages").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(200, json=fixture("send_message.json")),
+            ]
+        )
+
+        with pytest.raises(SocialChimpError):
+            await platform.send_message(account, ADA, "Hi")
+
+        assert route.call_count == 1
+
+    async def test_reading_still_tries_again(
+        self, account: Connection, network: respx.Router
+    ) -> None:
+        platform = InstagramPlatform(retries=Retries(attempts=2, first_wait=0))
+        route = network.get("/me/conversations").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(200, json={"data": []}),
+            ]
+        )
+
+        await platform.read_conversations(account)
+
+        assert route.call_count == 2
+
+    async def test_a_limit_below_one_asks_for_one(
+        self, platform: InstagramPlatform, account: Connection, network: respx.Router
+    ) -> None:
+        route = network.get("/me/conversations").mock(
+            return_value=httpx.Response(200, json=one_conversation())
+        )
+
+        await platform.read_messages(account, ADA, limit=0)
+
+        assert "messages.limit(1)" in route.calls[0].request.url.params["fields"]
+
     async def test_a_reply_with_no_id_says_so(
         self, platform: InstagramPlatform, account: Connection, network: respx.Router
     ) -> None:
@@ -1085,6 +1130,12 @@ class TestPushedMessages:
             {"sender": "not an object", "read": {"mid": "m1"}},
             {"sender": {"id": ADA}, "message": {"text": "no mid"}},
             {"sender": {"id": ADA}, "postback": "not an object"},
+            {"sender": {"id": None}, "read": {"mid": "m1"}},
+            {"sender": {"id": ""}, "read": {"mid": "m1"}},
+            {
+                "sender": {"id": IG_ID},
+                "message": {"mid": "m1", "text": "Hi", "is_echo": True},
+            },
         ],
     )
     def test_what_it_cannot_make_sense_of_is_left_out(
@@ -1093,6 +1144,30 @@ class TestPushedMessages:
         body = {"entry": [{"id": IG_ID, "time": 1, "messaging": [event]}]}
 
         assert platform.read_message_events(json.dumps(body).encode()) == []
+
+    @pytest.mark.parametrize(
+        "moment", [1e300, float("nan"), 99_999_999_999_999_999, -99_999_999_999_999]
+    )
+    def test_a_time_that_cannot_be_a_time_is_stamped_as_it_arrives(
+        self, platform: InstagramPlatform, moment: float
+    ) -> None:
+        body = json.loads(pushed("seen"))
+        body["entry"][0]["time"] = moment
+        body["entry"][0]["messaging"][0]["timestamp"] = moment
+
+        [event] = platform.read_message_events(json.dumps(body).encode())
+
+        assert event.happened_at.tzinfo is not None
+
+    def test_an_id_sent_as_a_number_is_read_as_text(
+        self, platform: InstagramPlatform
+    ) -> None:
+        body = json.loads(pushed("seen"))
+        body["entry"][0]["messaging"][0]["sender"]["id"] = int(ADA)
+
+        [event] = platform.read_message_events(json.dumps(body).encode())
+
+        assert event.conversation_id == ADA
 
     def test_a_postback_with_no_mid_still_arrives(
         self, platform: InstagramPlatform

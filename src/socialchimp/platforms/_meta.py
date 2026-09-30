@@ -1517,7 +1517,12 @@ def _moment(value: object) -> datetime | None:
     seconds = float(value)
     if seconds > _SURELY_MILLISECONDS:
         seconds /= 1000
-    return datetime.fromtimestamp(seconds, UTC)
+    try:
+        return datetime.fromtimestamp(seconds, UTC)
+    except (OverflowError, ValueError, OSError):
+        # Not a moment at all - NaN, infinity, or past the year 9999. Python
+        # reads NaN and Infinity as JSON numbers, so this can arrive.
+        return None
 
 
 def messaging_in(body: bytes, *, platform: str) -> list[Messaging]:

@@ -677,7 +677,12 @@ def _somebody(event: RawData, key: str) -> str | None:
         The id, or `None`.
     """
     found = event.get(key)
-    return _text(str(found.get("id", ""))) if isinstance(found, dict) else None
+    if not isinstance(found, dict):
+        return None
+    person_id = found.get("id")
+    if isinstance(person_id, int) and not isinstance(person_id, bool):
+        return str(person_id)
+    return _text(person_id)
 
 
 def _someone(person_id: str) -> Person:
@@ -839,7 +844,8 @@ def _from_message(
         window: 24 hours, or 7 days for a `HUMAN_AGENT` app.
 
     Returns:
-        The event, or `None` when the message has no `mid`.
+        The event, or `None` when the message has no `mid`, or is an echo
+        with no recipient.
     """
     message_id = _text(raw.get("mid"))
     if message_id is None:
@@ -847,7 +853,11 @@ def _from_message(
     echo = raw.get("is_echo") is True
     deleted = raw.get("is_deleted") is True
     # On an echo the account sent it, and the person is the recipient.
-    other = (_somebody(item.event, "recipient") if echo else None) or sender
+    other = _somebody(item.event, "recipient") if echo else sender
+    if other is None:
+        # An echo that does not say who it went to belongs to no
+        # conversation we could name.
+        return None
     account = _someone(item.account_id)
     message = Message(
         id=message_id,
