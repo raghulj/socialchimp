@@ -124,6 +124,7 @@ from socialchimp.events import Update, UpdateBatch
 from socialchimp.features import (
     Feature,
     Limits,
+    MessageLimits,
     TextCount,
     check_option_names,
     check_post,
@@ -188,6 +189,20 @@ MAX_GRAPHEMES: Final = 300
 
 MAX_TEXT_BYTES: Final = 3000
 """Bytes allowed in a post once written out. Emoji use several each."""
+
+MESSAGE_LIMITS: Final = MessageLimits(
+    max_text_length=1000,
+    max_text_bytes=10_000,
+    text_counted_in=TextCount.GRAPHEMES,
+)
+"""What one direct message may hold: words only, 1000 letters and 10,000 bytes.
+
+From `chat.bsky.convo.defs#messageInput`, whose `text` has `maxGraphemes`
+1000 and `maxLength` 10000, and whose `embed` takes only a post
+(`app.bsky.embed.record`) or a group-chat join link - no pictures or video,
+so Bluesky has no `Feature.MESSAGE_MEDIA`. See
+https://github.com/bluesky-social/atproto/blob/main/lexicons/chat/bsky/convo/defs.json
+"""
 
 MAX_IMAGES: Final = 4
 """Pictures allowed on one post."""
@@ -1945,6 +1960,7 @@ class BlueskyPlatform:
             text_counted_in=TextCount.GRAPHEMES,
             max_images=MAX_IMAGES,
             max_image_bytes=MAX_IMAGE_BYTES,
+            messages=MESSAGE_LIMITS,
         )
 
     async def start_login(self, request: LoginRequest) -> AskForDetails:
