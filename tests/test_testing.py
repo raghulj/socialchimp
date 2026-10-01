@@ -856,10 +856,23 @@ class TestTheMessageLimitsCheck:
     async def test_claiming_attachments_with_no_message_limits_is_refused(
         self,
     ) -> None:
-        message = await self.run(FakePlatform(limits=Limits()))
+        platform = FakePlatform(limits=Limits())
+        platform.features |= Feature.MESSAGE_MEDIA
+
+        message = await self.run(platform)
 
         assert "MESSAGE_MEDIA" in message
         assert "None" in message
+
+    async def test_a_fake_given_limits_without_messages_drops_the_claim(
+        self,
+    ) -> None:
+        # So a 0.10.0 test that built FakePlatform(limits=Limits(...)) still
+        # passes every check.
+        platform = FakePlatform(limits=Limits(max_text_length=50))
+
+        assert Feature.MESSAGE_MEDIA not in platform.features
+        await getattr(checks_for(platform, connection=a_connection()), self.name)()
 
     async def test_no_message_limits_and_no_claim_is_fine(self) -> None:
         platform = FakePlatform(

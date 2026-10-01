@@ -1014,6 +1014,11 @@ class FakePlatform:
         self.marked_seen: list[str] = []
         self.sent_messages: list[Message] = []
         self.marked_read: list[str] = []
+        if limits is not None and limits.messages is None:
+            # Limits that say nothing about messages cannot back a claim to
+            # send files in one, so the claim goes - which keeps a fake built
+            # with its own Limits before 0.11.0 passing every check.
+            self.features &= ~Feature.MESSAGE_MEDIA
         self._limits = (
             limits
             if limits is not None

@@ -45,6 +45,14 @@ video it gave up on (2018294).
   `.pdf`) used to raise `InvalidPostError` because it could not tell the
   kind. It now makes an `AUDIO` or `FILE` media, and publishing one is
   refused by `check_post` with `NotSupportedError` instead.
+- `Media.from_url(...).filename` is now the last part of the address's path,
+  without the `?query` - `".../loaf.jpg?sig=1"` gives `"loaf.jpg"`, not
+  `"loaf.jpg?sig=1"`.
+
+`check_message` checks a file's type only when you give it
+(`mime_type=...`): a type guessed from the file name differs between
+machines, so a guess is left to the network rather than refusing a file it
+would take.
 
 ## 0.10.0 - 2026-10-01
 

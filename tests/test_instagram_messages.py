@@ -1445,7 +1445,7 @@ class TestSendingAttachments:
     async def test_a_gif_is_refused_before_sending(
         self, platform: InstagramPlatform, account: Connection
     ) -> None:
-        gif = Media.from_url("https://files.example/dance.gif")
+        gif = Media.from_url("https://files.example/dance.gif", mime_type="image/gif")
 
         with pytest.raises(InvalidPostError, match="image/gif"):
             await platform.send_message_with_media(account, ADA, "", (gif,))

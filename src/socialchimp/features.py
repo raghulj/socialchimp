@@ -368,7 +368,10 @@ class AttachmentRule:
         kind: The kind of file this is about.
         mime_types: The types it takes, such as `"image/jpeg"`. Empty when
             the network does not say, which means "not checked here", never
-            "none".
+            "none". `check_message` checks a file's type against these only
+            when the caller gave it (`Media.from_url(..., mime_type=...)`);
+            a type guessed from the name is left to the network, because
+            the guess differs between machines.
         max_bytes: The largest file it takes, when known.
         max_count: The most of this kind in one message, when known.
     """
@@ -810,6 +813,20 @@ def _check_message_text(text: str, platform: str, limits: MessageLimits) -> None
             raise InvalidPostError(message)
 
 
+def _plain_type(mime_type: str | None) -> str | None:
+    """Reduce a MIME type to its plain form, for comparing two of them.
+
+    Args:
+        mime_type: Such as `"Audio/MP4; codecs=mp4a"`.
+
+    Returns:
+        Such as `"audio/mp4"`, or `None` when there was none.
+    """
+    if mime_type is None:
+        return None
+    return mime_type.split(";", 1)[0].strip().lower()
+
+
 def _check_message_file(item: Media, platform: str, limits: MessageLimits) -> None:
     """Check one attached file against the network's rule for its kind.
 
@@ -848,10 +865,15 @@ def _check_message_file(item: Media, platform: str, limits: MessageLimits) -> No
             ),
         )
 
-    known = item.known_type
-    if rule.mime_types and known is not None and known not in rule.mime_types:
+    # Only a type the caller gave is checked. A type guessed from the name
+    # differs between machines - Python calls an .m4a "audio/mp4a-latm" on
+    # one and "audio/mp4" on another - and must never refuse a file the
+    # network would have taken; the network judges those itself.
+    given = _plain_type(item.mime_type)
+    allowed = {_plain_type(kind) for kind in rule.mime_types}
+    if rule.mime_types and given is not None and given not in allowed:
         message = (
-            f"{platform} does not take {known} in a message. For "
+            f"{platform} does not take {given} in a message. For "
             f"{_KIND_IN_WORDS[item.kind]} it takes {', '.join(rule.mime_types)}."
         )
         raise InvalidPostError(message)

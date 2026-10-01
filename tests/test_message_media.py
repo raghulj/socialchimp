@@ -243,10 +243,25 @@ class TestCheckingAMessage:
             check_message("", mixed, platform="insta", limits=instagram_like())
 
     def test_a_type_the_network_does_not_take_is_refused(self) -> None:
-        gif = Media.from_url("https://files.example/dance.gif")
+        gif = Media.from_url("https://files.example/dance.gif", mime_type="image/gif")
 
         with pytest.raises(InvalidPostError, match="image/gif"):
             check_message("", (gif,), platform="insta", limits=instagram_like())
+
+    def test_a_given_type_is_read_whatever_its_case_and_extras(self) -> None:
+        pdf = Media.from_url(
+            "https://f.example/m", mime_type="Application/PDF; charset=binary"
+        )
+
+        check_message("", (pdf,), platform="insta", limits=instagram_like())
+
+    def test_a_type_only_guessed_from_the_name_is_left_to_the_network(self) -> None:
+        # Python's guess for a name differs between machines - one calls an
+        # .m4a "audio/mp4a-latm" - so a guess never refuses a file the
+        # network would have taken.
+        gif = Media.from_url("https://files.example/dance.gif")
+
+        check_message("", (gif,), platform="insta", limits=instagram_like())
 
     def test_a_type_that_cannot_be_told_is_left_to_the_network(self) -> None:
         unknown = Media.from_url("https://f.example/x", kind=MediaKind.IMAGE)
