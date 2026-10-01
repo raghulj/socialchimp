@@ -104,6 +104,13 @@ registered on mastodon.social means nothing on fosstodon.org.
   of the conversation's last status and keeps what it finds —
   `Conversation.full_history` is `False` to say so, and there is no further
   page to ask for.
+- **Direct messages can carry pictures, a video or a sound** (0.11.0), with
+  `send_message(..., media=...)`. A direct message is a status, so it takes
+  what a post on that server takes: up to `max_media_attachments` pictures,
+  or one video or sound, never mixed, of the server's own
+  `supported_mime_types` - all on `(await account.limits()).messages`. The
+  files are uploaded first, so each has to be a `Media.from_file` or
+  `Media.from_bytes`; Mastodon does not fetch a web address.
 - **`push` is now in the default scopes**, ready for Web Push in a later
   release. An account connected before 0.8.0 needs to reconnect before that
   lands; posting, replying and reading all keep working with "read write"
@@ -145,6 +152,10 @@ you to a portal that does not exist.
   password, and it cannot be turned on for one after the fact — a new app
   password has to be made with the box ticked. Without it every DM call
   raises `MissingPermissionError(needs="direct messages")`.
+- **Direct messages are words only**: up to 1000 letters (10,000 bytes), on
+  `(await account.limits()).messages`. Bluesky's chat takes no pictures or
+  video, so there is no `Feature.MESSAGE_MEDIA` and `send_message(...,
+  media=...)` raises `NotSupportedError`.
 - **A quote's `about_post_id` is the quoted post.** A quote otherwise arrives
   as `UpdateKind.MENTION` — quoting is not replying, so it is folded into the
   same "somebody is talking about you" shape mentions already have, rather
@@ -311,8 +322,28 @@ in again. Meta's own pages for each part are linked at the top of
   `RateLimitError`; no messaging permission, or the owner turning off the
   app's access to their messages (200 / 2534041), is a
   `MissingPermissionError`.
-- **Text only, 1000 bytes at most** (bytes of UTF-8, not characters). Sending
-  attachments is not supported yet; reading them is.
+- **Words: 1000 bytes at most** (bytes of UTF-8, not characters).
+- **Sending files** (0.11.0): `account.send_message(conversation_id, text,
+  media=(Media.from_url(...),))`. Instagram fetches each file itself, so
+  every one has to be a web address it can reach - a signed link to object
+  storage works; give it minutes, not seconds. Up to 10 pictures (PNG or
+  JPEG, 8 MB each) together, or one video (mp4, ogg, avi, mov, webm), sound
+  (aac, m4a, wav, mp4) or PDF, up to 25 MB, never mixed. All of it is on
+  `(await account.limits()).messages` and on
+  `socialchimp.platforms.instagram.MESSAGE_LIMITS`, and checked before
+  anything is sent. The words go as **a second message**: the attachments
+  first, then the words, and the call hands back the attachment message
+  with the words' message on `Message.also_sent`. Refusals of a file are an
+  `InvalidPostError` saying which: could not fetch it (2018008), too big
+  (2018109), wrong type (2018047), a video it gave up on (2018294). See
+  "Send Images" and "Send audio, video or file" on the
+  [Messaging API](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api)
+  page.
+- **Receiving files**: the addresses on a received `Attachment` are signed
+  `lookaside.fbsbx.com` links. A plain GET with no token fetches them while
+  the signature is good; Meta says neither how long that is nor asks for
+  anything else, so copy them as they arrive. Never send your access token
+  to that host.
 - **Attachments are typed** by `Attachment.kind`: `image`, `video`, `audio`,
   `file`, `share`, `reel`, `story_mention` and `story_reply`. Instagram
   signs its file addresses and they stop working after a while, so copy

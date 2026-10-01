@@ -14,6 +14,19 @@ actually supports.
 
 ::: socialchimp.features.Limits
 
+## What a direct message may carry
+
+Added in 0.11.0. `Limits.messages` says what one direct message may hold -
+its words, and which files, of which types and sizes, how many - so an app
+can show it before somebody picks a file. `check_message` is the check
+every platform runs before sending one.
+
+::: socialchimp.features.MessageLimits
+
+::: socialchimp.features.AttachmentRule
+
+::: socialchimp.features.check_message
+
 ## How text is counted
 
 Hardly any network means "characters" when it says "300". `TextCount` says

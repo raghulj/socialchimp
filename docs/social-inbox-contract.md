@@ -3,6 +3,9 @@
 v1.1 change: `account.features` is an async method, not a property (see section 8).
 v1.2 clarifications, found in review (the surface is unchanged): Mastodon reply visibility, direct messages checked
 first when classifying updates, and the `status:` conversation id fallback.
+v1.5 (0.11.0): files in direct messages through a new `CanSendMessageMedia.send_message_with_media` extra
+(`Feature.MESSAGE_MEDIA`); `Limits.messages: MessageLimits`; `Message.also_sent` for networks that split one
+send into several messages (Instagram: attachments, then words).
 v1.4 (0.10.0, Instagram): an Instagram conversation id is the other person's IGSID (webhooks never carry
 Meta's conversation id); pushed messages come through the new `CanReadPushedMessages.read_message_events` as
 `MessageEvent`s rather than the reserved `CanReadPushedUpdatesFor`, which stays reserved.
