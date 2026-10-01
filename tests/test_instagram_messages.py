@@ -18,27 +18,34 @@ from socialchimp import (
     Connection,
     Feature,
     InvalidPostError,
+    Media,
+    MediaKind,
     MessageEventKind,
     MissingPermissionError,
     NotAllowedError,
     NotFoundError,
+    NotSupportedError,
     RateLimitError,
     ReplyWindowClosedError,
     SocialChimpError,
     Token,
     UpdateKind,
+    check_message,
 )
 from socialchimp.http import Retries
 from socialchimp.platform import (
     CanMessage,
     CanReadPushedMessages,
+    CanSendMessageMedia,
     CanStartConversations,
 )
 from socialchimp.platforms import instagram as instagram_module
 from socialchimp.platforms.instagram import (
     DEFAULT_SCOPES,
     IG_GRAPH_API,
+    MESSAGE_LIMITS,
     MESSAGES_PER_CONVERSATION,
+    MOST_MESSAGE_BYTES,
     MOST_MESSAGES_WITH_DETAILS,
     InstagramPlatform,
 )
@@ -1219,3 +1226,296 @@ class TestPushedMessagesAsUpdates:
         self, platform: InstagramPlatform, name: str
     ) -> None:
         assert platform.read_updates(pushed(name)) == []
+
+
+# ---------------------------------------------------------------------------
+# Sending pictures, video, sound and files
+# ---------------------------------------------------------------------------
+
+PICTURE = "https://files.example/uploads/loaf.jpg?X-Amz-Signature=abc&X-Amz-Expires=600"
+
+
+def attachment_reply(message_id: str = "mid-attachment") -> httpx.Response:
+    return httpx.Response(200, json={"recipient_id": ADA, "message_id": message_id})
+
+
+def attachment_error(name: str) -> httpx.Response:
+    found = fixture("send_attachment_errors.json")[name]
+    return httpx.Response(found["http_status"], json=found["body"])
+
+
+class TestWhatAMessageMayCarry:
+    def test_it_says_it_can_send_attachments(self, platform: InstagramPlatform) -> None:
+        assert Feature.MESSAGE_MEDIA in platform.features
+        assert isinstance(platform, CanSendMessageMedia)
+
+    async def test_the_limits_say_what_a_message_may_carry(
+        self, platform: InstagramPlatform, account: Connection, network: respx.Router
+    ) -> None:
+        network.get(f"/{IG_ID}/content_publishing_limit").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+
+        limits = await platform.limits(account)
+
+        messages = limits.messages
+        assert messages == MESSAGE_LIMITS
+        assert messages is not None
+        assert messages.max_text_bytes == MOST_MESSAGE_BYTES == 1000
+        assert messages.takes_web_addresses is True
+        assert messages.takes_files is False
+        assert messages.one_kind_at_a_time is True
+        image = messages.rule_for(MediaKind.IMAGE)
+        assert image is not None
+        assert image.max_count == 10
+        assert image.max_bytes == 8 * 1024 * 1024
+        assert "image/jpeg" in image.mime_types
+        pdf = messages.rule_for(MediaKind.FILE)
+        assert pdf is not None
+        assert pdf.mime_types == ("application/pdf",)
+        assert pdf.max_count == 1
+
+    @pytest.mark.parametrize(
+        ("name", "kind"),
+        [
+            ("clip.mov", MediaKind.VIDEO),
+            ("clip.avi", MediaKind.VIDEO),
+            ("note.m4a", MediaKind.AUDIO),
+            ("note.aac", MediaKind.AUDIO),
+            ("note.wav", MediaKind.AUDIO),
+            ("menu.pdf", MediaKind.FILE),
+            ("loaf.png", MediaKind.IMAGE),
+        ],
+    )
+    def test_every_format_instagram_lists_passes_the_check(
+        self, name: str, kind: MediaKind
+    ) -> None:
+        media = Media.from_url(f"https://files.example/{name}")
+
+        assert media.kind is kind
+        check_message("", (media,), platform="instagram", limits=MESSAGE_LIMITS)
+
+
+class TestSendingAttachments:
+    async def test_one_picture_goes_as_one_attachment(
+        self, platform: InstagramPlatform, account: Connection, network: respx.Router
+    ) -> None:
+        route = network.post("/me/messages").mock(return_value=attachment_reply())
+
+        sent = await platform.send_message_with_media(
+            account, ADA, "", (Media.from_url(PICTURE),)
+        )
+
+        assert json.loads(route.calls[0].request.content) == {
+            "recipient": {"id": ADA},
+            "message": {"attachment": {"type": "image", "payload": {"url": PICTURE}}},
+        }
+        assert sent.id == "mid-attachment"
+        assert sent.text == ""
+        assert sent.is_mine is True
+        assert sent.conversation_id == ADA
+        assert [(a.kind, a.url) for a in sent.attachments] == [("image", PICTURE)]
+        assert sent.also_sent == ()
+
+    async def test_several_pictures_go_together_in_one_message(
+        self, platform: InstagramPlatform, account: Connection, network: respx.Router
+    ) -> None:
+        route = network.post("/me/messages").mock(return_value=attachment_reply())
+        other = "https://files.example/uploads/crumb.png"
+
+        sent = await platform.send_message_with_media(
+            account, ADA, "", (Media.from_url(PICTURE), Media.from_url(other))
+        )
+
+        assert route.call_count == 1
+        assert json.loads(route.calls[0].request.content)["message"] == {
+            "attachments": [
+                {"type": "image", "payload": {"url": PICTURE}},
+                {"type": "image", "payload": {"url": other}},
+            ]
+        }
+        assert len(sent.attachments) == 2
+
+    @pytest.mark.parametrize(
+        ("name", "kind"),
+        [("proof.mp4", "video"), ("hello.m4a", "audio"), ("menu.pdf", "file")],
+    )
+    async def test_video_sound_and_files_go_one_at_a_time(
+        self,
+        platform: InstagramPlatform,
+        account: Connection,
+        network: respx.Router,
+        name: str,
+        kind: str,
+    ) -> None:
+        route = network.post("/me/messages").mock(return_value=attachment_reply())
+        address = f"https://files.example/{name}"
+
+        sent = await platform.send_message_with_media(
+            account, ADA, "", (Media.from_url(address),)
+        )
+
+        assert json.loads(route.calls[0].request.content)["message"] == {
+            "attachment": {"type": kind, "payload": {"url": address}}
+        }
+        assert sent.attachments[0].kind == kind
+
+    async def test_words_and_an_attachment_go_as_two_messages(
+        self, platform: InstagramPlatform, account: Connection, network: respx.Router
+    ) -> None:
+        route = network.post("/me/messages").mock(
+            side_effect=[attachment_reply("mid-picture"), attachment_reply("mid-words")]
+        )
+
+        sent = await platform.send_message_with_media(
+            account, ADA, "Fresh this morning", (Media.from_url(PICTURE),)
+        )
+
+        bodies = [json.loads(call.request.content) for call in route.calls]
+        assert "attachment" in bodies[0]["message"]
+        assert bodies[1]["message"] == {"text": "Fresh this morning"}
+        # The attachment goes first: if it is refused, nothing has gone out.
+        assert sent.id == "mid-picture"
+        assert sent.text == ""
+        [words] = sent.also_sent
+        assert words.id == "mid-words"
+        assert words.text == "Fresh this morning"
+        assert words.attachments == ()
+
+    async def test_a_tag_goes_on_every_message_it_sends(
+        self,
+        agent_platform: InstagramPlatform,
+        account: Connection,
+        network: respx.Router,
+    ) -> None:
+        route = network.post("/me/messages").mock(
+            side_effect=[attachment_reply("a"), attachment_reply("b")]
+        )
+
+        await agent_platform.send_message_with_media(
+            account, ADA, "Sorry for the wait", (Media.from_url(PICTURE),)
+        )
+
+        assert all(
+            json.loads(call.request.content)["tag"] == "HUMAN_AGENT"
+            for call in route.calls
+        )
+
+    async def test_words_refused_after_the_attachment_went_say_what_went(
+        self, platform: InstagramPlatform, account: Connection, network: respx.Router
+    ) -> None:
+        network.post("/me/messages").mock(
+            side_effect=[
+                attachment_reply("mid-picture"),
+                meta_error("rate_limit_app_4"),
+            ]
+        )
+
+        with pytest.raises(RateLimitError) as refused:
+            await platform.send_message_with_media(
+                account, ADA, "words", (Media.from_url(PICTURE),)
+            )
+
+        assert refused.value.raw["already_sent"] == ["mid-picture"]
+        assert "mid-picture" in str(refused.value)
+
+    async def test_an_attachment_is_never_sent_twice_by_trying_again(
+        self, account: Connection, network: respx.Router
+    ) -> None:
+        platform = InstagramPlatform(retries=Retries(attempts=3))
+        route = network.post("/me/messages").mock(
+            side_effect=[httpx.Response(503), attachment_reply()]
+        )
+
+        with pytest.raises(SocialChimpError):
+            await platform.send_message_with_media(
+                account, ADA, "", (Media.from_url(PICTURE),)
+            )
+
+        assert route.call_count == 1
+
+    async def test_a_file_on_disk_is_refused_before_sending(
+        self, platform: InstagramPlatform, account: Connection
+    ) -> None:
+        on_disk = Media.from_bytes(b"x", filename="loaf.jpg")
+
+        with pytest.raises(NotSupportedError, match="from_url"):
+            await platform.send_message_with_media(account, ADA, "", (on_disk,))
+
+    async def test_a_gif_is_refused_before_sending(
+        self, platform: InstagramPlatform, account: Connection
+    ) -> None:
+        gif = Media.from_url("https://files.example/dance.gif")
+
+        with pytest.raises(InvalidPostError, match="image/gif"):
+            await platform.send_message_with_media(account, ADA, "", (gif,))
+
+    async def test_mixing_kinds_is_refused_before_sending(
+        self, platform: InstagramPlatform, account: Connection
+    ) -> None:
+        mixed = (Media.from_url(PICTURE), Media.from_url("https://f.example/a.pdf"))
+
+        with pytest.raises(InvalidPostError, match="one kind"):
+            await platform.send_message_with_media(account, ADA, "", mixed)
+
+    async def test_an_unknown_option_is_refused_before_sending(
+        self, platform: InstagramPlatform, account: Connection
+    ) -> None:
+        with pytest.raises(InvalidPostError):
+            await platform.send_message_with_media(
+                account, ADA, "", (Media.from_url(PICTURE),), options={"colour": 1}
+            )
+
+    async def test_a_reply_with_no_id_says_so(
+        self, platform: InstagramPlatform, account: Connection, network: respx.Router
+    ) -> None:
+        network.post("/me/messages").mock(
+            return_value=httpx.Response(200, json={"recipient_id": ADA})
+        )
+
+        with pytest.raises(SocialChimpError, match="message_id"):
+            await platform.send_message_with_media(
+                account, ADA, "", (Media.from_url(PICTURE),)
+            )
+
+
+class TestWhenInstagramWillNotTakeTheFile:
+    @pytest.mark.parametrize(
+        ("name", "says"),
+        [
+            ("upload_failure_2018047", "type"),
+            ("url_fetch_failed_2018008", "fetch"),
+            ("size_exceeded_2018109", "too big"),
+            ("video_timeout_2018294", "75 seconds"),
+            ("attachment_id_invalid_2018074", "attachment"),
+        ],
+    )
+    async def test_each_refusal_says_what_is_wrong_with_the_file(
+        self,
+        platform: InstagramPlatform,
+        account: Connection,
+        network: respx.Router,
+        name: str,
+        says: str,
+    ) -> None:
+        network.post("/me/messages").mock(return_value=attachment_error(name))
+
+        with pytest.raises(InvalidPostError) as refused:
+            await platform.send_message_with_media(
+                account, ADA, "", (Media.from_url(PICTURE),)
+            )
+
+        assert refused.value.platform == "instagram"
+        assert says in str(refused.value)
+
+    async def test_an_expired_window_is_still_the_window(
+        self, platform: InstagramPlatform, account: Connection, network: respx.Router
+    ) -> None:
+        network.post("/me/messages").mock(
+            return_value=meta_error("outside_window_2534022")
+        )
+
+        with pytest.raises(ReplyWindowClosedError):
+            await platform.send_message_with_media(
+                account, ADA, "", (Media.from_url(PICTURE),)
+            )
