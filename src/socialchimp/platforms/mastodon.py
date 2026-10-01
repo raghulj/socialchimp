@@ -106,9 +106,12 @@ from socialchimp.errors import (
 )
 from socialchimp.events import Update, UpdateBatch
 from socialchimp.features import (
+    AttachmentRule,
     Feature,
     Limits,
+    MessageLimits,
     TextCount,
+    check_message,
     check_option_names,
     check_post,
 )
@@ -123,6 +126,7 @@ from socialchimp.models import (
     LikeResult,
     LinkKind,
     Media,
+    MediaKind,
     Message,
     Page,
     Person,
@@ -572,17 +576,97 @@ def _limits_from_instance(reply: RawData) -> Limits:
     statuses = _section(configuration, "statuses")
     attachments = _section(configuration, "media_attachments")
 
+    max_characters = _number(statuses, "max_characters", DEFAULT_MAX_CHARACTERS)
+    max_media = _number(statuses, "max_media_attachments", DEFAULT_MAX_MEDIA)
+    image_bytes = _number(attachments, "image_size_limit", None)
+    video_bytes = _number(attachments, "video_size_limit", None)
     return Limits(
-        max_text_length=_number(statuses, "max_characters", DEFAULT_MAX_CHARACTERS),
+        max_text_length=max_characters,
         # Mastodon is one of the few networks that really does mean
         # characters when it says characters, so this is said out loud
         # rather than left to the default. A family emoji costs seven of a
         # server's 500 here, where on Bluesky it costs one of 300.
         text_counted_in=TextCount.CHARACTERS,
-        max_images=_number(statuses, "max_media_attachments", DEFAULT_MAX_MEDIA),
-        max_image_bytes=_number(attachments, "image_size_limit", None),
+        max_images=max_media,
+        max_image_bytes=image_bytes,
         max_videos=MAX_VIDEOS_PER_POST,
-        max_video_bytes=_number(attachments, "video_size_limit", None),
+        max_video_bytes=video_bytes,
+        messages=_message_limits(
+            attachments,
+            max_characters=max_characters,
+            max_media=max_media,
+            image_bytes=image_bytes,
+            video_bytes=video_bytes,
+        ),
+    )
+
+
+def _message_limits(
+    attachments: RawData,
+    *,
+    max_characters: int | None,
+    max_media: int | None,
+    image_bytes: int | None,
+    video_bytes: int | None,
+) -> MessageLimits:
+    """Say what one direct message may carry on this server.
+
+    A direct message on Mastodon is a status like any other, so it has the
+    same limits: the server's `max_characters`, up to `max_media_attachments`
+    pictures, or one video or one sound - never mixed - and the types in
+    `configuration.media_attachments.supported_mime_types`. Sound counts
+    against the video size limit. See
+    https://docs.joinmastodon.org/entities/Instance/#supported_mime_types and
+    https://docs.joinmastodon.org/methods/statuses/#create
+
+    Args:
+        attachments: The server's `configuration.media_attachments`.
+        max_characters: The longest status it takes.
+        max_media: The most files on one status.
+        image_bytes: The largest picture it takes.
+        video_bytes: The largest video or sound it takes.
+
+    Returns:
+        The limits for one direct message.
+    """
+    listed = attachments.get("supported_mime_types")
+    types = (
+        [kind for kind in listed if isinstance(kind, str)]
+        if isinstance(listed, list)
+        else []
+    )
+
+    def of(family: str) -> tuple[str, ...]:
+        return tuple(kind for kind in types if kind.startswith(f"{family}/"))
+
+    most = max_media if max_media is not None else DEFAULT_MAX_MEDIA
+    return MessageLimits(
+        max_text_length=max_characters,
+        text_counted_in=TextCount.CHARACTERS,
+        max_attachments=most,
+        attachments=(
+            AttachmentRule(
+                kind=MediaKind.IMAGE,
+                mime_types=of("image"),
+                max_bytes=image_bytes,
+                max_count=most,
+            ),
+            AttachmentRule(
+                kind=MediaKind.VIDEO,
+                mime_types=of("video"),
+                max_bytes=video_bytes,
+                max_count=1,
+            ),
+            AttachmentRule(
+                kind=MediaKind.AUDIO,
+                mime_types=of("audio"),
+                max_bytes=video_bytes,
+                max_count=1,
+            ),
+        ),
+        one_kind_at_a_time=True,
+        takes_web_addresses=False,
+        takes_files=True,
     )
 
 
@@ -1462,6 +1546,7 @@ class MastodonPlatform:
         | Feature.READ_UPDATES_AFTER
         | Feature.MESSAGES
         | Feature.START_CONVERSATIONS
+        | Feature.MESSAGE_MEDIA
     )
 
     def __init__(
@@ -2673,6 +2758,74 @@ class MastodonPlatform:
             PostGoneError: If the `"status:<id>"` fallback names a status
                 that is gone.
         """
+        return await self._send_direct(connection, conversation_id, text, ())
+
+    async def send_message_with_media(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        media: Sequence[Media],
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send a message with pictures, a video or a sound attached.
+
+        The same direct status as `send_message`, with the files uploaded
+        first (`POST /api/v2/media`, waiting for each to be ready) and named
+        in `media_ids[]`. Mastodon takes only files sent to it, so each has
+        to be a `Media.from_file` or `Media.from_bytes`. What the server
+        takes is on `Limits.messages`, and is checked before anything is
+        sent. See https://docs.joinmastodon.org/methods/media/#v2 and
+        https://docs.joinmastodon.org/methods/statuses/#create
+
+        Args:
+            connection: The account to send as.
+            conversation_id: Which conversation to send into, or a
+                `"status:<id>"` fallback from `start_conversation`.
+            text: The message's words. May be empty.
+            media: What to attach.
+            options: Ignored, as for `send_message`.
+
+        Returns:
+            The message that was sent - one status, carrying everything.
+
+        Raises:
+            InvalidPostError: If the message breaks the server's limits, or a
+                file is only a web address.
+            NotSupportedError: If the server does not take that kind of file.
+            ConfigError: If the connection has no server on it.
+            NotFoundError: If there is no such conversation.
+            PlatformError: If a video never finishes processing.
+        """
+        # `limits` always fills `messages` in here; the fallback only
+        # satisfies the type, which allows None for networks without them.
+        allowed = (await self.limits(connection)).messages or MessageLimits()
+        check_message(text, media, platform=PLATFORM_NAME, limits=allowed)
+        return await self._send_direct(connection, conversation_id, text, media)
+
+    async def _send_direct(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        media: Sequence[Media],
+    ) -> Message:
+        """Send a direct status into a conversation, with any files uploaded.
+
+        Args:
+            connection: The account to send as.
+            conversation_id: Which conversation, or a `"status:<id>"`
+                fallback.
+            text: The message's words.
+            media: What to attach. Uploaded first.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            NotFoundError: If there is no such conversation.
+        """
         server = _host_of(connection)
         status_id = _status_id_from_fallback(conversation_id)
         async with self._client(server, connection.token.access_token) as http:
@@ -2699,6 +2852,9 @@ class MastodonPlatform:
                 if isinstance(last_status, dict):
                     form["in_reply_to_id"] = last_status.get("id")
 
+            media_ids = [await self._upload(http, item) for item in media]
+            if media_ids:
+                form["media_ids[]"] = media_ids
             reply = await http.json("POST", "/api/v1/statuses", data=form)
 
         return _message_from(reply, server, connection, conversation_id)

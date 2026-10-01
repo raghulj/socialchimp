@@ -28,10 +28,12 @@ from socialchimp import (
     LikeResult,
     LinkKind,
     Media,
+    MediaKind,
     Message,
     MissingPermissionError,
     NotAllowedError,
     NotFoundError,
+    NotSupportedError,
     Page,
     Person,
     PlatformError,
@@ -61,6 +63,7 @@ from socialchimp.platform import (
     CanReadUpdates,
     CanReadUpdatesAfter,
     CanReply,
+    CanSendMessageMedia,
     CanStartConversations,
     LoginRequest,
     Platform,
@@ -3437,3 +3440,182 @@ class TestSocialInboxEdgeCases:
 
         assert message.conversation_id == "20"
         assert conversations_route.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Sending pictures, video and sound in a direct message
+# ---------------------------------------------------------------------------
+
+INSTANCE_WITH_TYPES: dict[str, Any] = {
+    "configuration": {
+        "statuses": {"max_characters": 500, "max_media_attachments": 4},
+        "media_attachments": {
+            "supported_mime_types": [
+                "image/jpeg",
+                "image/png",
+                "video/mp4",
+                "audio/mpeg",
+                "audio/wave",
+                "text/plain",
+            ],
+            "image_size_limit": 16777216,
+            "video_size_limit": 103809024,
+        },
+    }
+}
+
+
+class TestWhatAMastodonMessageMayCarry:
+    def test_it_says_it_can_send_attachments(self, platform: MastodonPlatform) -> None:
+        assert Feature.MESSAGE_MEDIA in platform.features
+        assert isinstance(platform, CanSendMessageMedia)
+
+    async def test_the_server_says_what_a_message_may_carry(
+        self, platform: MastodonPlatform, fridgedoor: Connection
+    ) -> None:
+        with respx.mock() as network:
+            stub_instance(network, host=SOCIAL_HOST, reply=INSTANCE_WITH_TYPES)
+
+            limits = await platform.limits(fridgedoor)
+
+        messages = limits.messages
+        assert messages is not None
+        assert messages.max_text_length == 500
+        assert messages.max_attachments == 4
+        assert messages.takes_files is True
+        assert messages.takes_web_addresses is False
+        assert messages.one_kind_at_a_time is True
+        image = messages.rule_for(MediaKind.IMAGE)
+        video = messages.rule_for(MediaKind.VIDEO)
+        audio = messages.rule_for(MediaKind.AUDIO)
+        assert image is not None
+        assert video is not None
+        assert audio is not None
+        assert image.mime_types == ("image/jpeg", "image/png")
+        assert image.max_bytes == 16777216
+        assert image.max_count == 4
+        assert video.mime_types == ("video/mp4",)
+        assert video.max_bytes == 103809024
+        assert video.max_count == 1
+        assert audio.mime_types == ("audio/mpeg", "audio/wave")
+        assert audio.max_bytes == 103809024
+        assert messages.rule_for(MediaKind.FILE) is None
+
+    async def test_a_server_that_lists_no_types_is_not_checked_for_them(
+        self, platform: MastodonPlatform, account: Connection
+    ) -> None:
+        with respx.mock() as network:
+            stub_instance(network)
+
+            limits = await platform.limits(account)
+
+        assert limits.messages is not None
+        image = limits.messages.rule_for(MediaKind.IMAGE)
+        assert image is not None
+        assert image.mime_types == ()
+        assert image.max_count == 6
+
+
+class TestSendingAttachmentsOnMastodon:
+    def a_reply_with_a_picture(self) -> dict[str, Any]:
+        return {
+            **fixture("status_direct.json"),
+            "id": "113140200000000099",
+            "media_attachments": [
+                {
+                    "id": "m1",
+                    "type": "image",
+                    "url": f"https://{SOCIAL_HOST}/media/loaf.png",
+                }
+            ],
+        }
+
+    async def test_the_files_are_uploaded_then_sent_with_the_status(
+        self, platform: MastodonPlatform, fridgedoor: Connection
+    ) -> None:
+        conversation = fixture("conversations.json")[0]
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            stub_instance(network, host=SOCIAL_HOST, reply=INSTANCE_WITH_TYPES)
+            network.get("/api/v1/conversations").mock(
+                return_value=httpx.Response(200, json=[conversation])
+            )
+            upload = network.post("/api/v2/media").mock(
+                return_value=httpx.Response(200, json={"id": "m1"})
+            )
+            route = network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=self.a_reply_with_a_picture())
+            )
+
+            message = await platform.send_message_with_media(
+                fridgedoor,
+                conversation["id"],
+                "Here it is",
+                (Media.from_bytes(b"png", filename="loaf.png"),),
+            )
+
+        assert upload.call_count == 1
+        sent = form_of(route.calls.last.request)
+        assert sent["media_ids[]"] == ["m1"]
+        assert sent["visibility"] == ["direct"]
+        assert sent["status"] == ["@quietbuyer@other.example Here it is"]
+        assert [a.kind for a in message.attachments] == ["image"]
+        assert message.also_sent == ()
+
+    async def test_the_fallback_conversation_carries_files_too(
+        self, platform: MastodonPlatform, fridgedoor: Connection
+    ) -> None:
+        parent = {
+            "id": "900",
+            "visibility": "direct",
+            "account": {"id": "1", "acct": "quietbuyer@other.example"},
+        }
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            stub_instance(network, host=SOCIAL_HOST, reply=INSTANCE_WITH_TYPES)
+            network.get("/api/v1/statuses/900").mock(
+                return_value=httpx.Response(200, json=parent)
+            )
+            network.post("/api/v2/media").mock(
+                return_value=httpx.Response(200, json={"id": "m1"})
+            )
+            route = network.post("/api/v1/statuses").mock(
+                return_value=httpx.Response(200, json=self.a_reply_with_a_picture())
+            )
+
+            await platform.send_message_with_media(
+                fridgedoor,
+                "status:900",
+                "",
+                (Media.from_bytes(b"png", filename="loaf.png"),),
+            )
+
+        sent = form_of(route.calls.last.request)
+        assert sent["media_ids[]"] == ["m1"]
+        assert sent["in_reply_to_id"] == ["900"]
+
+    async def test_a_web_address_is_refused_before_anything_is_sent(
+        self, platform: MastodonPlatform, fridgedoor: Connection
+    ) -> None:
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            stub_instance(network, host=SOCIAL_HOST, reply=INSTANCE_WITH_TYPES)
+
+            with pytest.raises(InvalidPostError, match="from_bytes"):
+                await platform.send_message_with_media(
+                    fridgedoor,
+                    "c1",
+                    "Hi",
+                    (Media.from_url("https://files.example/loaf.png"),),
+                )
+
+    async def test_a_kind_the_server_does_not_take_is_refused(
+        self, platform: MastodonPlatform, fridgedoor: Connection
+    ) -> None:
+        with respx.mock(base_url=f"https://{SOCIAL_HOST}") as network:
+            stub_instance(network, host=SOCIAL_HOST, reply=INSTANCE_WITH_TYPES)
+
+            with pytest.raises(NotSupportedError, match="files"):
+                await platform.send_message_with_media(
+                    fridgedoor,
+                    "c1",
+                    "Hi",
+                    (Media.from_bytes(b"%PDF", filename="menu.pdf"),),
+                )
