@@ -26,7 +26,7 @@ limit - which is the point of doing them here.
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, Flag, auto
 from typing import TYPE_CHECKING, Final
 
@@ -36,12 +36,15 @@ from socialchimp.models import MediaKind
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from socialchimp.models import Post, RawData
+    from socialchimp.models import Media, Post, RawData
 
 __all__ = [
+    "AttachmentRule",
     "Feature",
     "Limits",
+    "MessageLimits",
     "TextCount",
+    "check_message",
     "check_option_names",
     "check_post",
     "count_graphemes",
@@ -162,6 +165,14 @@ class Feature(Flag):
     Meta cannot: the customer has to write first. A network that has
     `Feature.MESSAGES` but not this one can still be replied to - it just
     cannot open the first message.
+    """
+
+    MESSAGE_MEDIA = auto()
+    """Can send pictures, video, sound or files in a direct message, with
+    `Account.send_message(..., media=...)`.
+
+    What a message may carry - which kinds, which types, how big, how many -
+    is on `Limits.messages`, from `Account.limits()`.
     """
 
 
@@ -350,6 +361,80 @@ def measure_text(text: str, counted_in: TextCount = TextCount.CHARACTERS) -> int
 
 
 @dataclass(frozen=True, slots=True)
+class AttachmentRule:
+    """What a network takes of one kind of file in a direct message.
+
+    Attributes:
+        kind: The kind of file this is about.
+        mime_types: The types it takes, such as `"image/jpeg"`. Empty when
+            the network does not say, which means "not checked here", never
+            "none". `check_message` checks a file's type against these only
+            when the caller gave it (`Media.from_url(..., mime_type=...)`);
+            a type guessed from the name is left to the network, because
+            the guess differs between machines.
+        max_bytes: The largest file it takes, when known.
+        max_count: The most of this kind in one message, when known.
+    """
+
+    kind: MediaKind
+    mime_types: tuple[str, ...] = ()
+    max_bytes: int | None = None
+    max_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MessageLimits:
+    """What a network allows in one direct message.
+
+    Read it from `Limits.messages`, and show it to people before they pick a
+    file, so they are not told afterwards. `send_message` checks the same
+    numbers with `check_message` before anything is sent.
+
+    Attributes:
+        max_text_length: The most a message's words may hold, counted the
+            way `text_counted_in` says. `None` when not known.
+        max_text_bytes: The most a message's words may hold, in bytes of
+            UTF-8, for a network that counts that way. Instagram does: 1000.
+        text_counted_in: What `max_text_length` is counted in.
+        max_attachments: The most files one `send_message` may carry. `0`
+            means none at all.
+        attachments: One rule for each kind of file the network takes. Empty
+            when it takes none.
+        one_kind_at_a_time: Whether files of different kinds have to go in
+            separate messages - several pictures, or one video, but not
+            both.
+        takes_web_addresses: Whether a file may be a `Media.from_url` the
+            network fetches itself. Instagram takes only these.
+        takes_files: Whether a file may be a `Media.from_file` or
+            `Media.from_bytes` that socialchimp uploads. Mastodon takes only
+            these.
+    """
+
+    max_text_length: int | None = None
+    max_text_bytes: int | None = None
+    text_counted_in: TextCount = TextCount.CHARACTERS
+    max_attachments: int = 0
+    attachments: tuple[AttachmentRule, ...] = field(default=())
+    one_kind_at_a_time: bool = False
+    takes_web_addresses: bool = False
+    takes_files: bool = False
+
+    def rule_for(self, kind: MediaKind) -> AttachmentRule | None:
+        """Find the rule for one kind of file.
+
+        Args:
+            kind: The kind of file.
+
+        Returns:
+            The rule, or `None` when the network does not take that kind.
+        """
+        for rule in self.attachments:
+            if rule.kind is kind:
+                return rule
+        return None
+
+
+@dataclass(frozen=True, slots=True)
 class Limits:
     """Numbers that a network enforces right now.
 
@@ -375,6 +460,8 @@ class Limits:
         max_video_bytes: Largest video file allowed.
         posts_left_today: How many more posts are allowed today, where the
             network tells us. Instagram and Threads both do.
+        messages: What one direct message may hold, on a network with
+            direct messages. `None` elsewhere.
 
     The two file sizes are here to be shown to your users and to size things
     before uploading. Nothing here opens a file to check them, because that
@@ -392,6 +479,7 @@ class Limits:
     max_videos: int | None = None
     max_video_bytes: int | None = None
     posts_left_today: int | None = None
+    messages: MessageLimits | None = None
 
 
 def _check_media(post: Post, platform: str, features: Feature, limits: Limits) -> None:
@@ -409,6 +497,14 @@ def _check_media(post: Post, platform: str, features: Feature, limits: Limits) -
     """
     pictures = [item for item in post.media if item.kind is MediaKind.IMAGE]
     videos = [item for item in post.media if item.kind is MediaKind.VIDEO]
+
+    # Sound and files are for direct messages; no network here takes them
+    # on a post.
+    for item in post.media:
+        if item.kind is MediaKind.AUDIO:
+            raise NotSupportedError(platform=platform, what="posting sound")
+        if item.kind is MediaKind.FILE:
+            raise NotSupportedError(platform=platform, what="posting files")
 
     if pictures and Feature.POST_IMAGE not in features:
         raise NotSupportedError(platform=platform, what="posting pictures")
@@ -614,3 +710,178 @@ def check_post(
     # refused for the length, because that is the half the person can fix
     # without changing what they were trying to post.
     _check_it_is_not_words_alone(post, platform, features, words_alone_advice)
+
+
+_KIND_IN_WORDS: Final[dict[MediaKind, str]] = {
+    MediaKind.IMAGE: "pictures",
+    MediaKind.VIDEO: "video",
+    MediaKind.AUDIO: "sound",
+    MediaKind.FILE: "files",
+}
+
+
+def check_message(
+    text: str,
+    media: Sequence[Media],
+    *,
+    platform: str,
+    limits: MessageLimits,
+) -> None:
+    """Check a direct message against what the network allows, before sending.
+
+    Every rule is checked that can be without asking the network or reading
+    a file: the words, how many files, which kinds, which types, and the
+    size of a file whose size is already known. A file that is only a web
+    address has no size here, and the network enforces that one itself.
+
+    Args:
+        text: The message's words.
+        media: What is attached.
+        platform: Name of the network, used in messages.
+        limits: What the network allows in one message.
+
+    Raises:
+        InvalidPostError: If the message breaks a limit.
+        NotSupportedError: If the network does not take attachments at all,
+            or this kind of file, or files in this form.
+    """
+    if not text.strip() and not media:
+        message = f"This message is empty. {platform} will not send nothing."
+        raise InvalidPostError(message)
+    _check_message_text(text, platform, limits)
+    if not media:
+        return
+
+    if not limits.attachments:
+        raise NotSupportedError(platform=platform, what="attachments in messages")
+    if len(media) > limits.max_attachments:
+        message = (
+            f"This message has {len(media)} attachments but {platform} takes "
+            f"at most {limits.max_attachments} in one message."
+        )
+        raise InvalidPostError(message)
+    if limits.one_kind_at_a_time and len({item.kind for item in media}) > 1:
+        message = (
+            f"{platform} takes only one kind of file in one message - several "
+            f"pictures, or one video, but not both. Send them as separate "
+            f"messages."
+        )
+        raise InvalidPostError(message)
+
+    for item in media:
+        _check_message_file(item, platform, limits)
+    for rule in limits.attachments:
+        count = sum(1 for item in media if item.kind is rule.kind)
+        if rule.max_count is not None and count > rule.max_count:
+            message = (
+                f"This message has {count} {_KIND_IN_WORDS[rule.kind]} but "
+                f"{platform} takes at most {rule.max_count} in one message."
+            )
+            raise InvalidPostError(message)
+
+
+def _check_message_text(text: str, platform: str, limits: MessageLimits) -> None:
+    """Check a message's words against the network's limits.
+
+    Args:
+        text: The message's words.
+        platform: Name of the network, used in messages.
+        limits: What the network allows in one message.
+
+    Raises:
+        InvalidPostError: If the words are too long either way.
+    """
+    counted = limits.text_counted_in
+    if limits.max_text_length is not None:
+        length = measure_text(text, counted)
+        if length > limits.max_text_length:
+            message = (
+                f"This message is {length} {counted.in_words} but {platform} "
+                f"takes at most {limits.max_text_length} {counted.in_words}."
+                f"{counted.the_catch}"
+            )
+            raise InvalidPostError(message)
+    if limits.max_text_bytes is not None:
+        written = len(text.encode())
+        if written > limits.max_text_bytes:
+            message = (
+                f"This message is {written} bytes but {platform} takes at "
+                f"most {limits.max_text_bytes} bytes - bytes of UTF-8, not "
+                f"characters, so an emoji counts as four. Split it into two "
+                f"messages."
+            )
+            raise InvalidPostError(message)
+
+
+def _plain_type(mime_type: str | None) -> str | None:
+    """Reduce a MIME type to its plain form, for comparing two of them.
+
+    Args:
+        mime_type: Such as `"Audio/MP4; codecs=mp4a"`.
+
+    Returns:
+        Such as `"audio/mp4"`, or `None` when there was none.
+    """
+    if mime_type is None:
+        return None
+    return mime_type.split(";", 1)[0].strip().lower()
+
+
+def _check_message_file(item: Media, platform: str, limits: MessageLimits) -> None:
+    """Check one attached file against the network's rule for its kind.
+
+    Args:
+        item: The file.
+        platform: Name of the network, used in messages.
+        limits: What the network allows in one message.
+
+    Raises:
+        InvalidPostError: If the file breaks the rule.
+        NotSupportedError: If the network does not take this kind, or files
+            in this form.
+    """
+    rule = limits.rule_for(item.kind)
+    if rule is None:
+        raise NotSupportedError(
+            platform=platform, what=f"{_KIND_IN_WORDS[item.kind]} in messages"
+        )
+
+    only_an_address = item.content is None and item.path is None
+    if only_an_address and not limits.takes_web_addresses:
+        message = (
+            f"{platform} does not fetch files from a web address - it only "
+            f"takes files sent to it. Download it first and use "
+            f"Media.from_bytes or Media.from_file."
+        )
+        raise InvalidPostError(message)
+    if not only_an_address and not limits.takes_files:
+        raise NotSupportedError(
+            platform=platform,
+            what="being sent a file",
+            suggestion=(
+                "It fetches every file itself, from a web address. Put the "
+                "file somewhere it can reach, such as a signed link to "
+                "object storage, and use Media.from_url(...) instead."
+            ),
+        )
+
+    # Only a type the caller gave is checked. A type guessed from the name
+    # differs between machines - Python calls an .m4a "audio/mp4a-latm" on
+    # one and "audio/mp4" on another - and must never refuse a file the
+    # network would have taken; the network judges those itself.
+    given = _plain_type(item.mime_type)
+    allowed = {_plain_type(kind) for kind in rule.mime_types}
+    if rule.mime_types and given is not None and given not in allowed:
+        message = (
+            f"{platform} does not take {given} in a message. For "
+            f"{_KIND_IN_WORDS[item.kind]} it takes {', '.join(rule.mime_types)}."
+        )
+        raise InvalidPostError(message)
+
+    size = item.size
+    if rule.max_bytes is not None and size is not None and size > rule.max_bytes:
+        message = (
+            f"This file is {size} bytes but {platform} takes "
+            f"{_KIND_IN_WORDS[item.kind]} of at most {rule.max_bytes} bytes."
+        )
+        raise InvalidPostError(message)

@@ -38,7 +38,7 @@ from socialchimp.errors import (
     NotFoundError,
     NotSupportedError,
 )
-from socialchimp.features import TextCount
+from socialchimp.features import AttachmentRule, MessageLimits, TextCount
 from socialchimp.http import HttpClient
 from socialchimp.models import Media, MediaKind, RawData
 from socialchimp.platform import (
@@ -617,7 +617,7 @@ class TestTheKitItself:
     )
 
     def test_there_is_a_check_for_each_thing_we_promised(self) -> None:
-        assert len(every_check()) == 17
+        assert len(every_check()) == 18
 
     async def test_a_good_fake_platform_passes_every_check(self) -> None:
         for name in every_check():
@@ -843,6 +843,96 @@ class TestTheNoAppCheck:
         message = await skip_from(checks_for(FakePlatform()), self.name)
 
         assert "NEEDS_NO_APP" in message
+
+
+class TestTheMessageLimitsCheck:
+    name = "test_its_message_limits_match_what_it_says_it_can_do"
+
+    async def run(self, platform: FakePlatform) -> str:
+        return await failure_from(
+            checks_for(platform, connection=a_connection()), self.name
+        )
+
+    async def test_claiming_attachments_with_no_message_limits_is_refused(
+        self,
+    ) -> None:
+        platform = FakePlatform(limits=Limits())
+        platform.features |= Feature.MESSAGE_MEDIA
+
+        message = await self.run(platform)
+
+        assert "MESSAGE_MEDIA" in message
+        assert "None" in message
+
+    async def test_a_fake_given_limits_without_messages_drops_the_claim(
+        self,
+    ) -> None:
+        # So a 0.10.0 test that built FakePlatform(limits=Limits(...)) still
+        # passes every check.
+        platform = FakePlatform(limits=Limits(max_text_length=50))
+
+        assert Feature.MESSAGE_MEDIA not in platform.features
+        await getattr(checks_for(platform, connection=a_connection()), self.name)()
+
+    async def test_no_message_limits_and_no_claim_is_fine(self) -> None:
+        platform = FakePlatform(
+            limits=Limits(),
+            features=FakePlatform().features & ~Feature.MESSAGE_MEDIA,
+        )
+
+        await getattr(checks_for(platform, connection=a_connection()), self.name)()
+
+    async def test_a_text_limit_of_zero_is_refused(self) -> None:
+        limits = Limits(messages=MessageLimits(max_text_bytes=0))
+
+        message = await self.run(FakePlatform(limits=limits))
+
+        assert "max_text_bytes" in message
+
+    async def test_claiming_attachments_with_no_kinds_listed_is_refused(
+        self,
+    ) -> None:
+        message = await self.run(FakePlatform(limits=Limits(messages=MessageLimits())))
+
+        assert "has MESSAGE_MEDIA" in message
+
+    async def test_kinds_listed_without_the_claim_is_refused(self) -> None:
+        limits = Limits(
+            messages=MessageLimits(
+                max_attachments=1,
+                attachments=(AttachmentRule(kind=MediaKind.IMAGE),),
+                takes_files=True,
+            )
+        )
+        platform = FakePlatform(
+            limits=limits, features=FakePlatform().features & ~Feature.MESSAGE_MEDIA
+        )
+
+        message = await self.run(platform)
+
+        assert "does not have MESSAGE_MEDIA" in message
+
+    async def test_kinds_listed_with_room_for_none_is_refused(self) -> None:
+        limits = Limits(
+            messages=MessageLimits(
+                attachments=(AttachmentRule(kind=MediaKind.IMAGE),), takes_files=True
+            )
+        )
+
+        message = await self.run(FakePlatform(limits=limits))
+
+        assert "max_attachments" in message
+
+    async def test_kinds_listed_with_no_way_to_attach_is_refused(self) -> None:
+        limits = Limits(
+            messages=MessageLimits(
+                max_attachments=1, attachments=(AttachmentRule(kind=MediaKind.IMAGE),)
+            )
+        )
+
+        message = await self.run(FakePlatform(limits=limits))
+
+        assert "takes_files" in message
 
 
 class TestTheLimitsCheck:

@@ -1,0 +1,67 @@
+{
+  "upload_failure_2018047": {
+    "http_status": 400,
+    "body": {
+      "error": {
+        "message": "Upload attachment failure.",
+        "type": "OAuthException",
+        "code": 100,
+        "error_subcode": 2018047,
+        "is_transient": false,
+        "fbtrace_id": "A1b2C3d4E5f6G7h8"
+      }
+    }
+  },
+  "url_fetch_failed_2018008": {
+    "http_status": 400,
+    "body": {
+      "error": {
+        "message": "Failed to fetch the file from the url.",
+        "type": "OAuthException",
+        "code": 100,
+        "error_subcode": 2018008,
+        "is_transient": false,
+        "fbtrace_id": "AqW3eRtY5uIoPlKj"
+      }
+    }
+  },
+  "size_exceeded_2018109": {
+    "http_status": 400,
+    "body": {
+      "error": {
+        "message": "Attachment size exceeds allowable limit",
+        "type": "OAuthException",
+        "code": 100,
+        "error_subcode": 2018109,
+        "is_transient": false,
+        "fbtrace_id": "AZxCvBnM1qAzXsWd"
+      }
+    }
+  },
+  "video_timeout_2018294": {
+    "http_status": 400,
+    "body": {
+      "error": {
+        "message": "Video upload timed out or video is corrupted.",
+        "type": "OAuthException",
+        "code": 100,
+        "error_subcode": 2018294,
+        "is_transient": false,
+        "fbtrace_id": "AmNbVcXz9LkJhGfD"
+      }
+    }
+  },
+  "attachment_id_invalid_2018074": {
+    "http_status": 400,
+    "body": {
+      "error": {
+        "message": "Possible invalid ID or you do not own the attachment.",
+        "type": "OAuthException",
+        "code": 100,
+        "error_subcode": 2018074,
+        "is_transient": false,
+        "fbtrace_id": "AsDfGhJk7QwErTyU"
+      }
+    }
+  }
+}

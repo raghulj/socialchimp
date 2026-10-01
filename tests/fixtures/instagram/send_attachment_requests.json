@@ -1,0 +1,111 @@
+{
+  "image_single_attachments_object": {
+    "recipient": {
+      "id": "1234567890123456"
+    },
+    "message": {
+      "attachments": {
+        "type": "image",
+        "payload": {
+          "url": "https://files.fridgedoor.example/img/loaf.jpg"
+        }
+      }
+    }
+  },
+  "image_single_attachment_singular": {
+    "recipient": {
+      "id": "1234567890123456"
+    },
+    "message": {
+      "attachment": {
+        "type": "image",
+        "payload": {
+          "url": "https://files.fridgedoor.example/img/loaf.jpg"
+        }
+      }
+    }
+  },
+  "image_multiple": {
+    "recipient": {
+      "id": "1234567890123456"
+    },
+    "message": {
+      "attachments": [
+        {
+          "type": "image",
+          "payload": {
+            "url": "https://files.fridgedoor.example/img/loaf.jpg"
+          }
+        },
+        {
+          "type": "image",
+          "payload": {
+            "attachment_id": "1234567890123457"
+          }
+        }
+      ]
+    }
+  },
+  "video": {
+    "recipient": {
+      "id": "1234567890123456"
+    },
+    "message": {
+      "attachment": {
+        "type": "video",
+        "payload": {
+          "url": "https://files.fridgedoor.example/vid/proof.mp4"
+        }
+      }
+    }
+  },
+  "audio": {
+    "recipient": {
+      "id": "1234567890123456"
+    },
+    "message": {
+      "attachment": {
+        "type": "audio",
+        "payload": {
+          "url": "https://files.fridgedoor.example/aud/hello.m4a"
+        }
+      }
+    }
+  },
+  "file_pdf": {
+    "recipient": {
+      "id": "1234567890123456"
+    },
+    "message": {
+      "attachment": {
+        "type": "file",
+        "payload": {
+          "url": "https://files.fridgedoor.example/doc/menu.pdf"
+        }
+      }
+    }
+  },
+  "sticker_like_heart": {
+    "recipient": {
+      "id": "1234567890123456"
+    },
+    "message": {
+      "attachment": {
+        "type": "like_heart"
+      }
+    }
+  },
+  "published_post_media_share": {
+    "recipient": {
+      "id": "1234567890123456"
+    },
+    "message": {
+      "attachment": {
+        "type": "MEDIA_SHARE",
+        "payload": {
+          "id": "17900000000000001"
+        }
+      }
+    }
+  }
+}

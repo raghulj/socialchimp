@@ -146,7 +146,7 @@ of `_instagram_messages.py`. In short:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 
@@ -167,17 +167,22 @@ from socialchimp.errors import (
 from socialchimp.events import MessageEvent, Update
 from socialchimp.events import answer_setup_check as echo_the_challenge
 from socialchimp.features import (
+    AttachmentRule,
     Feature,
     Limits,
+    MessageLimits,
     TextCount,
+    check_message,
     check_option_names,
     check_post,
 )
 from socialchimp.http import HttpClient, Retries, read_body
 from socialchimp.models import (
     AccountProfile,
+    Attachment,
     Connection,
     Conversation,
+    Media,
     MediaKind,
     Message,
     Page,
@@ -222,7 +227,7 @@ from socialchimp.platforms._meta import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from socialchimp.models import AppCredentials
 
@@ -417,6 +422,74 @@ MOST_MESSAGE_BYTES: Final = 1_000
 
 "Text messages must be UTF-8 and be 1000 bytes or less" -
 https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
+"""
+
+_MB: Final = 1024 * 1024
+
+MESSAGE_LIMITS: Final = MessageLimits(
+    max_text_bytes=MOST_MESSAGE_BYTES,
+    max_attachments=10,
+    attachments=(
+        AttachmentRule(
+            kind=MediaKind.IMAGE,
+            mime_types=("image/png", "image/jpeg"),
+            max_bytes=8 * _MB,
+            max_count=10,
+        ),
+        AttachmentRule(
+            kind=MediaKind.VIDEO,
+            mime_types=(
+                "video/mp4",
+                "video/ogg",
+                "video/x-msvideo",
+                "video/avi",
+                "video/quicktime",
+                "video/webm",
+            ),
+            max_bytes=25 * _MB,
+            max_count=1,
+        ),
+        AttachmentRule(
+            kind=MediaKind.AUDIO,
+            # Meta names aac, m4a, wav and mp4. Each has more than one MIME
+            # type in the wild - Python itself calls m4a audio/mp4a-latm -
+            # so every one of them is here.
+            mime_types=(
+                "audio/aac",
+                "audio/x-aac",
+                "audio/mp4",
+                "audio/m4a",
+                "audio/x-m4a",
+                "audio/mp4a-latm",
+                "audio/wav",
+                "audio/wave",
+                "audio/x-wav",
+                "audio/vnd.wave",
+            ),
+            max_bytes=25 * _MB,
+            max_count=1,
+        ),
+        AttachmentRule(
+            kind=MediaKind.FILE,
+            mime_types=("application/pdf",),
+            max_bytes=25 * _MB,
+            max_count=1,
+        ),
+    ),
+    one_kind_at_a_time=True,
+    takes_web_addresses=True,
+    takes_files=False,
+)
+"""What one Instagram direct message may carry, also on `Limits.messages`.
+
+From "Send Images" and "Send audio, video or file" on
+https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
+- up to 10 pictures (PNG or JPEG, 8 MB each) together, or one video (mp4,
+ogg, avi, mov or webm), sound (aac, m4a, wav or mp4) or PDF, each up to
+25 MB. Meta's page writes MB without saying which; 8 and 25 times 1024 x
+1024 is used here, the larger reading, so nothing Meta would take is
+refused here first. Every file has to be a web address Instagram fetches,
+and the words go as a message of their own.
 """
 
 MESSAGE_OPTIONS: Final = ("tag",)
@@ -853,28 +926,25 @@ def _next_cursor(reply: RawData) -> str | None:
     return after if isinstance(after, str) and after else None
 
 
-def _check_message_text(text: str) -> None:
-    """Refuse a message Instagram would refuse, before sending it.
+def _attachment_for(item: Media) -> Attachment:
+    """Say what one file being sent will read back as.
 
     Args:
-        text: The words about to be sent.
+        item: A file about to be sent - always a web address by now, since
+            `check_message` has refused anything else.
 
-    Raises:
-        InvalidPostError: If there are none, or more than 1000 bytes.
+    Returns:
+        The attachment, of Instagram's own kind: `image`, `video`, `audio`
+        or `file`.
     """
-    if not text.strip():
-        message = (
-            "This message is empty. Instagram will not send a message with no words."
-        )
-        raise InvalidPostError(message)
-    size = len(text.encode())
-    if size > MOST_MESSAGE_BYTES:
-        message = (
-            f"This message is {size} bytes and Instagram takes at most "
-            f"{MOST_MESSAGE_BYTES} - bytes of UTF-8, not characters, so an "
-            f"emoji counts as four. Split it into two messages."
-        )
-        raise InvalidPostError(message)
+    return Attachment(
+        kind=item.kind.name.lower(),
+        url=item.url,
+        preview_url=None,
+        alt_text=item.alt_text,
+        width=None,
+        height=None,
+    )
 
 
 def _instagram_account_of(connection: Connection) -> str:
@@ -1032,6 +1102,7 @@ def _what_it_allows(posts_left_today: int | None = None) -> Limits:
         # a file to measure, and what Instagram will fetch is between it and
         # your web server.
         posts_left_today=posts_left_today,
+        messages=MESSAGE_LIMITS,
     )
 
 
@@ -1240,6 +1311,7 @@ class InstagramPlatform:
         | Feature.POST_VIDEO
         | Feature.PUSH_UPDATES
         | Feature.MESSAGES
+        | Feature.MESSAGE_MEDIA
     )
 
     def __init__(
@@ -2275,12 +2347,116 @@ class InstagramPlatform:
             SocialChimpError: If Instagram refuses for another reason.
         """
         tag = self._tag_from(options or {})
-        _check_message_text(text)
+        check_message(text, (), platform=PLATFORM_NAME, limits=MESSAGE_LIMITS)
+        return await self._send_one(
+            connection, conversation_id, {"text": text}, tag=tag, text=text
+        )
 
-        body: RawData = {
-            "recipient": {"id": conversation_id},
-            "message": {"text": text},
-        }
+    async def send_message_with_media(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        media: Sequence[Media],
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send pictures, a video, a sound or a PDF, with or without words.
+
+        Instagram fetches each file itself from its web address - a signed
+        link to object storage works - so every attachment has to be a
+        `Media.from_url`. What it takes is on `MESSAGE_LIMITS` (and
+        `Limits.messages`): up to 10 pictures together, or one video, sound
+        or PDF, never mixed. Everything is checked before anything is sent.
+
+        One request for the attachments, and one more for the words when
+        there are any - Instagram carries them as two messages, each with its
+        own id. The attachments go first, so that a file Instagram refuses
+        stops everything before any words have gone out. See "Send Images"
+        and "Send audio, video or file" on
+        https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
+
+        Args:
+            connection: The account to send as.
+            conversation_id: The other person's Instagram-scoped id.
+            text: The words, sent after the attachments. May be empty.
+            media: What to attach, every one a `Media.from_url`.
+            options: As for `send_message`. A tag goes on every message.
+
+        Returns:
+            The message carrying the attachments. When there were words, the
+            message carrying them is on its `also_sent`.
+
+        Raises:
+            InvalidPostError: If the message breaks a limit, or Instagram
+                could not fetch or take a file - see the message for which.
+            NotSupportedError: If a file is not a web address, or is a kind
+                Instagram does not take.
+            ReplyWindowClosedError: If the 24 hours to reply have passed.
+            SocialChimpError: As for `send_message`. If the words are refused
+                after the attachments went out, the error's
+                `raw["already_sent"]` lists the ids of what did.
+        """
+        tag = self._tag_from(options or {})
+        check_message(text, media, platform=PLATFORM_NAME, limits=MESSAGE_LIMITS)
+
+        attached = tuple(_attachment_for(item) for item in media)
+        payloads = [
+            {"type": item.kind, "payload": {"url": item.url}} for item in attached
+        ]
+        # One file goes as `attachment`; several pictures as an
+        # `attachments` list - the two shapes Meta's page shows.
+        carried: RawData = (
+            {"attachment": payloads[0]}
+            if len(payloads) == 1
+            else {"attachments": payloads}
+        )
+        first = await self._send_one(
+            connection, conversation_id, carried, tag=tag, attachments=attached
+        )
+        if not text.strip():
+            return first
+
+        try:
+            words = await self._send_one(
+                connection, conversation_id, {"text": text}, tag=tag, text=text
+            )
+        except SocialChimpError as refused:
+            refused.raw["already_sent"] = [first.id]
+            refused.args = (
+                f"{refused} The attachments had already gone out, as message "
+                f"{first.id!r}; only the words were not sent.",
+            )
+            raise
+        return replace(first, also_sent=(words,))
+
+    async def _send_one(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        message: RawData,
+        *,
+        tag: str | None,
+        text: str = "",
+        attachments: tuple[Attachment, ...] = (),
+    ) -> Message:
+        """Send one message, once, and say what was sent.
+
+        Args:
+            connection: The account to send as.
+            conversation_id: The other person's Instagram-scoped id.
+            message: The `message` part of the request.
+            tag: The message tag to send with, if any.
+            text: The words in it, for the message handed back.
+            attachments: The files in it, for the message handed back.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            SocialChimpError: If Instagram refuses.
+        """
+        body: RawData = {"recipient": {"id": conversation_id}, "message": message}
         if tag is not None:
             body["messaging_type"] = "MESSAGE_TAG"
             body["tag"] = tag
@@ -2300,7 +2476,7 @@ class InstagramPlatform:
             sent_at=_now(),
             is_mine=True,
             deleted=False,
-            attachments=(),
+            attachments=attachments,
             raw=reply,
         )
 

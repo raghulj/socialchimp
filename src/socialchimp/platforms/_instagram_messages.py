@@ -27,8 +27,13 @@ are listed as well.
   `postback`, `is_echo`, `is_deleted`):
   https://developers.facebook.com/docs/graph-api/webhooks/reference/instagram
   and https://developers.facebook.com/docs/messenger-platform/reference/webhook-events
-- Error codes (outside the window, recipient unavailable, rate limits):
+- Error codes (outside the window, recipient unavailable, rate limits, a
+  file that could not be fetched or is too big):
   https://developers.facebook.com/docs/messenger-platform/error-codes/
+- Sending pictures ("Send Images", several in one message) and video,
+  sound or a PDF ("Send audio, video or file", one at a time), with the
+  formats and sizes allowed:
+  https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
 - Message tags, including `HUMAN_AGENT`:
   https://developers.facebook.com/docs/messenger-platform/send-messages/message-tags
 - Rate limits (Send API: 100 calls a second per account for text; the
@@ -56,6 +61,7 @@ from typing import TYPE_CHECKING, Final
 
 from socialchimp.errors import (
     BlockedError,
+    InvalidPostError,
     MissingPermissionError,
     NotAllowedError,
     NotFoundError,
@@ -112,6 +118,38 @@ _CANNOT_BE_MESSAGED_CODE: Final = 551
 _CANNOT_BE_MESSAGED_SUBCODE: Final = 2_018_108
 _NOBODY_BY_THAT_ID: Final = 2_534_014
 _DM_ACCESS_TURNED_OFF: Final = 2_534_041
+# Refusals of an attached file, all under code 100, from the same page. Each
+# is said in words a person can act on.
+_FILE_REFUSALS: Final[dict[int, str]] = {
+    2_018_047: (
+        "Instagram could not take the attached file (error 100, subcode "
+        "2018047). Usually its type does not match what it says it is - a "
+        "file sent as a picture that is not a PNG or a JPEG, say. Check the "
+        "file's type against Limits.messages."
+    ),
+    2_018_008: (
+        "Instagram could not fetch the attached file from its web address "
+        "(error 100, subcode 2018008). The address has to be reachable from "
+        "the public internet, over HTTPS, without signing in, and still "
+        "good when Instagram asks - give a signed link a few minutes, not "
+        "seconds. A slow server or a file too big can also cause this."
+    ),
+    2_018_109: (
+        "The attached file is too big for Instagram (error 100, subcode "
+        "2018109). See Limits.messages for the most each kind may be: 8 MB "
+        "for a picture, 25 MB for video, sound or a PDF."
+    ),
+    2_018_294: (
+        "Instagram gave up fetching or reading the attached video (error "
+        "100, subcode 2018294). It allows 75 seconds to fetch one, and "
+        "refuses a broken file. Make it smaller, or serve it faster."
+    ),
+    2_018_074: (
+        "Instagram does not know that attachment, or it belongs to another "
+        "app (error 100, subcode 2018074)."
+    ),
+}
+
 # Plain "no permission", which on a messaging call can only mean one thing.
 _NO_PERMISSION: Final = frozenset({10, 200})
 
@@ -206,6 +244,10 @@ def message_error(body: RawData) -> SocialChimpError | None:
             f"give it.{_said(error)}"
         )
         return NotFoundError(message, platform=PLATFORM_NAME, raw=raw)
+
+    if subcode is not None and subcode in _FILE_REFUSALS:
+        message = f"{_FILE_REFUSALS[subcode]}{_said(error)}"
+        return InvalidPostError(message, platform=PLATFORM_NAME, raw=raw)
 
     if subcode == _DM_ACCESS_TURNED_OFF:
         return _missing_messages_permission(

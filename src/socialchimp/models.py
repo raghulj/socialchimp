@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Generic, TypeVar
+from urllib.parse import urlsplit
 
 # Safe in this direction only: `socialchimp.errors` imports nothing from
 # here, and nothing from anywhere else in socialchimp. Keep it that way -
@@ -71,6 +72,17 @@ T = TypeVar("T")
 # File endings we can recognise without being told.
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"})
 _VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"})
+_AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".aac", ".wav", ".oga", ".opus"})
+_FILE_SUFFIXES = frozenset({".pdf"})
+
+# What `Media.content_type` says when neither the caller nor the file's name
+# gives a type.
+_FALLBACK_TYPE: dict[str, str] = {
+    "IMAGE": "image/jpeg",
+    "VIDEO": "video/mp4",
+    "AUDIO": "audio/mpeg",
+    "FILE": "application/octet-stream",
+}
 
 
 def require_timezone(value: datetime | None, name: str) -> None:
@@ -130,10 +142,18 @@ def picture_url(value: object) -> str | None:
 
 
 class MediaKind(Enum):
-    """What sort of file is being attached."""
+    """What sort of file is being attached.
+
+    Posts take only `IMAGE` and `VIDEO`. `AUDIO` and `FILE` are for direct
+    messages, on the networks that take them - see `MessageLimits`.
+    """
 
     IMAGE = auto()
     VIDEO = auto()
+    AUDIO = auto()
+    """Sound: a voice note or a clip."""
+    FILE = auto()
+    """Any other file, such as a PDF."""
 
 
 class PostState(Enum):
@@ -362,7 +382,7 @@ class AccountProfile:
 
 @dataclass(frozen=True, slots=True)
 class Media:
-    """A picture or video to attach to a post.
+    """A picture, video, sound or file to attach to a post or a message.
 
     Build one with `from_file`, `from_bytes` or `from_url` rather than calling
     `Media(...)` directly - those work out the kind for you.
@@ -375,6 +395,9 @@ class Media:
             for the rest socialchimp downloads it first.
         filename: Name to send along with the upload.
         alt_text: Description for people using a screen reader. Worth setting.
+        mime_type: The file's type, such as `"image/jpeg"`, when the caller
+            said. Worth giving for a web address with no ending on it.
+            Otherwise it is worked out from the name - see `content_type`.
     """
 
     kind: MediaKind
@@ -383,34 +406,52 @@ class Media:
     url: str | None = None
     filename: str | None = None
     alt_text: str | None = None
+    mime_type: str | None = None
 
     @staticmethod
-    def _guess_kind(name: str, given: MediaKind | None) -> MediaKind:
-        """Work out whether a filename points at a picture or a video.
+    def _guess_kind(
+        name: str,
+        given: MediaKind | None,
+        mime_type: str | None = None,
+    ) -> MediaKind:
+        """Work out what sort of file a name points at.
 
         Args:
-            name: The filename or URL to inspect.
+            name: The filename, or the path part of a web address.
             given: A kind supplied by the caller, which always wins.
+            mime_type: A type supplied by the caller, which comes next.
 
         Returns:
             The kind of media.
 
         Raises:
-            InvalidPostError: If the ending is not one we recognise and no
-                kind was given.
+            InvalidPostError: If there is nothing to go on: no kind, no
+                type, and an ending we do not recognise.
         """
         if given is not None:
             return given
+        if mime_type is not None:
+            family = mime_type.split("/", 1)[0].lower()
+            return {
+                "image": MediaKind.IMAGE,
+                "video": MediaKind.VIDEO,
+                "audio": MediaKind.AUDIO,
+            }.get(family, MediaKind.FILE)
 
         suffix = Path(name).suffix.lower()
-        if suffix in _IMAGE_SUFFIXES:
-            return MediaKind.IMAGE
-        if suffix in _VIDEO_SUFFIXES:
-            return MediaKind.VIDEO
+        for suffixes, kind in (
+            (_IMAGE_SUFFIXES, MediaKind.IMAGE),
+            (_VIDEO_SUFFIXES, MediaKind.VIDEO),
+            (_AUDIO_SUFFIXES, MediaKind.AUDIO),
+            (_FILE_SUFFIXES, MediaKind.FILE),
+        ):
+            if suffix in suffixes:
+                return kind
 
         message = (
-            f"Cannot tell whether {name!r} is a picture or a video. "
-            f"Pass kind=MediaKind.IMAGE or kind=MediaKind.VIDEO to say which."
+            f"Cannot tell what sort of file {name!r} is. Pass kind=MediaKind.IMAGE, "
+            f"kind=MediaKind.VIDEO, kind=MediaKind.AUDIO or kind=MediaKind.FILE "
+            f"to say which, or mime_type=... to give its type."
         )
         raise InvalidPostError(message)
 
@@ -421,23 +462,27 @@ class Media:
         *,
         kind: MediaKind | None = None,
         alt_text: str | None = None,
+        mime_type: str | None = None,
     ) -> Media:
         """Attach a file from disk. It is read when the upload happens.
 
         Args:
             path: Where the file is.
-            kind: Picture or video. Worked out from the name if left out.
+            kind: What sort of file. Worked out from the type or the name if
+                left out.
             alt_text: Description for screen readers.
+            mime_type: The file's type, if you know it.
 
         Returns:
             The media, ready to attach to a post.
         """
         location = Path(path)
         return cls(
-            kind=cls._guess_kind(location.name, kind),
+            kind=cls._guess_kind(location.name, kind, mime_type),
             path=location,
             filename=location.name,
             alt_text=alt_text,
+            mime_type=mime_type,
         )
 
     @classmethod
@@ -448,6 +493,7 @@ class Media:
         filename: str,
         kind: MediaKind | None = None,
         alt_text: str | None = None,
+        mime_type: str | None = None,
     ) -> Media:
         """Attach data you already hold in memory.
 
@@ -455,17 +501,20 @@ class Media:
             content: The file's bytes.
             filename: Name to send with the upload. Also used to work out
                 the kind.
-            kind: Picture or video. Worked out from the name if left out.
+            kind: What sort of file. Worked out from the type or the name if
+                left out.
             alt_text: Description for screen readers.
+            mime_type: The file's type, if you know it.
 
         Returns:
             The media, ready to attach to a post.
         """
         return cls(
-            kind=cls._guess_kind(filename, kind),
+            kind=cls._guess_kind(filename, kind, mime_type),
             content=content,
             filename=filename,
             alt_text=alt_text,
+            mime_type=mime_type,
         )
 
     @classmethod
@@ -475,31 +524,55 @@ class Media:
         *,
         kind: MediaKind | None = None,
         alt_text: str | None = None,
+        mime_type: str | None = None,
     ) -> Media:
         """Point at a file already online.
 
+        A signed address - one with `?X-Amz-Signature=...` or the like on
+        the end - works: only the path is used to work out the kind and the
+        name, and the whole address is kept for the network to fetch.
+
         Args:
             url: Where the file is. It must be reachable by the network.
-            kind: Picture or video. Worked out from the address if left out.
+            kind: What sort of file. Worked out from the type or the address
+                if left out.
             alt_text: Description for screen readers.
+            mime_type: The file's type, if you know it. Worth giving for an
+                address with no ending on it.
 
         Returns:
             The media, ready to attach to a post.
         """
+        name = Path(urlsplit(url).path).name
         return cls(
-            kind=cls._guess_kind(url, kind),
+            kind=cls._guess_kind(name, kind, mime_type),
             url=url,
-            filename=Path(url).name or None,
+            filename=name or None,
             alt_text=alt_text,
+            mime_type=mime_type,
         )
 
     @property
     def content_type(self) -> str:
-        """The MIME type to send with the upload."""
+        """The MIME type to send with the upload.
+
+        The one given, else one worked out from the name, else a plain
+        guess from the kind of file.
+        """
+        return self.known_type or _FALLBACK_TYPE[self.kind.name]
+
+    @property
+    def known_type(self) -> str | None:
+        """The MIME type, only when it was given or the name says.
+
+        Unlike `content_type`, never a guess - so a check against the types
+        a network takes can leave a file it cannot tell about to the
+        network.
+        """
+        if self.mime_type is not None:
+            return self.mime_type
         guessed, _ = mimetypes.guess_type(self.filename or "")
-        if guessed is not None:
-            return guessed
-        return "image/jpeg" if self.kind is MediaKind.IMAGE else "video/mp4"
+        return guessed
 
     @property
     def size(self) -> int | None:
@@ -1069,6 +1142,11 @@ class Message:
         deleted: Whether it has been deleted since.
         attachments: Pictures, videos or other files sent with it.
         raw: The network's untouched reply, for anything we did not model.
+        also_sent: The other messages one `send_message` call sent, in the
+            order they went, for a network that cannot carry everything in
+            one. Instagram sends the words and an attachment as two
+            messages, each with its own id; this message is the first, and
+            the rest are here. Empty almost everywhere else.
     """
 
     id: str
@@ -1080,6 +1158,7 @@ class Message:
     deleted: bool
     attachments: tuple[Attachment, ...]
     raw: RawData = field(default_factory=dict, repr=False)
+    also_sent: tuple[Message, ...] = ()
 
     def __post_init__(self) -> None:
         """Check the time has a timezone.

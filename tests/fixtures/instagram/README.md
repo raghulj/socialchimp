@@ -152,3 +152,53 @@ be worse than none, so use the page plus the heading.
   `reactions`) are accepted by Instagram's Graph API in practice per forum
   reports, but only `id,created_time,from,to,message` is in [CONV].
 - Requests-folder conversations inactive for 30 days are not returned ([MSG]).
+
+## Sending attachments (send_attachment_*)
+
+Researched 2026-10-01 from the docs below. Still **nothing captured live**.
+Docs: [MSG] = `/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api`
+(the page text calls the sections "Send Images" and "Send audio, video or
+file"; one fetch reported anchor ids `#send-images` and
+`#send-audio-video-or-file`, from a summarised fetch, so treat as likely, not
+verified). [ERR] = `https://developers.facebook.com/docs/messenger-platform/error-codes/`.
+
+- **send_attachment_requests.json** — request bodies for `POST /me/messages`,
+  keyed by kind. Source [MSG].
+  - Images: the docs use plural `message.attachments`, either one object or an
+    array (up to ten, `payload.url` and/or `payload.attachment_id` mixed).
+    Whether the singular `attachment` also works for an image is not stated
+    (it does on Messenger); both shapes are included. Prefer the documented
+    plural form.
+  - audio, video, file: singular `message.attachment`, `type` is `audio`,
+    `video` or `file`, `payload.url`. `file` is supported (PDF only per [MSG]).
+  - `like_heart` sticker: `{"attachment":{"type":"like_heart"}}`.
+  - `MEDIA_SHARE`: `{"attachment":{"type":"MEDIA_SHARE","payload":{"id":<post id>}}}`.
+    The app user must own the post/media.
+  - `is_reusable` is a Messenger field; [MSG] does not show it. Reuse goes
+    through the separate Attachment Upload API and `payload.attachment_id`.
+    Not fixtured.
+- **send_attachment_response.json** — `{"recipient_id","message_id"}`, the same
+  as text. [MSG] shows no `attachment_id` in the send response.
+- **send_attachment_errors.json** — keyed like errors.json. Codes and the
+  leading message text are from [ERR] (all `code 100`): 2018047 upload
+  failure (often type does not match the file at the URL), 2018008 could not
+  fetch URL (check valid SSL, size, response speed), 2018109 size exceeds
+  limit, 2018294 video timed out (75 second fetch limit), 2018074 invalid
+  attachment id or not owned. **Uncertainty:** `error_user_title/msg` are
+  omitted because I do not know them; `fbtrace_id`s are invented; HTTP 400 is
+  assumed. [ERR] does not list 2534068, 36000 or 1356001 as attachment errors.
+  The messages may carry a `(#100)` prefix in practice.
+
+Limits ([MSG]): image png/jpeg 8MB (the text also mentions GIFs in the
+payload; the table lists only png, jpeg); video mp4, ogg, avi, mov, webm 25MB;
+audio aac, m4a, wav, mp4 25MB; file pdf 25MB. Text limit 1000 bytes.
+
+Not confirmed by Meta docs: text plus an attachment in one message. [MSG]
+shows them as separate request bodies and third-party docs say text goes as a
+separate message; send two requests. Whether the CDN URL of a received
+attachment needs a token: Meta's docs say nothing I could find. The URLs
+(`lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=...&signature=...`) carry a
+signature in the query, so a plain GET likely works while valid, and they are
+described by partners as temporary; no expiry time documented. Meta's
+developer forum (community/threads/293297973468494) asks partners not to
+store or cache the media. Verify live.

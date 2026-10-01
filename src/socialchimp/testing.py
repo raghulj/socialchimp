@@ -71,7 +71,16 @@ from socialchimp.events import (
     answer_setup_check,
     verify_hmac_sha256,
 )
-from socialchimp.features import Feature, Limits, TextCount, check_post, measure_text
+from socialchimp.features import (
+    AttachmentRule,
+    Feature,
+    Limits,
+    MessageLimits,
+    TextCount,
+    check_message,
+    check_post,
+    measure_text,
+)
 from socialchimp.http import HttpClient
 from socialchimp.models import (
     AccountProfile,
@@ -111,6 +120,7 @@ from socialchimp.platform import (
     CanReadUpdatesAfter,
     CanReply,
     CanResumeLogin,
+    CanSendMessageMedia,
     CanStartConversations,
     ChooseAccount,
     Finished,
@@ -223,7 +233,7 @@ _CHECK_STATE_ARGUMENTS: Final = 2
 # both reach zero, and `check_post` reads that zero to refuse the post. Every
 # other number here means a limit, and a limit of zero would mean the network
 # allows none of something, which is what the check is looking for.
-_NOT_CHECKED: Final = frozenset({"text_counted_in", "posts_left_today"})
+_NOT_CHECKED: Final = frozenset({"text_counted_in", "posts_left_today", "messages"})
 
 # One thumbs-up with a skin tone on it. One letter to a person, two
 # characters to Python, four units to a network counting the way Java does,
@@ -245,6 +255,7 @@ _FAIL_NEXT_METHODS: Final[frozenset[str]] = frozenset(
         "read_conversations",
         "read_messages",
         "send_message",
+        "send_message_with_media",
         "mark_read",
         "start_conversation",
     }
@@ -332,6 +343,12 @@ _CLAIMS: Final[tuple[_Claim, ...]] = (
         Feature.START_CONVERSATIONS,
         CanStartConversations,
         ("start_conversation",),
+        wants_async=True,
+    ),
+    _Claim(
+        Feature.MESSAGE_MEDIA,
+        CanSendMessageMedia,
+        ("send_message_with_media",),
         wants_async=True,
     ),
 )
@@ -702,6 +719,17 @@ _FAKE_FEATURES: Final = (
     | Feature.READ_UPDATES_AFTER
     | Feature.MESSAGES
     | Feature.START_CONVERSATIONS
+    | Feature.MESSAGE_MEDIA
+)
+
+# What `FakePlatform` lets one direct message carry unless its limits say
+# otherwise: every kind, from a web address or a file, up to ten at once.
+_FAKE_MESSAGE_LIMITS: Final = MessageLimits(
+    max_text_length=1000,
+    max_attachments=10,
+    attachments=tuple(AttachmentRule(kind=kind) for kind in MediaKind),
+    takes_web_addresses=True,
+    takes_files=True,
 )
 
 # Where this fake's clock starts. Every post, like, update, conversation and
@@ -785,7 +813,7 @@ def _attachment_from(media: Media) -> Attachment:
         The same picture or video, in the shape a post read back uses.
     """
     return Attachment(
-        kind="image" if media.kind is MediaKind.IMAGE else "video",
+        kind=media.kind.name.lower(),
         url=media.url,
         preview_url=None,
         alt_text=media.alt_text,
@@ -986,10 +1014,20 @@ class FakePlatform:
         self.marked_seen: list[str] = []
         self.sent_messages: list[Message] = []
         self.marked_read: list[str] = []
+        if limits is not None and limits.messages is None:
+            # Limits that say nothing about messages cannot back a claim to
+            # send files in one, so the claim goes - which keeps a fake built
+            # with its own Limits before 0.11.0 passing every check.
+            self.features &= ~Feature.MESSAGE_MEDIA
         self._limits = (
             limits
             if limits is not None
-            else Limits(max_text_length=300, max_images=4, max_videos=1)
+            else Limits(
+                max_text_length=300,
+                max_images=4,
+                max_videos=1,
+                messages=_FAKE_MESSAGE_LIMITS,
+            )
         )
         self._transport = transport
         self._live: set[str] = set()
@@ -1267,9 +1305,9 @@ class FakePlatform:
         Only the inbox methods added in 0.8.0 look at this - `read_post`,
         `read_thread`, `reply`, `like`, `unlike`, `read_likes`,
         `fetch_updates_after`, `mark_seen`, `read_conversations`,
-        `read_messages`, `send_message`, `mark_read` and
-        `start_conversation`. `publish_fails_with` and `login_fails_with`
-        are still how you fail `publish` and signing in.
+        `read_messages`, `send_message`, `send_message_with_media`,
+        `mark_read` and `start_conversation`. `publish_fails_with` and
+        `login_fails_with` are still how you fail `publish` and signing in.
 
         Args:
             method: The method's name, such as `"like"`.
@@ -2280,6 +2318,60 @@ class FakePlatform:
         self.sent_messages.append(made)
         return made
 
+    async def send_message_with_media(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        media: Sequence[Media],
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send a message with files attached into an existing conversation.
+
+        Checked against `limits().messages` first, as a real network's is,
+        and kept as one message however much is attached.
+
+        Args:
+            connection: The account to send as.
+            conversation_id: Which conversation to send into.
+            text: The message's words.
+            media: What to attach. Read back as `Attachment`s of the same
+                kind, with the same web address.
+            options: Ignored. This fake has no per-network settings.
+
+        Returns:
+            The message that was sent.
+
+        Raises:
+            InvalidPostError: If the message breaks the fake's limits.
+            NotFoundError: If nothing in this fake knows that conversation.
+            SocialChimpError: Whatever `fail_next` queued for
+                `send_message_with_media`.
+        """
+        self._maybe_fail("send_message_with_media")
+        check_message(
+            text,
+            media,
+            platform=self.name,
+            limits=self._limits.messages or _FAKE_MESSAGE_LIMITS,
+        )
+        self._require_conversation(conversation_id)
+        self._message_seq += 1
+        made = Message(
+            id=f"message-{self._message_seq}",
+            conversation_id=conversation_id,
+            sender=self._person_for(connection),
+            text=text,
+            sent_at=self._next_time(),
+            is_mine=True,
+            deleted=False,
+            attachments=tuple(_attachment_from(item) for item in media),
+        )
+        self._messages.setdefault(conversation_id, []).append(made)
+        self.sent_messages.append(made)
+        return made
+
     async def mark_read(self, connection: Connection, conversation_id: str) -> None:
         """Mark a conversation as read.
 
@@ -3006,6 +3098,51 @@ class PlatformChecks:
                     f"unknown - it means nothing is allowed - and a post "
                     f"would be refused for a limit the network never set."
                 )
+
+    async def test_its_message_limits_match_what_it_says_it_can_do(self) -> None:
+        """`limits().messages` agrees with `Feature.MESSAGE_MEDIA`."""
+        connection = self.connection_or_skip()
+        limits = await self.platform.limits(connection)
+        messages = limits.messages
+        claims_media = Feature.MESSAGE_MEDIA in self.platform.features
+
+        if messages is None:
+            if claims_media:
+                _pytest().fail(
+                    "features has MESSAGE_MEDIA, but limits().messages is None. "
+                    "Say what one message may carry with "
+                    "Limits(messages=MessageLimits(...))."
+                )
+            return
+
+        for name in ("max_text_length", "max_text_bytes"):
+            value = getattr(messages, name)
+            if value is not None and value <= 0:
+                _pytest().fail(
+                    f"limits().messages.{name} is {value!r}. Use a positive "
+                    f"number, or None for not known."
+                )
+        if claims_media != bool(messages.attachments):
+            _pytest().fail(
+                f"features {'has' if claims_media else 'does not have'} "
+                f"MESSAGE_MEDIA, but limits().messages.attachments is "
+                f"{messages.attachments!r}. List a rule for each kind of file "
+                f"a message can carry exactly when MESSAGE_MEDIA is claimed."
+            )
+        if bool(messages.attachments) != (messages.max_attachments > 0):
+            _pytest().fail(
+                f"limits().messages.max_attachments is "
+                f"{messages.max_attachments!r} while attachments is "
+                f"{messages.attachments!r}. Zero exactly when no kind is listed."
+            )
+        if messages.attachments and not (
+            messages.takes_web_addresses or messages.takes_files
+        ):
+            _pytest().fail(
+                "limits().messages lists kinds of file, but neither "
+                "takes_web_addresses nor takes_files is True, so nothing "
+                "could ever be attached."
+            )
 
     async def test_a_post_over_a_limit_is_refused_before_any_request(self) -> None:
         """A post that breaks a declared limit never reaches the network."""

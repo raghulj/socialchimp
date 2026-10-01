@@ -53,6 +53,7 @@ from socialchimp.platforms.instagram import (
     IG_GRAPH_API,
     IG_LOGIN_HOST,
     MAX_CAPTION_LENGTH,
+    MESSAGE_LIMITS,
     MOST_HASHTAGS,
     MOST_IN_A_CAROUSEL,
     REFRESH_AFTER_SECONDS,
@@ -2216,6 +2217,7 @@ class TestTheDailyLimit:
             max_images=MOST_IN_A_CAROUSEL,
             max_videos=MOST_IN_A_CAROUSEL,
             posts_left_today=96,
+            messages=MESSAGE_LIMITS,
         )
         assert asked.calls[-1].request.url.params["fields"] == "config,quota_usage"
 

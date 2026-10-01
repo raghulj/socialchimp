@@ -51,9 +51,12 @@ from socialchimp.events import (
     verify_shared_secret,
 )
 from socialchimp.features import (
+    AttachmentRule,
     Feature,
     Limits,
+    MessageLimits,
     TextCount,
+    check_message,
     check_option_names,
     check_post,
     count_graphemes,
@@ -101,13 +104,14 @@ from socialchimp.storage import (
 )
 from socialchimp.tokens import TokenManager
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     "Account",
     "AccountProfile",
     "AppCredentials",
     "Attachment",
+    "AttachmentRule",
     "AuthError",
     "BlockedError",
     "BusinessLocation",
@@ -128,6 +132,7 @@ __all__ = [
     "Message",
     "MessageEvent",
     "MessageEventKind",
+    "MessageLimits",
     "MissingPermissionError",
     "NetworkError",
     "NotAllowedError",
@@ -169,6 +174,7 @@ __all__ = [
     "__version__",
     "answer_setup_check",
     "available_platforms",
+    "check_message",
     "check_not_too_old",
     "check_option_names",
     "check_post",

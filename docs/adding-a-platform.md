@@ -244,6 +244,10 @@ From here:
   `docs/social-inbox-contract.md` for the design that produced them. Nothing
   here is required: a platform with none of it simply has none of the
   methods, and `Account` refuses by name rather than guessing.
+- 0.11.0 added the `CanSendMessageMedia` extra with `Feature.MESSAGE_MEDIA`,
+  the `Limits.messages` field, and `MediaKind.AUDIO` and `MediaKind.FILE`.
+  `check_post` refuses the two new kinds on a post, so a platform that
+  calls it, as every one should, never sees them in `publish`.
 - **Changing or removing something is a major release**, and comes with a
   note saying what to do about it.
 - **Anything named with a leading underscore is ours**, including
