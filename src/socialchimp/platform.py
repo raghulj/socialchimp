@@ -72,6 +72,7 @@ __all__ = [
     "CanReply",
     "CanReplyToUpdates",
     "CanResumeLogin",
+    "CanSendMessageMedia",
     "CanStartConversations",
     "ChooseAccount",
     "Finished",
@@ -1322,6 +1323,47 @@ class CanMessage(Protocol):
         Args:
             connection: The account to mark it for.
             conversation_id: Which conversation to mark.
+        """
+        ...
+
+
+@runtime_checkable
+class CanSendMessageMedia(Protocol):
+    """Extra for sending pictures, video, sound or files in a direct message.
+
+    Separate from `CanMessage`, so a platform written before it keeps working
+    untouched. `Account.send_message(..., media=...)` is what your app calls;
+    it comes here only when there is something attached, and otherwise
+    calls `CanMessage.send_message` as before.
+
+    What a message may carry is on `Limits.messages`, and a platform should
+    check against it with `socialchimp.features.check_message` before
+    sending anything.
+    """
+
+    async def send_message_with_media(
+        self,
+        connection: Connection,
+        conversation_id: str,
+        text: str,
+        media: Sequence[Media],
+        *,
+        options: RawData | None = None,
+    ) -> Message:
+        """Send a message with files attached into an existing conversation.
+
+        Args:
+            connection: The account to send as.
+            conversation_id: Which conversation to send into.
+            text: The message's words. May be empty when something is
+                attached.
+            media: What to attach.
+            options: Settings for one network only, as for `send_message`.
+
+        Returns:
+            The message that was sent. Where the network needed several
+            messages to carry it all, the first, with the rest on
+            `Message.also_sent`.
         """
         ...
 

@@ -74,6 +74,7 @@ from socialchimp.platform import (
     CanReply,
     CanReplyToUpdates,
     CanResumeLogin,
+    CanSendMessageMedia,
     CanStartConversations,
     Finished,
     LoginRequest,
@@ -985,26 +986,42 @@ class Account:
         text: str,
         *,
         options: RawData | None = None,
+        media: Sequence[Media] = (),
     ) -> Message:
         """Send a message into an existing conversation.
 
         Args:
             conversation_id: Which conversation to send into.
-            text: The message's words.
+            text: The message's words. May be empty when something is
+                attached.
             options: Settings for one network only, such as a Meta message
                 tag.
+            media: Pictures, video, sound or files to attach, on a network
+                with `Feature.MESSAGE_MEDIA`. What it takes is on
+                `(await account.limits()).messages`.
 
         Returns:
-            The message that was sent.
+            The message that was sent. Where the network needed several
+            messages to carry everything - Instagram sends the words and an
+            attachment separately - the first, with the rest on
+            `Message.also_sent`.
 
         Raises:
-            NotSupportedError: If this network has no direct messages.
+            NotSupportedError: If this network has no direct messages, or
+                cannot send what is attached.
             ConfigError: If the platform says it can but has no method for
                 it.
         """
         connection = await self.connection()
         platform = self._client.platform_for(connection.platform)
         _refuse(platform, Feature.MESSAGES, "sending a direct message")
+        if media:
+            _refuse(platform, Feature.MESSAGE_MEDIA, "attachments in messages")
+            if not isinstance(platform, CanSendMessageMedia):
+                raise _missing_method(platform, "send_message_with_media")
+            return await platform.send_message_with_media(
+                connection, conversation_id, text, media, options=options
+            )
         if not isinstance(platform, CanMessage):
             raise _missing_method(platform, "send_message")
         return await platform.send_message(
