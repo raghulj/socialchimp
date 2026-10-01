@@ -59,6 +59,8 @@ repository for the design behind them.
 
 ::: socialchimp.platform.CanStartConversations
 
+::: socialchimp.platform.CanSendMessageMedia
+
 ## Signing someone in
 
 `start_login` and `finish_login` return one of these four. socialchimp's

@@ -4,6 +4,56 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.11.0 - unreleased
+
+### Added: pictures, video, sound and files in direct messages
+
+- **`account.send_message(conversation_id, text, media=(...))`** sends files
+  with a direct message, on a network with the new
+  **`Feature.MESSAGE_MEDIA`**. Without `media` it works exactly as before.
+  Networks plug in through the new **`CanSendMessageMedia`** extra
+  (`send_message_with_media`), so `CanMessage` is unchanged.
+- **`Limits.messages`**, a new **`MessageLimits`**, says what one direct
+  message may hold: `max_text_length` / `max_text_bytes`, `max_attachments`,
+  one **`AttachmentRule`** per kind of file (`mime_types`, `max_bytes`,
+  `max_count`), `one_kind_at_a_time`, and whether files go as web addresses
+  (`takes_web_addresses`) or uploads (`takes_files`).
+  **`check_message`** checks a message against it, and every platform runs
+  it before sending.
+- **`MediaKind.AUDIO`** and **`MediaKind.FILE`**, for messages. A post with
+  either is refused by `check_post` with `NotSupportedError`.
+- **`Media.from_url` / `from_file` / `from_bytes(..., mime_type=...)`**, and
+  `Media.known_type`. `from_url` now reads the kind and the name from the
+  address's path alone, so a signed link (`...loaf.jpg?X-Amz-Signature=...`)
+  works without saying `kind=`. Before, it was refused.
+- **`Message.also_sent`**: the other messages one call sent, for a network
+  that cannot carry everything in one. Empty otherwise.
+
+| Network | Files in a message | Limits |
+| --- | --- | --- |
+| Instagram | Up to 10 pictures together, or one video, sound or PDF; web addresses only. The words go as a second message, on `also_sent`. | `instagram.MESSAGE_LIMITS`: 1000 bytes of words; PNG/JPEG 8 MB; video, sound, PDF 25 MB |
+| Mastodon | Up to the server's `max_media_attachments` pictures, or one video or sound; uploads only | Read from `/api/v2/instance`, as for posts |
+| Bluesky | None - its chat takes no files | 1000 letters, 10,000 bytes of words |
+
+Instagram's refusals of a file are `InvalidPostError`s that say which
+problem it was: fetching (2018008), size (2018109), type (2018047), or a
+video it gave up on (2018294).
+
+### Changed
+
+- `Media.from_url("....mp3")` (or `.m4a`, `.aac`, `.wav`, `.oga`, `.opus`,
+  `.pdf`) used to raise `InvalidPostError` because it could not tell the
+  kind. It now makes an `AUDIO` or `FILE` media, and publishing one is
+  refused by `check_post` with `NotSupportedError` instead.
+- `Media.from_url(...).filename` is now the last part of the address's path,
+  without the `?query` - `".../loaf.jpg?sig=1"` gives `"loaf.jpg"`, not
+  `"loaf.jpg?sig=1"`.
+
+`check_message` checks a file's type only when you give it
+(`mime_type=...`): a type guessed from the file name differs between
+machines, so a guess is left to the network rather than refusing a file it
+would take.
+
 ## 0.10.0 - 2026-10-01
 
 ### Added: Instagram direct messages

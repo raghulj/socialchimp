@@ -24,6 +24,7 @@ from socialchimp import (
     Like,
     LikeResult,
     Limits,
+    Media,
     Message,
     MessageEvent,
     MessageEventKind,
@@ -689,6 +690,13 @@ class LyingMessenger(FakePlatform):
     features = FakePlatform.features | Feature.MESSAGES
 
 
+class LyingMediaMessenger(MessagingPlatform):
+    """Says it can send attachments, but has no method for it."""
+
+    name = "lying-media-messenger"
+    features = MessagingPlatform.features | Feature.MESSAGE_MEDIA
+
+
 def made_messenger() -> MessagingPlatform:
     platform = made("messenger")
     assert isinstance(platform, MessagingPlatform)
@@ -1122,6 +1130,7 @@ FAKES: dict[str, type[FakePlatform]] = {
     "lying-marker-poller": LyingUpdatesAfterPoller,
     "messenger": MessagingPlatform,
     "lying-messenger": LyingMessenger,
+    "lying-media-messenger": LyingMediaMessenger,
     "conversation-starter": ConversationStartingPlatform,
     "lying-conversation-starter": LyingConversationStarter,
 }
@@ -3086,6 +3095,28 @@ class TestDirectMessages:
             await sc.account("conn-1").send_message("c1", "hello")
 
         assert "send_message" in str(broken.value)
+
+    async def test_a_platform_claiming_attachments_but_unable_is_a_setup_problem(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="lying-media-messenger"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").send_message(
+                "c1", "hello", media=(Media.from_url("https://f.example/a.png"),)
+            )
+
+        assert "send_message_with_media" in str(broken.value)
+
+    async def test_a_platform_without_attachments_refuses_them(self) -> None:
+        storage = await storage_holding(a_connection(platform="messenger"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError):
+            await sc.account("conn-1").send_message(
+                "c1", "hello", media=(Media.from_url("https://f.example/a.png"),)
+            )
 
     async def test_a_platform_claiming_mark_read_but_unable_is_a_setup_problem(
         self,

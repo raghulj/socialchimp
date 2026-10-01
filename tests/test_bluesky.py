@@ -39,7 +39,7 @@ from socialchimp import (
     Unavailable,
     UpdateKind,
 )
-from socialchimp.features import TextCount
+from socialchimp.features import MessageLimits, TextCount
 from socialchimp.features import count_graphemes as shared_count_graphemes
 from socialchimp.http import Retries
 from socialchimp.platform import (
@@ -337,7 +337,26 @@ class TestWhatItSaysItCanDo:
             text_counted_in=TextCount.GRAPHEMES,
             max_images=4,
             max_image_bytes=1_000_000,
+            messages=MessageLimits(
+                max_text_length=1000,
+                max_text_bytes=10_000,
+                text_counted_in=TextCount.GRAPHEMES,
+            ),
         )
+
+    async def test_a_message_carries_words_only(
+        self,
+        platform: BlueskyPlatform,
+        account: Connection,
+    ) -> None:
+        # chat.bsky.convo's messageInput embeds only a post or a join link -
+        # no pictures - so there is no MESSAGE_MEDIA here.
+        limits = await platform.limits(account)
+
+        assert limits.messages is not None
+        assert limits.messages.attachments == ()
+        assert limits.messages.max_attachments == 0
+        assert Feature.MESSAGE_MEDIA not in platform.features
 
 
 # ---------------------------------------------------------------------------
