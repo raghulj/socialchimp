@@ -2628,6 +2628,8 @@ class TestReadingCommentsSinceAMarker:
             "fb1:soon:123_4",
             "fb1:1790000000:",
             "fb1:1790000000",
+            "fb1:\u00b2:a",
+            "fb1:99999999999999999999:a",
         ],
     )
     async def test_a_marker_it_did_not_make_is_refused(
@@ -2637,6 +2639,13 @@ class TestReadingCommentsSinceAMarker:
             await platform.fetch_updates_after(account, marker)
         with pytest.raises(ConfigError, match="Pass None"):
             await platform.mark_seen(account, marker)
+
+    @pytest.mark.parametrize("limit", [0, -1])
+    async def test_a_limit_below_one_is_refused(
+        self, platform: FacebookPlatform, account: Connection, limit: int
+    ) -> None:
+        with pytest.raises(ConfigError, match="limit"):
+            await platform.fetch_updates_after(account, None, limit=limit)
 
     async def test_marking_seen_asks_nothing_of_facebook(
         self, platform: FacebookPlatform, account: Connection

@@ -207,9 +207,14 @@ all. That review is the slowest part of getting started, so begin it early.
   the second. A marker from another network raises `ConfigError`.
   `limit` hands back the oldest that many with `more=True`; the first call
   (`marker=None`) is the latest comments as a starting point. `mark_seen`
-  only checks the marker - Facebook keeps no "seen" for comments. It does
-  not see a comment on a post older than the latest `recent_posts`, or more
-  than 1,000 new comments on one post between two calls; webhooks do.
+  only checks the marker - Facebook keeps no "seen" for comments. A call
+  sends 1 + `recent_posts` requests on a quiet page and never more than
+  1 + `recent_posts` x 10. Lost for good, where webhooks would see them: a
+  comment on a post older than the latest `recent_posts`; on one post, more
+  than 1,000 new comments between two calls; and a comment Facebook only
+  shows after a later one was handed back (held for review, then approved),
+  because its time is behind the marker. `limit` below 1 raises
+  `ConfigError`.
 - **Every Facebook update says who and which post** (0.12.0), the same way
   Mastodon and Bluesky do. For a comment, `post_id` is the comment itself,
   `thread_root_id` is the page's post, and `about_post_id` is what it

@@ -16,7 +16,9 @@ middle number may break something.
   `ConfigError`. Each call reads the latest `recent_posts` posts (25 by
   default) and about one request per post, at most 10 pages of 100
   comments on one post. Needs `pages_read_user_content`, already in
-  `DEFAULT_SCOPES`.
+  `DEFAULT_SCOPES`. Lost for good, where webhooks would see them: comments
+  on older posts, more than 1,000 new on one post between calls, and a
+  comment Facebook shows only after a later one was handed back.
 
 ### Changed: Facebook updates say who and which post
 

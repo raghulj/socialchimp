@@ -1595,20 +1595,28 @@ class FacebookPlatform:
         page's latest `recent_posts` posts (25 unless the platform was built
         with another number) and each one's comments, newest first, stopping
         at the first comment older than the marker. One request lists the
-        posts and one more is spent per post - up to `MOST_COMMENT_PAGES` of
-        `COMMENTS_PER_REQUEST` each for a busy one. Replies to comments are
-        included. It needs `pages_read_user_content`, which is in
-        `DEFAULT_SCOPES`. See
+        posts and usually one more per post: 26 on a quiet page with the
+        default 25 posts. A busy post can take up to `MOST_COMMENT_PAGES`,
+        so the most one call ever sends is 1 + `recent_posts` x 10 (251 by
+        default); the first call, with no marker, sends at most
+        1 + `recent_posts`. Replies to comments are included. It needs
+        `pages_read_user_content`, which is in `DEFAULT_SCOPES`. See
         https://developers.facebook.com/docs/graph-api/reference/object/comments/
 
         The marker is the time of the newest comment handed back, with the
         ids of every comment at that second that was - so nothing is handed
         back twice and nothing sharing that second is lost.
 
-        What this cannot see, and webhooks (`Feature.PUSH_UPDATES`) can: a
-        comment on a post older than the latest `recent_posts`, and on one
-        post, more than `MOST_COMMENT_PAGES` x `COMMENTS_PER_REQUEST` new
-        comments between two calls - the oldest past that are not reached.
+        What this cannot see, and webhooks (`Feature.PUSH_UPDATES`) can -
+        each lost for good, not just late, since the marker moves on past it:
+
+        - a comment on a post older than the latest `recent_posts`;
+        - on one post, more than `MOST_COMMENT_PAGES` x
+          `COMMENTS_PER_REQUEST` (1,000) new comments between two calls -
+          the oldest past that are never reached;
+        - a comment Facebook only shows after one with a later time was
+          already handed back - one held for review and then approved, say -
+          because its time is behind the marker.
 
         Args:
             connection: The page to read.
@@ -1633,6 +1641,12 @@ class FacebookPlatform:
                 person connected before `pages_read_user_content` was asked
                 for, and has to connect again.
         """
+        if limit is not None and limit < 1:
+            message = (
+                f"limit is {limit}, but it has to be 1 or more - or None for "
+                f"every new comment."
+            )
+            raise ConfigError(message)
         since = _own_marker(marker) if marker is not None else None
         page_id = where_to_post(
             connection,
@@ -2014,9 +2028,16 @@ def _own_marker(marker: str) -> tuple[datetime, frozenset[str]]:
     prefix, _, rest = marker.partition(":")
     seconds, _, ids = rest.partition(":")
     seen = frozenset(found for found in ids.split(",") if found)
-    if prefix != MARKER_PREFIX or not seconds.isdigit() or not seen:
+    if (
+        prefix != MARKER_PREFIX
+        or not (seconds.isascii() and seconds.isdigit())
+        or not seen
+    ):
         raise ConfigError(_BAD_MARKER_MESSAGE)
-    return datetime.fromtimestamp(int(seconds), UTC), seen
+    try:
+        return datetime.fromtimestamp(int(seconds), UTC), seen
+    except (OverflowError, ValueError, OSError) as problem:
+        raise ConfigError(_BAD_MARKER_MESSAGE) from problem
 
 
 def _marker_after(
