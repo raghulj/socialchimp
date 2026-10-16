@@ -143,7 +143,7 @@ from socialchimp.errors import (
     PlatformError,
     TokenExpiredError,
 )
-from socialchimp.events import Update
+from socialchimp.events import Update, UpdateBatch
 from socialchimp.events import answer_setup_check as echo_the_challenge
 from socialchimp.features import (
     Feature,
@@ -158,6 +158,7 @@ from socialchimp.models import (
     Connection,
     Media,
     MediaKind,
+    Person,
     Post,
     PostResult,
     PostState,
@@ -277,6 +278,26 @@ MOST_COMMENT_PAGES: Final = 10
 
 COMMENT_FIELDS: Final = "id,message,created_time,from,parent{id},permalink_url"
 """What to ask about each comment."""
+
+POST_FIELDS: Final = "id,attachments{media_type,target{id}}"
+"""What to ask about each of the page's posts when reading their comments.
+
+The attachment says whether a post is a video, and if so the video's own id
+- the id `publish` handed back - which differs from the post id the page's
+feed lists it under. See
+https://developers.facebook.com/docs/graph-api/reference/page/published_posts/
+and the `attachments` field of
+https://developers.facebook.com/docs/graph-api/reference/post/
+"""
+
+MARKER_PREFIX: Final = "fb1"
+"""What every marker this platform makes starts with.
+
+A marker is `fb1:<seconds since 1970>:<comment ids>` - the time of the newest
+comment handed back, and every comment at that same second that was handed
+back, because Facebook's times are to the second and two comments can share
+one. Treat it as opaque; only this file reads it.
+"""
 
 STATS_FIELDS: Final = (
     "id,reactions.limit(0).summary(true),comments.limit(0).summary(true)"
@@ -462,11 +483,31 @@ def _split_media(post: Post) -> tuple[list[Media], list[Media]]:
     return pictures, videos
 
 
-def _update_from(change: Change) -> Update:
+def _update_from(change: Change, *, root_id: str | None = None) -> Update:
     """Turn one change Facebook pushed into an update your app understands.
+
+    The shared fields are filled in the way the social inbox contract says,
+    the same as Mastodon and Bluesky:
+
+    - `actor`: who did it, from the change's `from` (an id and a name;
+      Facebook sends no picture here).
+    - A comment: `post_id` is the comment itself; `thread_root_id` is the
+      page's post it sits under; `about_post_id` is what it answers - the
+      post for a comment on the post, the comment for a reply.
+    - A reaction: `about_post_id` is what was reacted to (a comment, or the
+      post), `thread_root_id` the post. It has no id of its own.
+    - Anything else naming a post, such as a visitor's post on the page:
+      `post_id` is that post.
+
+    See the `feed` field of the Page webhooks reference:
+    https://developers.facebook.com/docs/graph-api/webhooks/reference/page/#feed
 
     Args:
         change: One change, already unwrapped from Meta's envelope.
+        root_id: The id to use for the page's post instead of the one in
+            the change. Reading comments by asking passes the video's own
+            id here for a video, so `thread_root_id` is the id `publish`
+            handed back; a webhook has no way to know it.
 
     Returns:
         What happened, in socialchimp's own words.
@@ -501,6 +542,80 @@ def _update_from(change: Change) -> Update:
         # only out there.
         raw=change.value,
         envelope=change.envelope,
+        **_normalised(change.value, item=item, root_id=root_id),
+    )
+
+
+def _normalised(
+    value: RawData,
+    *,
+    item: str,
+    root_id: str | None,
+) -> dict[str, Any]:
+    """Work out the shared `Update` fields for one Facebook change.
+
+    Args:
+        value: The change, as Facebook pushes it.
+        item: What it happened to, such as `"comment"`.
+        root_id: The page post's id to use instead of the change's own.
+
+    Returns:
+        `actor`, `post_id`, `about_post_id` and `thread_root_id`, ready to
+        hand to `Update.from_network`.
+    """
+    post_id = _text_of(value.get("post_id"))
+    comment_id = _text_of(value.get("comment_id"))
+    root = root_id or post_id
+    fields: dict[str, Any] = {"actor": _person_from(value.get("from"))}
+
+    if item == "comment":
+        parent = _text_of(value.get("parent_id"))
+        fields["post_id"] = comment_id
+        fields["thread_root_id"] = root
+        # A comment on the post names the post as its parent.
+        fields["about_post_id"] = parent if parent and parent != post_id else root
+    elif item in {"reaction", "like"}:
+        fields["about_post_id"] = comment_id or root
+        fields["thread_root_id"] = root
+    else:
+        fields["post_id"] = post_id
+    return fields
+
+
+def _text_of(value: object) -> str | None:
+    """Keep a value only if it is a string with something in it.
+
+    Args:
+        value: Anything.
+
+    Returns:
+        The string, or `None`.
+    """
+    return value if isinstance(value, str) and value else None
+
+
+def _person_from(raw: object) -> Person | None:
+    """Build the person a change names in `from`.
+
+    Args:
+        raw: Facebook's `{"id", "name"}`, or anything else.
+
+    Returns:
+        The person, or `None` when Facebook did not say who - it leaves
+        `from` off for people who have not allowed apps to see them.
+    """
+    if not isinstance(raw, dict):
+        return None
+    person_id = _text_of(raw.get("id"))
+    if person_id is None:
+        return None
+    return Person(
+        id=person_id,
+        handle=None,
+        display_name=_text_of(raw.get("name")),
+        avatar_url=None,
+        url=None,
+        raw=raw,
     )
 
 
@@ -568,6 +683,7 @@ class FacebookPlatform:
         | Feature.DELETE_POST
         | Feature.READ_STATS
         | Feature.PUSH_UPDATES
+        | Feature.READ_UPDATES_AFTER
     )
 
     def __init__(
@@ -1424,20 +1540,169 @@ class FacebookPlatform:
         found: list[Update] = []
         async with self._graph(connection.token.access_token) as graph:
             try:
-                posts, _ = await read_edge(
-                    graph,
-                    f"/{page_id}/published_posts",
-                    params={"fields": "id", "limit": self._recent_posts},
-                )
-                for post in posts:
-                    post_id = post.get("id")
-                    if isinstance(post_id, str) and post_id:
-                        found.extend(await _comments_on(graph, page_id, post_id, since))
+                for read_from, root_id in await self._recent_posts_of(graph, page_id):
+                    found.extend(
+                        await _comments_on(
+                            graph, page_id, read_from, since, root_id=root_id
+                        )
+                    )
             finally:
                 self._note(graph)
 
         found.sort(key=lambda update: update.created_at)
         return found
+
+    async def _recent_posts_of(
+        self,
+        graph: Graph,
+        page_id: str,
+    ) -> list[tuple[str, str]]:
+        """List the page's latest posts, and the id each is known by.
+
+        One request: `GET /{page}/published_posts`.
+
+        Args:
+            graph: A conversation signed with the page's token.
+            page_id: Which page.
+
+        Returns:
+            For each post, the id to read its comments from and the id to
+            name it by - the same for most, and the video's own id for a
+            video, which is what `publish` handed back.
+        """
+        posts, _ = await read_edge(
+            graph,
+            f"/{page_id}/published_posts",
+            params={"fields": POST_FIELDS, "limit": self._recent_posts},
+        )
+        found: list[tuple[str, str]] = []
+        for post in posts:
+            post_id = _text_of(post.get("id"))
+            if post_id is not None:
+                found.append((post_id, _video_id_of(post) or post_id))
+        return found
+
+    async def fetch_updates_after(
+        self,
+        connection: Connection,
+        marker: str | None,
+        *,
+        limit: int | None = None,
+    ) -> UpdateBatch:
+        """Read the comments that are new since a marker.
+
+        Facebook has no list of every comment on a page, so this reads the
+        page's latest `recent_posts` posts (25 unless the platform was built
+        with another number) and each one's comments, newest first, stopping
+        at the first comment older than the marker. One request lists the
+        posts and usually one more per post: 26 on a quiet page with the
+        default 25 posts. A busy post can take up to `MOST_COMMENT_PAGES`,
+        so the most one call ever sends is 1 + `recent_posts` x 10 (251 by
+        default); the first call, with no marker, sends at most
+        1 + `recent_posts`. Replies to comments are included. It needs
+        `pages_read_user_content`, which is in `DEFAULT_SCOPES`. See
+        https://developers.facebook.com/docs/graph-api/reference/object/comments/
+
+        The marker is the time of the newest comment handed back, with the
+        ids of every comment at that second that was - so nothing is handed
+        back twice and nothing sharing that second is lost.
+
+        What this cannot see, and webhooks (`Feature.PUSH_UPDATES`) can -
+        each lost for good, not just late, since the marker moves on past it:
+
+        - a comment on a post older than the latest `recent_posts`;
+        - on one post, more than `MOST_COMMENT_PAGES` x
+          `COMMENTS_PER_REQUEST` (1,000) new comments between two calls -
+          the oldest past that are never reached;
+        - a comment Facebook only shows after one with a later time was
+          already handed back - one held for review and then approved, say -
+          because its time is behind the marker.
+
+        Args:
+            connection: The page to read.
+            marker: The `UpdateBatch.marker` from the last call, or `None`
+                the first time. `None` reads the latest page of comments on
+                each post as a starting point, not the whole history.
+            limit: The most comments to hand back. With a marker, the oldest
+                that many, with `more` set when there are others waiting; on
+                the first call, the newest. `None` hands back all of them.
+
+        Returns:
+            The new comments, oldest first, as `COMMENT_CREATED` updates,
+            and the marker to store for next time. The marker is `None` only
+            while the page has never had a comment.
+
+        Raises:
+            ConfigError: If the connection names no page, or `marker` is not
+                one this platform made. Starting afresh instead would quietly
+                skip whatever came in between, so it refuses - pass `None` to
+                start afresh on purpose.
+            SocialChimpError: If Facebook refuses - most often because the
+                person connected before `pages_read_user_content` was asked
+                for, and has to connect again.
+        """
+        if limit is not None and limit < 1:
+            message = (
+                f"limit is {limit}, but it has to be 1 or more - or None for "
+                f"every new comment."
+            )
+            raise ConfigError(message)
+        since = _own_marker(marker) if marker is not None else None
+        page_id = where_to_post(
+            connection,
+            key="page_id",
+            what="Facebook page",
+            platform=PLATFORM_NAME,
+        )
+
+        found: list[Update] = []
+        async with self._graph(connection.token.access_token) as graph:
+            try:
+                for read_from, root_id in await self._recent_posts_of(graph, page_id):
+                    found.extend(
+                        await _comments_on(
+                            graph,
+                            page_id,
+                            read_from,
+                            since[0] if since is not None else None,
+                            root_id=root_id,
+                            seen=since[1] if since is not None else frozenset(),
+                        )
+                    )
+            finally:
+                self._note(graph)
+
+        found.sort(key=lambda update: (update.created_at, update.id))
+        more = False
+        if limit is not None and len(found) > limit:
+            if since is None:
+                # A starting point is the latest comments, not the oldest.
+                found = found[-limit:]
+            else:
+                found = found[:limit]
+                more = True
+
+        return UpdateBatch(
+            updates=tuple(found),
+            marker=_marker_after(found, since) if found else marker,
+            more=more,
+        )
+
+    async def mark_seen(self, connection: Connection, marker: str) -> None:
+        """Check a marker is one of ours. Facebook itself is not told.
+
+        Facebook keeps no "seen" for a page's comments, so there is nothing
+        to send; this exists so `Account.mark_seen` works the same on every
+        network that reads from a marker.
+
+        Args:
+            connection: The page. Not used.
+            marker: The marker that has been handled.
+
+        Raises:
+            ConfigError: If `marker` is not one this platform made.
+        """
+        _own_marker(marker)
 
     def check_signature(
         self,
@@ -1648,15 +1913,23 @@ async def _comments_on(
     page_id: str,
     post_id: str,
     since: datetime | None,
+    *,
+    root_id: str,
+    seen: frozenset[str] | None = None,
 ) -> list[Update]:
     """Read the comments on one post that are newer than a moment.
 
     Args:
         graph: A conversation signed with the page's token.
         page_id: Which page.
-        post_id: Which post.
+        post_id: Which post, as the page's feed lists it.
         since: Only comments newer than this, or `None` for the latest page
             of them.
+        root_id: The id to name the post by on each update - its own, or
+            the video's for a video.
+        seen: For a marker: the comments at exactly `since` already handed
+            back. Others at that second still count as new. `None` for the
+            older `fetch_updates`, where `since` itself counts as old.
 
     Returns:
         The comments as updates, in the order Facebook listed them.
@@ -1686,9 +1959,13 @@ async def _comments_on(
             if value is None:
                 continue
             written = datetime.fromtimestamp(float(value["created_time"]), UTC)
-            if since is not None and written <= since:
+            if since is not None and (
+                written < since or (written == since and seen is None)
+            ):
                 caught_up = True
                 break
+            if seen is not None and written == since and value["comment_id"] in seen:
+                continue
             updates.append(
                 _update_from(
                     Change(
@@ -1696,12 +1973,95 @@ async def _comments_on(
                         when=written,
                         topic="feed",
                         value=value,
-                    )
+                    ),
+                    root_id=root_id,
                 )
             )
         if caught_up or after is None:
             break
     return updates
+
+
+def _video_id_of(post: RawData) -> str | None:
+    """Find the video's own id on a post that is a video.
+
+    Args:
+        post: One of the page's posts, asked for with `POST_FIELDS`.
+
+    Returns:
+        The video's id - the one `publish` handed back - or `None` for a
+        post that is not a video.
+    """
+    attachments = post.get("attachments")
+    data = attachments.get("data") if isinstance(attachments, dict) else None
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict) or item.get("media_type") != "video":
+            continue
+        target = item.get("target")
+        if isinstance(target, dict):
+            return _text_of(target.get("id"))
+    return None
+
+
+# What we say about a marker this platform did not make. Treating it as
+# `None` would quietly start again from the latest comments and skip
+# everything in between, so it is refused instead.
+_BAD_MARKER_MESSAGE: Final = (
+    "This marker was not made by Facebook's platform, so there is nothing "
+    "safe to resume from. Pass None to start afresh."
+)
+
+
+def _own_marker(marker: str) -> tuple[datetime, frozenset[str]]:
+    """Read a marker, insisting it is one this platform made.
+
+    Args:
+        marker: The marker to read.
+
+    Returns:
+        The moment it names, and the comments at that second already handed
+        back.
+
+    Raises:
+        ConfigError: If this is not a marker this platform made.
+    """
+    prefix, _, rest = marker.partition(":")
+    seconds, _, ids = rest.partition(":")
+    seen = frozenset(found for found in ids.split(",") if found)
+    if (
+        prefix != MARKER_PREFIX
+        or not (seconds.isascii() and seconds.isdigit())
+        or not seen
+    ):
+        raise ConfigError(_BAD_MARKER_MESSAGE)
+    try:
+        return datetime.fromtimestamp(int(seconds), UTC), seen
+    except (OverflowError, ValueError, OSError) as problem:
+        raise ConfigError(_BAD_MARKER_MESSAGE) from problem
+
+
+def _marker_after(
+    handed_back: list[Update],
+    since: tuple[datetime, frozenset[str]] | None,
+) -> str:
+    """Make the marker that resumes just after what was handed back.
+
+    Args:
+        handed_back: The updates handed back, oldest first. Never empty.
+        since: What the last marker said, if there was one.
+
+    Returns:
+        The new marker.
+    """
+    newest = handed_back[-1].created_at
+    seen = {
+        str(update.raw["comment_id"])
+        for update in handed_back
+        if update.created_at == newest
+    }
+    if since is not None and since[0] == newest:
+        seen |= since[1]
+    return f"{MARKER_PREFIX}:{int(newest.timestamp())}:{','.join(sorted(seen))}"
 
 
 def _add_timing(form: dict[str, Any], when: int | None) -> None:
