@@ -43,6 +43,7 @@ from socialchimp.platform import (
     CanReadPushedUpdates,
     CanReadStats,
     CanReadUpdates,
+    CanReadUpdatesAfter,
     CanResumeLogin,
     ChooseAccount,
     Finished,
@@ -2433,3 +2434,432 @@ class TestFacebookBehavesLikeTheOthers(PlatformChecks):
                 f"GET /v21.0/{POST_ID}/comments": a_page_of([a_comment(1, minutes=10)]),
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# Reading comments since a marker
+# ---------------------------------------------------------------------------
+
+
+def posts_with(*entries: dict[str, Any]) -> dict[str, Any]:
+    """Facebook's list of a page's posts, each as given."""
+    return {"data": list(entries)}
+
+
+def stub_posts(network: respx.Router, *ids: str) -> respx.Route:
+    return network.get(f"/{PAGE_ID}/published_posts").mock(
+        return_value=httpx.Response(200, json=some_posts(*ids))
+    )
+
+
+def stub_comments(
+    network: respx.Router, comments: list[dict[str, Any]], *, on: str = POST_ID
+) -> respx.Route:
+    return network.get(f"/{on}/comments").mock(
+        return_value=httpx.Response(200, json=a_page_of(comments))
+    )
+
+
+class TestReadingCommentsSinceAMarker:
+    def test_it_says_it_can_be_read_from_a_marker(
+        self, platform: FacebookPlatform
+    ) -> None:
+        assert Feature.READ_UPDATES_AFTER in platform.features
+        assert isinstance(platform, CanReadUpdatesAfter)
+
+    async def test_the_first_call_starts_from_the_latest_comments(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            route = stub_comments(
+                network, [a_comment(2, minutes=20), a_comment(1, minutes=10)]
+            )
+
+            batch = await platform.fetch_updates_after(account, None)
+
+        assert [u.raw["message"] for u in batch.updates] == ["Comment 1", "Comment 2"]
+        assert batch.marker is not None
+        assert batch.more is False
+        assert route.call_count == 1
+
+    async def test_a_page_with_no_comments_has_no_marker_yet(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            stub_comments(network, [])
+
+            batch = await platform.fetch_updates_after(account, None)
+
+        assert batch.updates == ()
+        assert batch.marker is None
+
+    async def test_the_next_call_returns_only_what_is_newer(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            comments = stub_comments(network, [a_comment(1, minutes=10)])
+            first = await platform.fetch_updates_after(account, None)
+
+            comments.mock(
+                return_value=httpx.Response(
+                    200,
+                    json=a_page_of(
+                        [
+                            a_comment(3, minutes=30),
+                            a_comment(2, minutes=20),
+                            a_comment(1, minutes=10),
+                            a_comment(0, minutes=5),
+                        ]
+                    ),
+                )
+            )
+            second = await platform.fetch_updates_after(account, first.marker)
+
+        assert [u.raw["message"] for u in second.updates] == ["Comment 2", "Comment 3"]
+        assert second.marker != first.marker
+
+    async def test_nothing_new_keeps_the_marker(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            stub_comments(network, [a_comment(1, minutes=10)])
+            first = await platform.fetch_updates_after(account, None)
+
+            second = await platform.fetch_updates_after(account, first.marker)
+
+        assert second.updates == ()
+        assert second.marker == first.marker
+
+    async def test_a_comment_in_the_same_second_as_the_marker_is_not_lost(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        # Facebook's times are to the second, so two comments can share one.
+        # The marker remembers which of them it has already handed back.
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            comments = stub_comments(network, [a_comment(1, minutes=10)])
+            first = await platform.fetch_updates_after(account, None)
+
+            comments.mock(
+                return_value=httpx.Response(
+                    200,
+                    json=a_page_of(
+                        [a_comment(2, minutes=10), a_comment(1, minutes=10)]
+                    ),
+                )
+            )
+            second = await platform.fetch_updates_after(account, first.marker)
+            third = await platform.fetch_updates_after(account, second.marker)
+
+        assert [u.raw["message"] for u in second.updates] == ["Comment 2"]
+        assert third.updates == ()
+
+    async def test_a_limit_hands_back_the_oldest_and_says_there_is_more(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            comments = stub_comments(network, [a_comment(0, minutes=0)])
+            start = await platform.fetch_updates_after(account, None)
+
+            comments.mock(
+                return_value=httpx.Response(
+                    200,
+                    json=a_page_of(
+                        [a_comment(n, minutes=n) for n in (5, 4, 3, 2, 1, 0)]
+                    ),
+                )
+            )
+            first = await platform.fetch_updates_after(account, start.marker, limit=2)
+            second = await platform.fetch_updates_after(account, first.marker, limit=2)
+            third = await platform.fetch_updates_after(account, second.marker, limit=2)
+            fourth = await platform.fetch_updates_after(account, third.marker, limit=2)
+
+        assert [u.raw["message"] for u in first.updates] == ["Comment 1", "Comment 2"]
+        assert first.more is True
+        assert [u.raw["message"] for u in second.updates] == ["Comment 3", "Comment 4"]
+        assert [u.raw["message"] for u in third.updates] == ["Comment 5"]
+        assert third.more is False
+        assert fourth.updates == ()
+
+    async def test_a_limit_on_the_first_call_keeps_the_newest(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            stub_comments(network, [a_comment(n, minutes=n) for n in (3, 2, 1)])
+
+            batch = await platform.fetch_updates_after(account, None, limit=2)
+
+        assert [u.raw["message"] for u in batch.updates] == ["Comment 2", "Comment 3"]
+        assert batch.more is False
+
+    async def test_comments_on_every_recent_post_come_back_together(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        older = {
+            "id": f"{OLDER_POST_ID}_9",
+            "message": "Old post, new comment",
+            "created_time": written(15),
+        }
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID, OLDER_POST_ID)
+            stub_comments(network, [a_comment(2, minutes=20), a_comment(1, minutes=10)])
+            stub_comments(network, [older], on=OLDER_POST_ID)
+
+            batch = await platform.fetch_updates_after(account, None)
+
+        assert [u.raw["message"] for u in batch.updates] == [
+            "Comment 1",
+            "Old post, new comment",
+            "Comment 2",
+        ]
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "113140200000000099",
+            "2026-09-22T10:00:00Z::at://did/x",
+            "fb1:",
+            "fb1:soon:123_4",
+            "fb1:1790000000:",
+            "fb1:1790000000",
+            "fb1:\u00b2:a",
+            "fb1:99999999999999999999:a",
+        ],
+    )
+    async def test_a_marker_it_did_not_make_is_refused(
+        self, platform: FacebookPlatform, account: Connection, marker: str
+    ) -> None:
+        with pytest.raises(ConfigError, match="Pass None"):
+            await platform.fetch_updates_after(account, marker)
+        with pytest.raises(ConfigError, match="Pass None"):
+            await platform.mark_seen(account, marker)
+
+    @pytest.mark.parametrize("limit", [0, -1])
+    async def test_a_limit_below_one_is_refused(
+        self, platform: FacebookPlatform, account: Connection, limit: int
+    ) -> None:
+        with pytest.raises(ConfigError, match="limit"):
+            await platform.fetch_updates_after(account, None, limit=limit)
+
+    async def test_marking_seen_asks_nothing_of_facebook(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        # Facebook keeps no "seen" for a page's comments, so this only checks
+        # the marker is one of ours.
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            stub_comments(network, [a_comment(1, minutes=10)])
+            batch = await platform.fetch_updates_after(account, None)
+            asked = len(network.calls)
+
+            assert batch.marker is not None
+            await platform.mark_seen(account, batch.marker)
+
+            assert len(network.calls) == asked
+
+    async def test_it_asks_which_posts_are_videos(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            posts = stub_posts(network, POST_ID)
+            stub_comments(network, [])
+
+            await platform.fetch_updates_after(account, None)
+
+        fields = posts.calls.last.request.url.params["fields"]
+        assert "attachments{media_type,target{id}}" in fields
+
+
+class TestTheShapeOfAFacebookComment:
+    async def test_a_comment_names_itself_its_post_and_its_author(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            stub_comments(network, [a_comment(1, minutes=10)])
+
+            [update] = (await platform.fetch_updates_after(account, None)).updates
+
+        assert update.post_id == f"{POST_ID}_1"
+        assert update.about_post_id == POST_ID
+        assert update.thread_root_id == POST_ID
+        assert update.actor is not None
+        assert update.actor.id == "user-1"
+        assert update.actor.display_name == "User 1"
+        assert update.actor.handle is None
+
+    async def test_a_reply_is_about_the_comment_it_answers(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        reply = a_comment(2, minutes=20, parent={"id": f"{POST_ID}_1"})
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            stub_comments(network, [reply])
+
+            [update] = (await platform.fetch_updates_after(account, None)).updates
+
+        assert update.post_id == f"{POST_ID}_2"
+        assert update.about_post_id == f"{POST_ID}_1"
+        assert update.thread_root_id == POST_ID
+
+    async def test_a_comment_on_a_video_names_the_id_publish_gave(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        # publish hands back the video's own id; the page's feed lists the
+        # same video under a post id of its own.
+        video_post = {
+            "id": POST_ID,
+            "attachments": {
+                "data": [{"media_type": "video", "target": {"id": VIDEO_ID}}]
+            },
+        }
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get(f"/{PAGE_ID}/published_posts").mock(
+                return_value=httpx.Response(200, json=posts_with(video_post))
+            )
+            stub_comments(network, [a_comment(1, minutes=10)])
+
+            [update] = (await platform.fetch_updates_after(account, None)).updates
+
+        assert update.thread_root_id == VIDEO_ID
+        assert update.about_post_id == VIDEO_ID
+        # raw keeps what Facebook itself calls the post, as a webhook would.
+        assert update.raw["post_id"] == POST_ID
+
+    @pytest.mark.parametrize(
+        "attachments",
+        [
+            {"data": [{"media_type": "photo", "target": {"id": "photo-1"}}]},
+            {"data": [{"media_type": "video"}]},
+            {"data": ["not an object"]},
+            "not an object",
+        ],
+    )
+    async def test_anything_but_a_video_keeps_the_post_id(
+        self, platform: FacebookPlatform, account: Connection, attachments: object
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.get(f"/{PAGE_ID}/published_posts").mock(
+                return_value=httpx.Response(
+                    200, json=posts_with({"id": POST_ID, "attachments": attachments})
+                )
+            )
+            stub_comments(network, [a_comment(1, minutes=10)])
+
+            [update] = (await platform.fetch_updates_after(account, None)).updates
+
+        assert update.thread_root_id == POST_ID
+
+    async def test_the_older_way_of_asking_has_the_same_shape(
+        self, platform: FacebookPlatform, account: Connection
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            stub_posts(network, POST_ID)
+            stub_comments(network, [a_comment(1, minutes=10)])
+
+            [update] = await platform.fetch_updates(account, None)
+
+        assert update.post_id == f"{POST_ID}_1"
+        assert update.thread_root_id == POST_ID
+        assert update.actor is not None
+
+    def test_a_pushed_comment_has_the_same_shape(
+        self, platform: FacebookPlatform
+    ) -> None:
+        [update] = platform.read_updates(
+            a_push(
+                {
+                    "item": "comment",
+                    "verb": "add",
+                    "comment_id": f"{POST_ID}_1",
+                    "post_id": POST_ID,
+                    "parent_id": POST_ID,
+                    "from": {"id": "user-1", "name": "User 1"},
+                    "message": "Lovely",
+                    "created_time": 1_790_000_000,
+                }
+            )
+        )
+
+        assert update.post_id == f"{POST_ID}_1"
+        assert update.about_post_id == POST_ID
+        assert update.thread_root_id == POST_ID
+        assert update.actor is not None
+        assert update.actor.display_name == "User 1"
+
+    def test_a_pushed_reply_is_about_the_comment_it_answers(
+        self, platform: FacebookPlatform
+    ) -> None:
+        [update] = platform.read_updates(
+            a_push(
+                {
+                    "item": "comment",
+                    "verb": "add",
+                    "comment_id": f"{POST_ID}_2",
+                    "post_id": POST_ID,
+                    "parent_id": f"{POST_ID}_1",
+                }
+            )
+        )
+
+        assert update.about_post_id == f"{POST_ID}_1"
+        assert update.thread_root_id == POST_ID
+        assert update.actor is None
+
+    @pytest.mark.parametrize(
+        ("value", "about"),
+        [
+            ({"item": "reaction", "verb": "add", "post_id": POST_ID}, POST_ID),
+            (
+                {
+                    "item": "reaction",
+                    "verb": "add",
+                    "post_id": POST_ID,
+                    "comment_id": f"{POST_ID}_1",
+                },
+                f"{POST_ID}_1",
+            ),
+        ],
+    )
+    def test_a_pushed_reaction_is_about_what_was_reacted_to(
+        self, platform: FacebookPlatform, value: dict[str, Any], about: str
+    ) -> None:
+        [update] = platform.read_updates(
+            a_push({**value, "from": {"id": "user-1", "name": "User 1"}})
+        )
+
+        assert update.post_id is None
+        assert update.about_post_id == about
+        assert update.thread_root_id == POST_ID
+        assert update.actor is not None
+
+    def test_a_pushed_post_by_somebody_else_names_that_post(
+        self, platform: FacebookPlatform
+    ) -> None:
+        [update] = platform.read_updates(
+            a_push({"item": "status", "verb": "add", "post_id": f"{PAGE_ID}_9"})
+        )
+
+        assert update.post_id == f"{PAGE_ID}_9"
+        assert update.about_post_id is None
+
+    def test_an_author_with_no_id_is_left_out(self, platform: FacebookPlatform) -> None:
+        [update] = platform.read_updates(
+            a_push(
+                {
+                    "item": "comment",
+                    "verb": "add",
+                    "comment_id": "c1",
+                    "post_id": POST_ID,
+                    "from": {"name": "Somebody"},
+                }
+            )
+        )
+
+        assert update.actor is None

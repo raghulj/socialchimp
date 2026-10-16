@@ -4,6 +4,40 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.12.0 - 2026-10-16
+
+### Added: Facebook Page comments since a marker
+
+- **Facebook has `Feature.READ_UPDATES_AFTER`**:
+  `account.fetch_updates_after(marker, limit=...)` returns the comments that
+  are new since a marker, oldest first, and `account.mark_seen(marker)`
+  accepts its markers. The marker is opaque (`fb1:...`) and resumes without
+  missing or repeating a comment; a marker from another network raises
+  `ConfigError`. Each call reads the latest `recent_posts` posts (25 by
+  default) and about one request per post, at most 10 pages of 100
+  comments on one post. Needs `pages_read_user_content`, already in
+  `DEFAULT_SCOPES`. Lost for good, where webhooks would see them: comments
+  on older posts, more than 1,000 new on one post between calls, and a
+  comment Facebook shows only after a later one was handed back.
+
+### Changed: Facebook updates say who and which post
+
+Every Facebook `Update`, pushed or read, now fills in the shared fields the
+way Mastodon and Bluesky do. They were all `None` before; `raw` is
+unchanged.
+
+- A comment: `post_id` is the comment's id, `thread_root_id` the page's
+  post, `about_post_id` the post or, for a reply, the comment it answers,
+  and `actor` the commenter (id and name).
+- A reaction: `about_post_id` is what was reacted to, `thread_root_id` the
+  post.
+- Read by asking, a comment on a video names the video's own id - the one
+  `publish` handed back - in `thread_root_id` and `about_post_id`. The page
+  feed's post id for it stays on `raw["post_id"]`. A webhook only knows the
+  feed's id.
+- The page's posts are now asked for with `attachments{media_type,target{id}}`
+  as well as `id`.
+
 ## 0.11.0 - 2026-10-01
 
 ### Added: pictures, video, sound and files in direct messages
