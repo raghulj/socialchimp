@@ -196,6 +196,33 @@ all. That review is the slowest part of getting started, so begin it early.
   default, `recent_posts` on the constructor) as `UpdateKind.COMMENT_CREATED`,
   the same shape and the same `id` a webhook produces. It costs a request per
   post per poll, and it does not see a comment on an older post.
+- **`account.fetch_updates_after(marker, limit=...)` reads comments since a
+  marker** (0.12.0, `Feature.READ_UPDATES_AFTER`), so a poller can resume
+  across restarts without missing or repeating one. Facebook has no list of
+  every comment on a page, so it reads the same latest `recent_posts` posts
+  and each post's comments newest first, stopping at the first one older
+  than the marker: one request for the posts and about one per post. The
+  marker is opaque (`fb1:...`): the time of the newest comment handed back
+  and the ids of those at that same second, since Facebook's times are to
+  the second. A marker from another network raises `ConfigError`.
+  `limit` hands back the oldest that many with `more=True`; the first call
+  (`marker=None`) is the latest comments as a starting point. `mark_seen`
+  only checks the marker - Facebook keeps no "seen" for comments. It does
+  not see a comment on a post older than the latest `recent_posts`, or more
+  than 1,000 new comments on one post between two calls; webhooks do.
+- **Every Facebook update says who and which post** (0.12.0), the same way
+  Mastodon and Bluesky do. For a comment, `post_id` is the comment itself,
+  `thread_root_id` is the page's post, and `about_post_id` is what it
+  answers - the post, or for a reply the comment it replies to. `actor` is
+  the commenter's id and name (no picture; Facebook leaves `from` off for
+  people who have not allowed apps to see them). A reaction has
+  `about_post_id` and `thread_root_id`. The words and the link stay on
+  `raw["message"]` and `raw["permalink_url"]`.
+- **A video is named by the id `publish` gave** when comments are read by
+  asking: the page's feed lists a video under a post id of its own, and
+  socialchimp maps it back through the post's attachment. A webhook carries
+  only the feed's post id, so a comment pushed about a video has that in
+  `thread_root_id` instead.
 - **Reading other people's comments needs `pages_read_user_content`**, which
   is one of the permissions Meta reviews. Anybody who connected before it was
   asked for has to connect again.
