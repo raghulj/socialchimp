@@ -4,6 +4,12 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.12.1 - 2026-10-17
+
+### Changed
+
+- The package no longer lists an author email; PyPI shows the name only.
+
 ## 0.12.0 - 2026-10-16
 
 ### Added: Facebook Page comments since a marker
