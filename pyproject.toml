@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-authors = [{ name = "Raghul Jagannathan", email = "raghulj@gmail.com" }]
+authors = [{ name = "Raghul Jagannathan" }]
 keywords = [
     "social",
     "mastodon",
