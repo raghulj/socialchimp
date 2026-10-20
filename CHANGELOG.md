@@ -4,7 +4,7 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
-## 0.13.0 - Unreleased
+## 0.13.0 - 2026-10-21
 
 ### Added: subscribing a Facebook Page to your app's pushes
 
