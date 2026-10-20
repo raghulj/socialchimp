@@ -248,6 +248,10 @@ From here:
   the `Limits.messages` field, and `MediaKind.AUDIO` and `MediaKind.FILE`.
   `check_post` refuses the two new kinds on a post, so a platform that
   calls it, as every one should, never sees them in `publish`.
+- 0.13.0 added the `CanSubscribeApp` extra with `Feature.SUBSCRIBE_APP`, for
+  a network that pushes an account's updates only once the account has
+  subscribed your app, and `UpdateKind.COMMENT_EDITED` and
+  `UpdateKind.REACTION_REMOVED`.
 - **Changing or removing something is a major release**, and comes with a
   note saying what to do about it.
 - **Anything named with a leading underscore is ours**, including

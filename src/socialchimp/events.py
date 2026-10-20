@@ -93,6 +93,13 @@ class UpdateKind(Enum):
     COMMENT_DELETED = "comment_deleted"
     """A comment was removed, by its author or by a moderator."""
 
+    COMMENT_EDITED = "comment_edited"
+    """Somebody changed the words of a comment they had already left.
+
+    Facebook's edits used to arrive as `UNKNOWN`; from 0.13.0 they have this
+    kind of their own.
+    """
+
     POST_PUBLISHED = "post_published"
     """A post the network was still working on is now live.
 
@@ -115,6 +122,13 @@ class UpdateKind(Enum):
 
     REACTION_ADDED = "reaction_added"
     """Someone liked, favourited or reacted to a post."""
+
+    REACTION_REMOVED = "reaction_removed"
+    """Someone took back a like or a reaction.
+
+    Facebook's used to arrive as `UNKNOWN`; from 0.13.0 they have this kind
+    of their own.
+    """
 
     MENTION = "mention"
     """Someone named this account in a post of their own."""

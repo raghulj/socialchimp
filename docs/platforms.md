@@ -228,6 +228,18 @@ all. That review is the slowest part of getting started, so begin it early.
   socialchimp maps it back through the post's attachment. A webhook carries
   only the feed's post id, so a comment pushed about a video has that in
   `thread_root_id` instead.
+- **`account.subscribe_to_updates()` turns pushes on for a page** (0.13.0,
+  `Feature.SUBSCRIBE_APP`). Facebook pushes nothing for a page until the page
+  has subscribed your app, and signing in does not do that. It subscribes to
+  `feed` unless you pass `fields=`, and the fields you pass replace the ones
+  already there. It is safe to call again, so run it once over pages
+  connected before. It needs `pages_manage_metadata`, which the default
+  sign-in leaves out: sign in with `scopes=PUSH_SCOPES` (from
+  `socialchimp.platforms.facebook`). A page connected without it gets
+  `NotAllowedError` and has to connect again.
+- **An edited comment is `UpdateKind.COMMENT_EDITED`, and a reaction taken
+  back is `UpdateKind.REACTION_REMOVED`** (0.13.0). Both used to arrive as
+  `UNKNOWN`.
 - **Reading other people's comments needs `pages_read_user_content`**, which
   is one of the permissions Meta reviews. Anybody who connected before it was
   asked for has to connect again.

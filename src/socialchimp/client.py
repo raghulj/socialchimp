@@ -76,6 +76,7 @@ from socialchimp.platform import (
     CanResumeLogin,
     CanSendMessageMedia,
     CanStartConversations,
+    CanSubscribeApp,
     Finished,
     LoginRequest,
 )
@@ -1072,6 +1073,35 @@ class Account:
         if not isinstance(platform, CanStartConversations):
             raise _missing_method(platform, "start_conversation")
         return await platform.start_conversation(connection, person_ids, text)
+
+    async def subscribe_to_updates(
+        self,
+        *,
+        fields: Sequence[str] | None = None,
+    ) -> None:
+        """Ask the network to push this account's updates to your app.
+
+        Meta sends a Page's comments and reactions to your webhook only once
+        the Page has subscribed your app, and signing in does not do that.
+        Call this after a Page connects. It is safe to call again, so it can
+        also be run once over Pages connected before.
+
+        Args:
+            fields: The network's own names for what to push, such as
+                Facebook's `"feed"`. `None` is the platform's own choice,
+                which covers its comments and reactions.
+
+        Raises:
+            NotSupportedError: If this network has nothing to subscribe.
+            ConfigError: If the platform says it can but has no method for
+                it.
+        """
+        connection = await self.connection()
+        platform = self._client.platform_for(connection.platform)
+        _refuse(platform, Feature.SUBSCRIBE_APP, "subscribing your app to updates")
+        if not isinstance(platform, CanSubscribeApp):
+            raise _missing_method(platform, "subscribe_to_updates")
+        await platform.subscribe_to_updates(connection, fields=fields)
 
     async def features(self) -> Feature:
         """Ask what this account's network can do.

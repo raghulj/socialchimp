@@ -4,6 +4,28 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org): while this is 0.x, a change to the
 middle number may break something.
 
+## 0.13.0 - Unreleased
+
+### Added: subscribing a Facebook Page to your app's pushes
+
+- **`account.subscribe_to_updates(fields=None)`**, with the new
+  `CanSubscribeApp` extra and `Feature.SUBSCRIBE_APP`. Facebook pushes a
+  Page's comments and reactions to your webhook only once the Page has
+  subscribed your app, which signing in does not do. This sends
+  `POST /{page-id}/subscribed_apps` with the Page's token, for `feed` unless
+  you pass `fields=`; the fields replace any already there. Safe to call
+  again, so it can be run over Pages already connected. A bad field list
+  raises `ConfigError`, and Facebook answering `success: false`
+  `PlatformError`.
+- **`facebook.PUSH_SCOPES`**: `DEFAULT_SCOPES` plus `pages_manage_metadata`,
+  which subscribing needs. The defaults are unchanged. A Page connected
+  without it gets `NotAllowedError` and has to connect again.
+- **`UpdateKind.COMMENT_EDITED` and `UpdateKind.REACTION_REMOVED`.**
+  Facebook's `comment edited` and `reaction`/`like remove` used to arrive as
+  `UNKNOWN` and now have these kinds.
+- `FakePlatform` has `subscribe_to_updates`, recorded on `subscribed`, and
+  `fail_next("subscribe_to_updates", ...)` works.
+
 ## 0.12.1 - 2026-10-17
 
 ### Changed
