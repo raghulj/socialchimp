@@ -653,17 +653,18 @@ Then:
 
 A page has to be **subscribed to your app** before Meta sends anything for it,
 as well as the URL being saved in the dashboard - a second step people miss.
-With the Page's own token, which is the one on the connection:
+Once the Page is connected:
 
-```bash
-curl -X POST "https://graph.facebook.com/v21.0/<page id>/subscribed_apps" \
-  -H "Authorization: Bearer <page token>" \
-  -d subscribed_fields=feed
+```python
+await sc.account(connection_id).subscribe_to_updates()
 ```
 
-Meta answers `{"success": true}`. socialchimp does not make this call for you.
-It needs a further permission, `pages_manage_metadata`, that not everybody
-wants to ask for, and polling with `fetch_updates` (below) needs none of it.
+It subscribes the Page to `feed`, and is safe to call again. socialchimp does
+not make this call for you when a Page connects. It needs a further
+permission, `pages_manage_metadata`, that not everybody wants to ask for, so
+sign in with `scopes=PUSH_SCOPES` from `socialchimp.platforms.facebook`
+instead of the defaults. Polling with `fetch_updates` (below) needs none of
+it.
 
 Before any of that, try
 `uv run python examples/facebook_django/page_post_demo.py`. It runs the

@@ -114,6 +114,22 @@ Reading what other people wrote needs `pages_read_user_content`, which is on
 top of the permission that lets you read the page itself. Somebody who
 connected before it was asked for has to connect again.
 
+## Pushed comments and reactions
+
+Facebook pushes a page's comments and reactions to your webhook, but only
+once the page has **subscribed your app**, and signing in does not do that.
+Call `subscribe_to_updates` (or `Account.subscribe_to_updates`) after a page
+connects. It is safe to call again, so run it once over pages connected
+before too. Where the pushes go is set for the whole app in Meta's
+dashboard, not here.
+
+It needs `pages_manage_metadata`, which `DEFAULT_SCOPES` leaves out: sign in
+with `scopes=PUSH_SCOPES` to ask for it. A page connected without it has to
+connect again before it can subscribe.
+
+https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
+https://developers.facebook.com/docs/graph-api/webhooks/getting-started/webhooks-for-pages/
+
 Not written yet: a list of *who* reacted, and answering, hiding or deleting a
 comment. Reactions do arrive as `UpdateKind.REACTION_ADDED` through the
 webhook.
@@ -229,6 +245,20 @@ DEFAULT_SCOPES: Final = (
   than to a person, which is most pages worth posting to.
 
 Every one of these needs Meta's review before it works for anybody but you.
+
+`pages_manage_metadata`, which `subscribe_to_updates` needs, is left out on
+purpose: not every app wants pushes, and polling needs none of it. Ask for
+`PUSH_SCOPES` instead to have it.
+"""
+
+PUSH_SCOPES: Final = (*DEFAULT_SCOPES, "pages_manage_metadata")
+"""`DEFAULT_SCOPES` plus what subscribing a page to your app's pushes needs.
+
+    LoginRequest(..., scopes=PUSH_SCOPES)
+
+`pages_manage_metadata` lets `subscribe_to_updates` subscribe the page, so
+Facebook pushes its comments and reactions to your webhook. Meta reviews it
+like the rest.
 """
 
 POST_OPTIONS: Final = ("link",)
@@ -337,12 +367,59 @@ _OUR_STATE_FOR: Final = {
 # `UpdateKind.UNKNOWN`, so a kind nobody has seen yet still reaches your app.
 _OUR_WORD_FOR: Final = {
     ("comment", "add"): "comment_created",
+    ("comment", "edited"): "comment_edited",
     ("comment", "remove"): "comment_deleted",
     ("reaction", "add"): "reaction_added",
+    ("reaction", "remove"): "reaction_removed",
     # Older pages still send likes under their own name rather than as a
     # reaction, and both mean the same thing to an app.
     ("like", "add"): "reaction_added",
+    ("like", "remove"): "reaction_removed",
 }
+
+PUSH_FIELDS: Final = ("feed",)
+"""What `subscribe_to_updates` subscribes a page to when not told otherwise.
+
+`feed` carries the page's comments, reactions and posts - everything
+`read_updates` turns into an `Update`. Meta's other Page fields are listed at
+https://developers.facebook.com/docs/graph-api/webhooks/reference/page/
+"""
+
+
+def _push_fields(fields: Sequence[str]) -> tuple[str, ...]:
+    """Check a list of webhook fields before Facebook sees it.
+
+    Facebook takes them as one comma-separated list, so a comma or a space
+    inside a name would quietly become a different list.
+
+    Args:
+        fields: The fields asked for.
+
+    Returns:
+        The same fields, as a tuple.
+
+    Raises:
+        ConfigError: If there are none, `fields` is one bare string, or a
+            name is empty or has a comma or a space in it.
+    """
+    if isinstance(fields, str):
+        message = (
+            f"fields is the string {fields!r}, but it has to be a list of "
+            f"names, such as ({fields!r},)."
+        )
+        raise ConfigError(message)
+    wanted = tuple(fields)
+    if not wanted:
+        message = "fields is empty. Pass at least one, such as ('feed',)."
+        raise ConfigError(message)
+    for name in wanted:
+        if not name or any(c == "," or c.isspace() for c in name):
+            message = (
+                f"{name!r} is not a field name Facebook can read: it has to "
+                f"be one word, such as 'feed', with no commas or spaces."
+            )
+            raise ConfigError(message)
+    return wanted
 
 
 def _now() -> datetime:
@@ -684,6 +761,7 @@ class FacebookPlatform:
         | Feature.READ_STATS
         | Feature.PUSH_UPDATES
         | Feature.READ_UPDATES_AFTER
+        | Feature.SUBSCRIBE_APP
     )
 
     def __init__(
@@ -1703,6 +1781,62 @@ class FacebookPlatform:
             ConfigError: If `marker` is not one this platform made.
         """
         _own_marker(marker)
+
+    async def subscribe_to_updates(
+        self,
+        connection: Connection,
+        *,
+        fields: Sequence[str] | None = None,
+    ) -> None:
+        """Subscribe the page to your app, so Facebook pushes its updates.
+
+        Without this a page sends your webhook nothing, however the webhook
+        is set up in Meta's dashboard. Facebook keeps one subscription per
+        app and page, so calling this again is harmless.
+
+        **The fields replace the ones already there.** Subscribing to
+        `("feed",)` after `("feed", "mention")` stops the mentions; pass
+        every field you want, every time.
+
+        One request: `POST /{page-id}/subscribed_apps` with the page's own
+        token. See
+        https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
+
+        Args:
+            connection: The page to subscribe.
+            fields: Facebook's names for what to push, such as `"feed"` or
+                `"mention"`. `None` is `PUSH_FIELDS`: the page's comments,
+                reactions and posts.
+
+        Raises:
+            ConfigError: If the connection names no page, or `fields` is
+                empty, a bare string, or has a name Facebook could not read.
+            NotAllowedError: If the page never granted
+                `pages_manage_metadata` - it signed in without
+                `PUSH_SCOPES`, and has to connect again with them.
+            PlatformError: If Facebook answers that it did not work.
+            SocialChimpError: If Facebook refuses for any other reason.
+        """
+        wanted = _push_fields(PUSH_FIELDS if fields is None else fields)
+        page_id = where_to_post(
+            connection,
+            key="page_id",
+            what="Facebook page",
+            platform=PLATFORM_NAME,
+        )
+        async with self._graph(connection.token.access_token) as graph:
+            reply = await graph.json(
+                "POST",
+                f"/{page_id}/subscribed_apps",
+                data={"subscribed_fields": ",".join(wanted)},
+            )
+            self._note(graph)
+        if reply.get("success") is not True:
+            message = (
+                f"Facebook did not subscribe page {page_id} to the app; it "
+                f"answered {reply!r}."
+            )
+            raise PlatformError(message, platform=PLATFORM_NAME, raw=reply)
 
     def check_signature(
         self,

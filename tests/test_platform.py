@@ -43,6 +43,7 @@ from socialchimp.platform import (
     CanReadUpdatesAfter,
     CanReply,
     CanStartConversations,
+    CanSubscribeApp,
     ChooseAccount,
     Finished,
     LoginField,
@@ -495,6 +496,23 @@ class TestReadingUpdatesAfterAMarker:
         assert isinstance(ReadsUpdatesAfter(), CanReadUpdatesAfter)
 
 
+class TestSubscribingAnAccount:
+    def test_a_platform_with_nothing_to_subscribe_says_so(self) -> None:
+        assert not isinstance(FakePlatform(), CanSubscribeApp)
+
+    def test_a_platform_that_can_subscribe_says_so(self) -> None:
+        class Subscribes(FakePlatform):
+            async def subscribe_to_updates(
+                self,
+                connection: Connection,
+                *,
+                fields: Sequence[str] | None = None,
+            ) -> None:
+                return None
+
+        assert isinstance(Subscribes(), CanSubscribeApp)
+
+
 class TestDirectMessages:
     def test_a_platform_that_cannot_message_says_so(self) -> None:
         assert not isinstance(FakePlatform(), CanMessage)
@@ -566,6 +584,7 @@ NEW_FEATURE_PROTOCOL_PAIRS: tuple[tuple[Feature, type], ...] = (
     (Feature.READ_UPDATES_AFTER, CanReadUpdatesAfter),
     (Feature.MESSAGES, CanMessage),
     (Feature.START_CONVERSATIONS, CanStartConversations),
+    (Feature.SUBSCRIBE_APP, CanSubscribeApp),
 )
 
 

@@ -634,6 +634,38 @@ def made_updates_after_poller() -> UpdatesAfterPlatform:
     return platform
 
 
+class SubscribingPlatform(FakePlatform):
+    """A platform that has to be told to push an account's updates."""
+
+    name = "subscriber"
+    features = FakePlatform.features | Feature.SUBSCRIBE_APP
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.subscribed: list[tuple[Connection, Sequence[str] | None]] = []
+
+    async def subscribe_to_updates(
+        self,
+        connection: Connection,
+        *,
+        fields: Sequence[str] | None = None,
+    ) -> None:
+        self.subscribed.append((connection, fields))
+
+
+class LyingSubscriber(FakePlatform):
+    """Says it can subscribe an account, but has no method for it."""
+
+    name = "lying-subscriber"
+    features = FakePlatform.features | Feature.SUBSCRIBE_APP
+
+
+def made_subscriber() -> SubscribingPlatform:
+    platform = made("subscriber")
+    assert isinstance(platform, SubscribingPlatform)
+    return platform
+
+
 class MessagingPlatform(FakePlatform):
     """A platform that can read and send direct messages."""
 
@@ -1128,6 +1160,8 @@ FAKES: dict[str, type[FakePlatform]] = {
     "lying-likes-reader": LyingLikesReader,
     "marker-poller": UpdatesAfterPlatform,
     "lying-marker-poller": LyingUpdatesAfterPoller,
+    "subscriber": SubscribingPlatform,
+    "lying-subscriber": LyingSubscriber,
     "messenger": MessagingPlatform,
     "lying-messenger": LyingMessenger,
     "lying-media-messenger": LyingMediaMessenger,
@@ -3220,3 +3254,52 @@ class TestClientFeatures:
 
         assert Feature.POST_TEXT in features
         assert Feature.LIKE not in features
+
+
+class TestSubscribingAnAccountToPushes:
+    async def test_an_account_can_be_subscribed_with_the_platforms_own_fields(
+        self,
+    ) -> None:
+        storage = await storage_holding(a_connection(platform="subscriber"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").subscribe_to_updates()
+
+        [(connection, fields)] = made_subscriber().subscribed
+        assert connection.id == "conn-1"
+        assert fields is None
+
+    async def test_the_fields_asked_for_reach_the_platform(self) -> None:
+        storage = await storage_holding(a_connection(platform="subscriber"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").subscribe_to_updates(fields=("feed", "mention"))
+
+        assert made_subscriber().subscribed[0][1] == ("feed", "mention")
+
+    async def test_subscribing_renews_the_token_first(self) -> None:
+        storage = await storage_holding(expiring_soon(platform="subscriber"))
+        sc = SocialChimp(storage)
+
+        await sc.account("conn-1").subscribe_to_updates()
+
+        connection, _ = made_subscriber().subscribed[0]
+        assert connection.token.access_token == NEW_ACCESS
+
+    async def test_a_network_with_nothing_to_subscribe_says_so(self) -> None:
+        storage = await storage_holding(a_connection())
+        sc = SocialChimp(storage)
+
+        with pytest.raises(NotSupportedError) as refused:
+            await sc.account("conn-1").subscribe_to_updates()
+
+        assert "fake" in str(refused.value)
+
+    async def test_a_platform_claiming_it_but_unable_is_a_setup_problem(self) -> None:
+        storage = await storage_holding(a_connection(platform="lying-subscriber"))
+        sc = SocialChimp(storage)
+
+        with pytest.raises(ConfigError) as broken:
+            await sc.account("conn-1").subscribe_to_updates()
+
+        assert "subscribe_to_updates" in str(broken.value)

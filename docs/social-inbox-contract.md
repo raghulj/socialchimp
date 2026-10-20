@@ -3,6 +3,10 @@
 v1.1 change: `account.features` is an async method, not a property (see section 8).
 v1.2 clarifications, found in review (the surface is unchanged): Mastodon reply visibility, direct messages checked
 first when classifying updates, and the `status:` conversation id fallback.
+v1.7 (0.13.0): `CanSubscribeApp.subscribe_to_updates(connection, *, fields=None)` (`Feature.SUBSCRIBE_APP`)
+subscribes a Meta Page to the app (`POST /{page-id}/subscribed_apps`). It is not the reserved `CanSubscribeToUpdates` of
+section 6, which names an endpoint; that and `SUBSCRIBE_UPDATES` stay reserved. New kinds `COMMENT_EDITED` and
+`REACTION_REMOVED` (Facebook `comment edited`, `reaction`/`like remove`), which used to be `UNKNOWN`.
 v1.6 (0.12.0): Facebook implements `CanReadUpdatesAfter` (marker `fb1:<seconds>:<comment ids at that second>`,
 `mark_seen` a no-op), and fills `actor`/`post_id`/`about_post_id`/`thread_root_id` on its updates as section 5 says.
 v1.5 (0.11.0): files in direct messages through a new `CanSendMessageMedia.send_message_with_media` extra

@@ -175,6 +175,16 @@ class Feature(Flag):
     is on `Limits.messages`, from `Account.limits()`.
     """
 
+    SUBSCRIBE_APP = auto()
+    """Can switch on your app's pushed updates for one account, with
+    `Account.subscribe_to_updates`.
+
+    Meta only pushes a Page's comments and reactions to an app the Page has
+    subscribed, and signing in does not do that. Unlike the reserved
+    `SUBSCRIBE_UPDATES`, nothing names an address: where pushes go is set
+    once for the whole app, in Meta's dashboard.
+    """
+
 
 class TextCount(Enum):
     """How a network counts the length of a post.

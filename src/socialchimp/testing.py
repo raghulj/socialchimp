@@ -122,6 +122,7 @@ from socialchimp.platform import (
     CanResumeLogin,
     CanSendMessageMedia,
     CanStartConversations,
+    CanSubscribeApp,
     ChooseAccount,
     Finished,
     LoginField,
@@ -241,7 +242,7 @@ _NOT_CHECKED: Final = frozenset({"text_counted_in", "posts_left_today", "message
 # under every way of counting, which is exactly what we want to test with.
 _A_BIG_LETTER: Final = "\U0001f44d\U0001f3fd"
 
-# The 13 inbox methods that FakePlatform.fail_next can fail.
+# The inbox methods that FakePlatform.fail_next can fail.
 _FAIL_NEXT_METHODS: Final[frozenset[str]] = frozenset(
     {
         "read_post",
@@ -258,6 +259,7 @@ _FAIL_NEXT_METHODS: Final[frozenset[str]] = frozenset(
         "send_message_with_media",
         "mark_read",
         "start_conversation",
+        "subscribe_to_updates",
     }
 )
 
@@ -349,6 +351,12 @@ _CLAIMS: Final[tuple[_Claim, ...]] = (
         Feature.MESSAGE_MEDIA,
         CanSendMessageMedia,
         ("send_message_with_media",),
+        wants_async=True,
+    ),
+    _Claim(
+        Feature.SUBSCRIBE_APP,
+        CanSubscribeApp,
+        ("subscribe_to_updates",),
         wants_async=True,
     ),
 )
@@ -720,6 +728,7 @@ _FAKE_FEATURES: Final = (
     | Feature.MESSAGES
     | Feature.START_CONVERSATIONS
     | Feature.MESSAGE_MEDIA
+    | Feature.SUBSCRIBE_APP
 )
 
 # What `FakePlatform` lets one direct message carry unless its limits say
@@ -936,6 +945,8 @@ class FakePlatform:
             `start_conversation`.
         marked_read: The id of every conversation `mark_read` was asked to
             mark, in order.
+        subscribed: Every `subscribe_to_updates`, as (connection id, the
+            fields asked for). `None` where it was left to the platform.
     """
 
     def __init__(
@@ -1014,6 +1025,7 @@ class FakePlatform:
         self.marked_seen: list[str] = []
         self.sent_messages: list[Message] = []
         self.marked_read: list[str] = []
+        self.subscribed: list[tuple[str, tuple[str, ...] | None]] = []
         if limits is not None and limits.messages is None:
             # Limits that say nothing about messages cannot back a claim to
             # send files in one, so the claim goes - which keeps a fake built
@@ -1306,7 +1318,8 @@ class FakePlatform:
         `read_thread`, `reply`, `like`, `unlike`, `read_likes`,
         `fetch_updates_after`, `mark_seen`, `read_conversations`,
         `read_messages`, `send_message`, `send_message_with_media`,
-        `mark_read` and `start_conversation`. `publish_fails_with` and
+        `mark_read`, `start_conversation` and, from 0.13.0,
+        `subscribe_to_updates`. `publish_fails_with` and
         `login_fails_with` are still how you fail `publish` and signing in.
 
         Args:
@@ -2456,6 +2469,24 @@ class FakePlatform:
         self._messages.setdefault(found.id, []).append(made)
         self.sent_messages.append(made)
         return made
+
+    async def subscribe_to_updates(
+        self,
+        connection: Connection,
+        *,
+        fields: Sequence[str] | None = None,
+    ) -> None:
+        """Note that this account was asked to push its updates to your app.
+
+        Args:
+            connection: The account to subscribe.
+            fields: What to push. Kept on `subscribed` as given; this fake
+                pushes nothing either way.
+        """
+        self._maybe_fail("subscribe_to_updates")
+        self.subscribed.append(
+            (connection.id, None if fields is None else tuple(fields))
+        )
 
     async def _check_state(
         self,
