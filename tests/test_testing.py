@@ -57,6 +57,7 @@ from socialchimp.platform import (
     CanReply,
     CanResumeLogin,
     CanStartConversations,
+    CanSubscribeApp,
     ChooseAccount,
     Finished,
     LoginField,
@@ -2005,6 +2006,7 @@ class TestFakePlatformImplementsTheInboxProtocols:
         assert isinstance(platform, CanReadUpdatesAfter)
         assert isinstance(platform, CanMessage)
         assert isinstance(platform, CanStartConversations)
+        assert isinstance(platform, CanSubscribeApp)
         for flag in (
             Feature.READ_POST,
             Feature.READ_THREAD,
@@ -2014,6 +2016,7 @@ class TestFakePlatformImplementsTheInboxProtocols:
             Feature.READ_UPDATES_AFTER,
             Feature.MESSAGES,
             Feature.START_CONVERSATIONS,
+            Feature.SUBSCRIBE_APP,
         ):
             assert flag in platform.features
 
@@ -2702,3 +2705,27 @@ class TestDirectMessages:
         with pytest.raises(RateLimitError):
             await platform.start_conversation(connection, ["bob"], "hi")
         await platform.start_conversation(connection, ["bob"], "hi")
+
+
+class TestSubscribingToPushes:
+    async def test_each_subscribe_is_recorded_with_its_fields(self) -> None:
+        platform = FakePlatform()
+        connection = platform.connection()
+
+        await platform.subscribe_to_updates(connection)
+        await platform.subscribe_to_updates(connection, fields=["feed", "mention"])
+
+        assert platform.subscribed == [
+            (connection.id, None),
+            (connection.id, ("feed", "mention")),
+        ]
+
+    async def test_fail_next_makes_subscribe_raise_once(self) -> None:
+        platform = FakePlatform()
+        platform.fail_next("subscribe_to_updates", RateLimitError("slow down"))
+
+        with pytest.raises(RateLimitError):
+            await platform.subscribe_to_updates(platform.connection())
+        await platform.subscribe_to_updates(platform.connection())
+
+        assert len(platform.subscribed) == 1

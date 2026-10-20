@@ -7,6 +7,7 @@ import hmac
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -21,6 +22,7 @@ from socialchimp import (
     InvalidPostError,
     Limits,
     Media,
+    NotAllowedError,
     NotFoundError,
     NotSupportedError,
     PlatformError,
@@ -45,6 +47,7 @@ from socialchimp.platform import (
     CanReadUpdates,
     CanReadUpdatesAfter,
     CanResumeLogin,
+    CanSubscribeApp,
     ChooseAccount,
     Finished,
     LoginRequest,
@@ -56,6 +59,7 @@ from socialchimp.platforms.facebook import (
     BIGGEST_SIMPLE_VIDEO,
     DEFAULT_SCOPES,
     MAX_TEXT_LENGTH,
+    PUSH_SCOPES,
     FacebookPlatform,
     facebook_errors,
 )
@@ -2863,3 +2867,218 @@ class TestTheShapeOfAFacebookComment:
         )
 
         assert update.actor is None
+
+
+# ---------------------------------------------------------------------------
+# Subscribing a page to the app's pushes
+# ---------------------------------------------------------------------------
+
+
+class TestSubscribingThePageToPushes:
+    def test_it_says_it_can_subscribe_a_page(self, platform: FacebookPlatform) -> None:
+        assert Feature.SUBSCRIBE_APP in platform.features
+        assert isinstance(platform, CanSubscribeApp)
+
+    async def test_a_default_sign_in_does_not_ask_to_manage_the_page(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        # Not every app wants pushes, and polling needs none of it.
+        step = await platform.start_login(a_request())
+
+        asked = httpx.URL(step.url).params["scope"].split(",")
+        assert "pages_manage_metadata" not in asked
+
+    async def test_signing_in_for_pushes_asks_for_everything_and_that_too(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        step = await platform.start_login(
+            LoginRequest(
+                redirect_uri=REDIRECT, state="abc123", app=an_app(), scopes=PUSH_SCOPES
+            )
+        )
+
+        asked = httpx.URL(step.url).params["scope"].split(",")
+        assert asked == [*DEFAULT_SCOPES, "pages_manage_metadata"]
+
+    async def test_it_subscribes_the_page_to_its_feed_by_default(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            route = network.post(f"/{PAGE_ID}/subscribed_apps").mock(
+                return_value=httpx.Response(200, json={"success": True})
+            )
+
+            await platform.subscribe_to_updates(account)
+
+        request = route.calls.last.request
+        assert request.headers["Authorization"] == f"Bearer {PAGE_TOKEN}"
+        assert parse_qs(request.content.decode()) == {"subscribed_fields": ["feed"]}
+
+    async def test_it_sends_every_field_asked_for_in_one_list(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            route = network.post(f"/{PAGE_ID}/subscribed_apps").mock(
+                return_value=httpx.Response(200, json={"success": True})
+            )
+
+            await platform.subscribe_to_updates(account, fields=("feed", "mention"))
+
+        sent = parse_qs(route.calls.last.request.content.decode())
+        assert sent == {"subscribed_fields": ["feed,mention"]}
+
+    async def test_asking_twice_is_harmless(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        # Facebook keeps one subscription per app and page, so a second call
+        # only sets the same fields again. That is what makes it safe to run
+        # over every page an app already has.
+        with respx.mock(base_url=GRAPH_API) as network:
+            route = network.post(f"/{PAGE_ID}/subscribed_apps").mock(
+                return_value=httpx.Response(200, json={"success": True})
+            )
+
+            await platform.subscribe_to_updates(account)
+            await platform.subscribe_to_updates(account)
+
+        assert route.call_count == 2
+
+    @pytest.mark.parametrize(
+        "fields",
+        [(), ("",), ("feed,mention",), ("feed", "feed ")],
+        ids=["none", "empty", "comma", "space"],
+    )
+    async def test_a_field_list_facebook_could_not_read_is_refused_first(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+        fields: tuple[str, ...],
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API), pytest.raises(ConfigError):
+            await platform.subscribe_to_updates(account, fields=fields)
+
+    async def test_one_word_instead_of_a_list_is_refused(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        # "feed" is a sequence of letters, so without this it would subscribe
+        # to the fields f, e, e and d.
+        with respx.mock(base_url=GRAPH_API), pytest.raises(ConfigError):
+            await platform.subscribe_to_updates(account, fields="feed")
+
+    async def test_a_connection_with_no_page_is_refused(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API), pytest.raises(ConfigError):
+            await platform.subscribe_to_updates(an_account(page_id="", extra={}))
+
+    async def test_a_page_that_never_granted_the_permission_is_refused(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        # What an older connection gets: it signed in before
+        # pages_manage_metadata was asked for, and has to sign in again.
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.post(f"/{PAGE_ID}/subscribed_apps").mock(
+                return_value=httpx.Response(
+                    403,
+                    json={
+                        "error": {
+                            "message": "(#200) Requires pages_manage_metadata",
+                            "type": "OAuthException",
+                            "code": 200,
+                        }
+                    },
+                )
+            )
+
+            with pytest.raises(NotAllowedError):
+                await platform.subscribe_to_updates(account)
+
+    async def test_a_reply_that_says_it_did_not_work_is_an_error(
+        self,
+        platform: FacebookPlatform,
+        account: Connection,
+    ) -> None:
+        with respx.mock(base_url=GRAPH_API) as network:
+            network.post(f"/{PAGE_ID}/subscribed_apps").mock(
+                return_value=httpx.Response(200, json={"success": False})
+            )
+
+            with pytest.raises(PlatformError):
+                await platform.subscribe_to_updates(account)
+
+
+class TestEditsAndTakenBackReactions:
+    def test_an_edited_comment_arrives_as_an_edited_comment(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        body = a_push(
+            {
+                "item": "comment",
+                "verb": "edited",
+                "comment_id": f"{POST_ID}_777",
+                "post_id": POST_ID,
+                "parent_id": POST_ID,
+                "message": "Fixed a typo",
+            }
+        )
+
+        update = platform.read_update(body, {})
+
+        assert update.kind is UpdateKind.COMMENT_EDITED
+        assert update.post_id == f"{POST_ID}_777"
+        assert update.thread_root_id == POST_ID
+
+    @pytest.mark.parametrize("item", ["reaction", "like"])
+    def test_a_reaction_taken_back_arrives_as_a_removed_reaction(
+        self,
+        platform: FacebookPlatform,
+        item: str,
+    ) -> None:
+        body = a_push(
+            {
+                "item": item,
+                "verb": "remove",
+                "reaction_type": "like",
+                "post_id": POST_ID,
+                "from": {"id": "user-1"},
+            }
+        )
+
+        update = platform.read_update(body, {})
+
+        assert update.kind is UpdateKind.REACTION_REMOVED
+        assert update.about_post_id == POST_ID
+
+    def test_a_removed_reaction_is_not_the_same_update_as_the_reaction(
+        self,
+        platform: FacebookPlatform,
+    ) -> None:
+        def reacting(verb: str) -> bytes:
+            return a_push(
+                {
+                    "item": "reaction",
+                    "verb": verb,
+                    "post_id": POST_ID,
+                    "from": {"id": "user-1"},
+                    "created_time": 1_790_000_000,
+                }
+            )
+
+        added = platform.read_update(reacting("add"), {})
+        removed = platform.read_update(reacting("remove"), {})
+
+        assert added.id != removed.id

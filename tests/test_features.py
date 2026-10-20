@@ -112,6 +112,11 @@ class TestSocialInboxFeatures:
         assert Feature.READ_STATS.value == 512
         assert Feature.PUSH_UPDATES.value == 1024
 
+    def test_subscribing_an_app_is_its_own_flag(self) -> None:
+        # Added in 0.13.0, after every flag before it, so nothing already
+        # saved changes meaning.
+        assert Feature.SUBSCRIBE_APP.value > Feature.MESSAGE_MEDIA.value
+
     def test_subscribe_updates_is_reserved_and_not_added_yet(self) -> None:
         # Push delivery ships in a later release, alongside Meta webhooks
         # and Mastodon Web Push.

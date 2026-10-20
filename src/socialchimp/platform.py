@@ -74,6 +74,7 @@ __all__ = [
     "CanResumeLogin",
     "CanSendMessageMedia",
     "CanStartConversations",
+    "CanSubscribeApp",
     "ChooseAccount",
     "Finished",
     "LoginField",
@@ -1394,5 +1395,35 @@ class CanStartConversations(Protocol):
 
         Returns:
             The message that was sent.
+        """
+        ...
+
+
+@runtime_checkable
+class CanSubscribeApp(Protocol):
+    """Extra for switching on your app's pushed updates for one account.
+
+    Some networks only push an account's updates to an app the account has
+    subscribed, and signing in does not subscribe it. Meta is one: a Page
+    sends nothing to your webhook until this has been called for it.
+
+    It is safe to call again, so it can be run over accounts connected
+    before your app started calling it. `Account.subscribe_to_updates` is
+    what your app calls.
+    """
+
+    async def subscribe_to_updates(
+        self,
+        connection: Connection,
+        *,
+        fields: Sequence[str] | None = None,
+    ) -> None:
+        """Ask the network to push this account's updates to your app.
+
+        Args:
+            connection: The account to subscribe.
+            fields: The network's own names for what to push. `None` is the
+                platform's own choice, which covers its comments and
+                reactions.
         """
         ...

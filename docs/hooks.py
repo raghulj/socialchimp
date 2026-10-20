@@ -78,6 +78,7 @@ from socialchimp.platform import (
     CanReplyToUpdates,
     CanResumeLogin,
     CanStartConversations,
+    CanSubscribeApp,
 )
 from socialchimp.registry import available_platforms, get_platform_class
 
@@ -310,6 +311,8 @@ def _extras(instance: Platform, features: Feature) -> list[str]:
         instance, CanStartConversations
     ):
         satisfied.append("CanStartConversations")
+    if Feature.SUBSCRIBE_APP in features and isinstance(instance, CanSubscribeApp):
+        satisfied.append("CanSubscribeApp")
     # The rest have no flag of their own: `Account` looks for the method and
     # nothing else, so the method existing is the whole answer here too.
     if isinstance(instance, CanReadReplies):
